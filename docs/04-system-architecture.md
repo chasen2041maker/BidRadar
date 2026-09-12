@@ -1,142 +1,146 @@
-# 04｜系统架构：边界明确，逐步建设
+# 04｜微服务架构与数据所有权 v0.2
 
-状态：Proposed。以下是目标结构，不是当前仓库已有代码目录。
+**Proposed｜2026-09-11。微服务/Redis/K8s 是已确认方向；六服务具体边界待审核。**本页替代 v0.1 的模块化单体与基础设施后置方案。
 
-## 1. 架构原则与替代方案
+## 1. 架构目标
 
-选择模块化单体作为起点：一个 Python 代码库，不等于所有工作放在一个请求线程；API、采集和分析任务分别运行，但共享明确的领域和应用逻辑。
+按业务责任、独立数据和运行特征拆服务：外部 I/O、危险文件解析、目录检索、私有业务档案、长时模型任务、持续跟踪。能独立构建、部署、扩缩、回滚和测试契约，才算这次微服务目标。
 
-| 方案 | 优点 | 代价 | 建议 |
-| --- | --- | --- | --- |
-| 单脚本/Notebook | 快速检查来源和字段 | 任务、权限和持续跟踪弱 | 仅用于经授权的有限验证 |
-| 模块化单体 + Worker | 能覆盖业务与可靠性，单人可逐层掌握 | 需要守住模块边界 | 首选提案 |
-| 大量微服务 | 可独立扩缩和团队分工 | 网络故障、部署、契约和运维显著增加 | 无当前证据支持 |
-| 全托管 Agent 平台 | 减少部分基础设施工作 | 可能遮蔽需要本人学习的状态与可靠性逻辑 | 仅比较，不作为默认依赖 |
+一个 monorepo，六个业务服务；不是六个服务各写一套用户系统，也不拆出无业务责任的万能调度/数据库/模型平台。共享内容限于版本化 API/事件模式、追踪工具和测试设施，禁止共享领域模型或 ORM。
 
-## 2. 系统边界图
+## 2. 系统结构
 
 ```mermaid
 flowchart LR
-    User[业务使用者] --> Web[Web 工作台]
-    Web --> API[业务 API]
-    API --> PG[(PostgreSQL)]
-    Scheduler[同步与跟踪调度] --> PG
-    PG --> Ingest[采集 Worker]
-    PG --> Analysis[分析 Worker]
-    Ingest --> Source[允许访问的公开来源]
-    Ingest --> Files[(原文存储)]
-    Ingest --> PG
-    Analysis --> Files
-    Analysis --> LLM[模型服务]
-    Analysis --> PG
-    Analysis -.后期缓存.-> Redis[(Redis)]
-    PG --> Notices[应用内提醒]
-    Notices --> API
+    U[使用者] --> W[Web 工作台]
+    W --> G[网关 路由与身份转交]
+    G --> WS[workspace 企业与权限]
+    G --> C[catalog 目录与检索]
+    G --> R[research Agent与报告]
+    G --> T[tracking 跟踪与提醒]
+    Sources[批准的API 网页 文件] --> I[ingestion 采集]
+    I --> Raw[(原始对象存储)]
+    I --> Bus[(Redis Streams)]
+    Bus --> P[processing 解析清洗]
+    P --> Derived[(解析制品存储)]
+    P --> Bus
+    Bus --> C
+    Bus --> T
+    Bus --> R
+    R --> C
+    R --> P
+    R --> WS
+    R --> LLM[受控模型接口]
+    T --> WS
+    WS --> Bus
+    C --> Bus
+    R --> Bus
+    T --> Bus
+    C -.查询缓存.-> Cache[(独立Redis缓存)]
+    R -.版本缓存.-> Cache
 ```
 
-图中数据库到 Worker 的箭头表示领取持久任务，不是数据库主动调用应用。调度器可以先作为现有进程中的定时入口，不需要先建一个调度微服务。外部附件请求只走受控采集器，不由模型随意访问 URL。
+图不表示所有服务消费所有事件。每条事件的生产者、订阅者和权限见 [契约](14-service-event-contracts.md)。各服务拥有自己的 PostgreSQL 数据库，图为可读性未画出六个数据库。网关只做路由、验证入口身份、限流和请求关联，不掌管跨域事务。
 
-## 3. 模块职责与写入所有权
+## 3. 六服务边界
 
-| 模块 | 负责 | 不负责 |
-| --- | --- | --- |
-| identity | 服务端身份、工作空间、角色与授权范围 | 从模型输出相信 tenant_id |
-| ingestion | 来源连接器、同步进度、原始制品登记 | 企业私有匹配结论 |
-| catalog | 公告、程序、标段、版本、状态投影 | 猜测参与资格 |
-| documents | 安全解析、证据定位、索引版本 | 执行文档中的指令 |
-| profiles | 用户确认的能力、偏好、版本与修改 | 用模型推断自动授予资质 |
-| matching | 条件状态、排序规则、匹配快照 | 自由网络访问或绕过权限 |
-| research | 有限工具编排、图状态、证据整理 | 直接修改业务真相表 |
-| tracking | 收藏、变更关联、提醒规则 | 主动联系采购方 |
-| jobs | 任务状态、领取、重试、发布与取消 | 认定任何外部调用恰好一次 |
+| 服务 | 拥有的业务与数据 | 接口/事件 | 独立扩容原因 |
+| --- | --- | --- | --- |
+| ingestion | source_registry、sync_run/item、raw_asset、抓取策略和源水位 | RawAssetCaptured；受控 fetch 请求；source status | 外部 I/O、每域配额、抓取失败隔离 |
+| processing | parse_run、document_version、evidence_span、normalized_observation、quality_issue/quarantine | DocumentNormalized / DocumentQuarantined；证据/规范制品读取 | 文件 CPU/内存、安全与大文档隔离 |
+| catalog | 源身份到程序/标段关联、notice_relation、canonical_revision、事实投影和索引 | CatalogRevisionPublished；候选/版本/搜索 API | 查询并发、索引构建和关联处理 |
+| workspace | 可信身份映射、workspace/membership、确认的 profile/preference 版本 | ProfileRevisionConfirmed、AccessChanged；鉴权/快照 API | 私有数据和授权独立演进 |
+| research | analysis_run/attempt、requirement/finding、checkpoint、冻结输入、报告与费用 | 分析创建/取消/进度；AnalysisCompleted | 长时任务、模型配额、上下文/评测变化 |
+| tracking | watch、change cursor、reassessment workflow、notification/read state | AnalysisRequested；提醒和关注 API | 变化扇出、定时和可靠去重 |
 
-模块写自己的表，通过应用接口请求别的模块执行动作。读取允许通过明确查询接口或只读视图，不需要为了单体内部通信添加 HTTP 服务。
+processing 的规范字段是某来源的一次观察；catalog 决定有依据的关联及当前业务投影；research 解释和匹配，不能反写公共公告事实。
 
-## 4. 依赖方向
+私有上传文档不是首条链的必要条件。以后接入须明确 processing 的私有制品区、权限和私有索引；不得默认把企业附件放进公共 catalog 检索。
+
+## 4. 持久化和禁止事项
+
+早期开发可使用一个 PostgreSQL 实例提供 ingestion_db、processing_db、catalog_db、workspace_db、research_db、tracking_db，每库独立角色、迁移和备份责任。它们有共同基础设施故障域，不能称独立数据库高可用。
+
+禁止跨服务直连表、跨数据库 JOIN/外键、共享业务事务、一个超级账号操作所有服务。跨域 ID 是契约引用而非物理外键。需要检索联合视图时由事件建立只读投影，带 origin/version/as_of；缺口通过拥有者 API 补齐。
+
+每服务的任务、Outbox、Inbox、事件日志和幂等记录属于该服务，不建一个所有服务任意修改的全局 jobs 表。图 checkpoint 只属于 research，不承担 workspace 的能力事实或 tracking 的关注状态。
+
+原文对象按所有者与可见性分区。先写不可变对象并确认存在，再提交本地元数据和事件；失败可留下孤立对象，按保留策略回收。不存在跨对象存储与数据库的假定原子提交。
+
+## 5. 同步查询与异步命令
+
+**同步 API**用于有界查询、校验权限、获取已发布的不可变版本和接受命令。设置总超时、响应大小、有限重试与错误分类，不形成 ingestion→processing→catalog→research→tracking 的长同步链。
+
+**异步事件**用于数据阶段完成、目录变更、档案变化和分析结果；**异步命令**用于已授权的后台复核。发送的是小型版本引用，不是整份 PDF 或企业档案。命令失败/拒绝有终态回复，不把“已入队”显示为“已完成”。
+
+一次 POST /analyses 由 research 在本地事务保存 run、幂等键和调度 Outbox 后返回 202。浏览器/SSE 只观察任务，不拥有执行；断开后默认继续，显式取消持久化。
+
+## 6. 数据链
+
+1. ingestion 领取本地同步任务，以每源配额访问，保存原件和 raw_asset；本地事务写 RawAssetCaptured。
+2. relay 将事件送 Redis；processing 在 Inbox+本地 parse job 同一事务接收，再 ACK 消息。
+3. processing Worker 获取受授权原件，解析、清洗或隔离，保存制品与文档版本，在本地事务写 DocumentNormalized/Quarantined。
+4. catalog 消费规范观察，按源标识和关联规则建立版本。不能把 partial 隐藏成完整记录。
+5. 目录结果先可查询；搜索索引跟进，返回 indexed_revision 与滞后信息，不能把未索引误称没有数据。
+6. catalog 发布变化，tracking 独立订阅；research 的失效/状态订阅使用自己的消费组。
+
+每步本地事务，跨步最终一致。原始同步完成、清洗完成、进入目录、被索引、被分析分别有状态，不设置一个误导的全局 done。
+
+## 7. 研究和跟踪链
+
+用户经网关调用 research，research 校验 workspace 权限并固定 profile、catalog、document、规则与配置版本。查询 catalog 和 processing 的已授权证据；模型仅使用有限工具；报告在 research 本地事务发布并生成 AnalysisCompleted。
+
+tracking 收到 CatalogRevisionPublished，针对相关 watch 建复核流程；必要时发布 AnalysisRequested 命令。research 按 watch 授权、输入指纹和幂等键接受/拒绝，返回结果事件。tracking 保存结果关联并在本地事务生成唯一应用内提醒。
+
+不是全局分布式事务。上游成功、下游暂失败时各自状态可查；用重试、重放、对账和必要的业务失效补偿收敛，不撤销已经公开的真实公告。报告不可用时提醒可以先显示“资料更新，分析待完成”，不能假装已重新核查。
+
+## 8. 并发版本与最终一致
+
+每个分析使用不可变 snapshot manifest。新版到达时允许旧任务产生历史报告，但“当前最新”要按当前已知目录、档案和权限重新校验。不能要求六个数据库在同一瞬间原子切换。
+
+事件丢失/延迟时显示 as_of 和 pipeline lag；API 可向 owning service 核查版本。涉及私有资料的返回必须做当前权限校验，授权服务不可用时拒绝或延后，不能依赖旧缓存继续放行。撤权与已在途外部调用无法跨系统原子撤回，需明确风险和最小暴露窗口。
+
+## 9. Redis 的初始角色
+
+redis-core：Streams、消费组及受限的源/模型配额计数，独立内存预算、noeviction、持久化和恢复配置。写入失败应反馈背压，任务留在数据库，不直接跳过限流调用外部服务。
+
+redis-cache：可重建的目录、检索和解析缓存，有 TTL/版本键及淘汰策略。不同实例不是只换一个 logical DB 编号。私有缓存包含 workspace/权限版本，读取仍授权。
+
+业务事实不只在 Redis；重新投递已发送消息靠持久事件日志/消费水位，不能只扫描未 sent 的 Outbox。详见 07 与 14。
+
+## 10. Kubernetes 从首个运行阶段验证
+
+初次部署就为已实现的服务配置独立镜像、Deployment/Service、ServiceAccount、配置/密钥注入、资源、探针、优雅退出、网络规则和日志关联。不是先创建六个空应用占位，也不是直到结尾才学容器网络。
+
+本地集群是基础交付环境；Compose 为快速调试辅助。数据库/Redis 开发单实例与后续受控云环境分别声明，不用单机 Pod 数冒充分布式高可用。负载增加后按 parser CPU、查询延迟、任务积压和模型配额调整副本。
+
+## 11. 代码组织提案
 
 ```text
-HTTP / Worker / CLI 入口
-          ↓
-应用用例：开始分析、同步、确认档案、收藏、处理变更
-          ↓
-领域规则：状态、条件、版本、证据与授权不变量
-          ↓
-接口（存储、来源、模型、时钟、通知）
-          ↑
-适配器：PostgreSQL、TED、模型 SDK、文件存储、Redis
+services/
+  ingestion/   # 自己的 pyproject、src、tests、migrations、Dockerfile
+  processing/
+  catalog/
+  workspace/
+  research/
+  tracking/
+contracts/     # OpenAPI、事件 schema、兼容性样例；不是共享 ORM
+web/           # TypeScript/React 工作台
+platform/      # k8s base/overlays、开发辅助、可观测性
+quality/       # 数据规则规范、批准样本清单、评测
+experiments/   # 故障/负载计划及后续真实报告
 ```
 
-领域规则不导入 FastAPI、模型 SDK 或 LangGraph。先给真正需要替换或测试的边界定义接口，不为每个函数制造抽象层。LangGraph 是编排实现，不是整个业务域。
+当前不创建代码目录。每服务独立依赖锁/镜像；公共工具版本化，避免一次共享改动强制六服务一起上线。契约先向后兼容扩展，再迁移消费者，最后移除旧字段。
 
-## 5. 数据与状态的唯一责任
+## 12. 技术取舍
 
-PostgreSQL 是业务状态和已接受任务的事实来源；Redis 缓存可以丢失重建。原文存储保存字节，数据库保存来源和关联，两者不存在假定的跨系统原子事务。
+Python/FastAPI 为业务主栈，LangGraph 是 research 候选编排器；PostgreSQL 与 pgvector 位于所属服务；Redis 为明确要求。模型供应商、版本、云与具体网关/认证产品尚未冻结，不自动创建付费服务。
 
-原件先写不可变内容地址，再提交元数据；写库失败可能留下孤立对象，后续按保留策略清理。数据库引用对象之前必须确认对象存在。不能把对象存储成功误报为业务入库成功。
+暂不引入服务网格、Kafka、多云、独立向量集群或万能调度中心。原因是暂无具体需求，不是否认项目规模。新增技术需回答解决哪个已测瓶颈、替代什么、怎样验收。
 
-图 checkpoint 管当前分析进度；企业档案、匹配报告和收藏仍由业务模块管理。图状态与业务事务可能不一致，因此发布步骤使用明确幂等键与任务结果记录，恢复时核查，不能把 checkpoint 当业务已提交的证明。
+## 13. 架构审核必须回答
 
-## 6. 两条执行链
+每张表谁写？消息丢失如何补回？更新能否单服务发布？同一事件的不同业务订阅者会否互相抢消息？目录回放会否重复提醒？私有报告读取如何撤权？模型限流时 HPA 扩容是否反而增加重试？
 
-**同步链**：领取同步任务 → 请求一页来源 → 保存原件 → 解析或隔离 → 幂等写入公告与版本 → 记录变化事件 → 推进页面/窗口进度。暂不调用模型生成每条公告的长报告。
-
-**分析链**：API 验证身份与输入 → 事务中建立任务 → 返回任务 ID → Worker 领取 → 固定输入版本 → 查询/检索/计算 → 有限 Agent 补证 → 校验 → 事务中发布报告和必要内部事件。
-
-重试需要新的 attempt，但保持同一业务任务身份。用户刷新页面不应重新启动同一笔分析。流式连接只是观察任务，不是任务的所有者；浏览器断开后任务默认继续，显式取消通过持久状态请求。
-
-## 7. 接口草案（待实现前冻结契约）
-
-| 用例 | 建议接口 | 核心约束 |
-| --- | --- | --- |
-| 查询候选 | GET /opportunities | 游标、过滤条件、范围与新鲜度 |
-| 查询证据 | GET /opportunities/{id}/evidence | 服务端权限、标段/版本约束 |
-| 启动分析 | POST /analyses | Idempotency-Key；输入版本；202 + task_id |
-| 查任务 | GET /tasks/{id} | 跨空间访问不可泄露任务内容 |
-| 观察进度 | GET /tasks/{id}/events | SSE 可恢复事件 ID；轮询可替代 |
-| 取消 | POST /tasks/{id}/cancel | 幂等；返回实际持久状态 |
-| 确认能力 | POST /profiles/{id}/revisions | 乐观并发 expected_version，冲突不覆盖 |
-| 跟踪设置 | PUT /watches/{target_id} | 身份来自服务端；重复操作同一结果 |
-| 应用内提醒 | GET /notifications | 权限、去重、已读状态 |
-
-这是内部 HTTP 设计，不是已实现接口。错误需区分输入、无权限、缺资料、外部暂不可用、预算耗尽和系统失败；日志用 request_id/task_id 串联，不只打印“出错”。
-
-## 8. 技术选择与后置条件
-
-| 技术 | 建议用途 | 何时进入 |
-| --- | --- | --- |
-| Python + FastAPI | API 和业务应用 | 开发获批后 |
-| PostgreSQL | 结构化数据、任务、证据关联 | 首条真实数据链 |
-| SQLAlchemy / Alembic | 候选数据访问与迁移方案 | 技术验证确认兼容后；非冻结选择 |
-| LangGraph | 有限图编排和持久状态 | 确定性分析与工具契约先成立 |
-| pgvector | 候选语义检索索引 | 有基线与检索评测后 |
-| TypeScript + React | 列表、详情、档案、跟踪工作台 | 首个业务展示；不再加第二后端 |
-| Redis | 有版本边界的缓存；可选任务唤醒/传输 | 明确收益与故障语义后 |
-| Docker + CI | 可重复环境、测试和构建 | 可运行业务之后逐步引入 |
-| Kubernetes | API/Worker 分开运行、发布与故障实验 | Compose 业务和恢复验收后 |
-
-版本、模型、云厂商、对象存储产品、队列库都尚未冻结。开工前检查官方兼容性、支持周期和实际预算，不使用 latest 漂移依赖作为可复现依据。
-
-## 9. 未来代码布局提案
-
-```text
-src/bidradar/
-  api/                  # HTTP/SSE 适配
-  workers/              # 任务入口，不复制领域逻辑
-  application/          # 跨模块用例及事务边界
-  domain/               # 业务规则、值对象、状态转换
-  modules/              # ingestion/catalog/documents/profiles/matching/tracking
-  adapters/             # 数据源、模型、持久化、文件、缓存
-  observability/        # 脱敏日志、指标与追踪
-web/                    # 业务工作台
-migrations/             # 版本化迁移，待物理模型确认后
- tests/                 # unit/contract/integration/evaluation/e2e
-infra/                  # compose/k8s/ci，按里程碑增加
-```
-
-上图仅讨论组织方式，当前不创建这些目录；后续可调整分层命名。不要把计划中的完整目录一次性生成为空壳。
-
-## 10. 架构审核焦点
-
-是否有两套任务状态互相竞争？图恢复会不会重复业务写入？新公告是否触发相关而非所有分析？用户资料变化如何使旧报告陈旧？检索结果和缓存如何限制工作空间与版本？离线重放如何与真实模型实验区分？
-
-能用一个真实样本逐项解释后，再进入下一阶段。详见 [领域模型](05-domain-model.md)、[可靠性](07-reliability-security-operations.md) 与 [决策登记](11-decision-register.md)。
+这些问题形成 [事件契约](14-service-event-contracts.md)、[可靠性](07-reliability-security-operations.md) 和 [容量计划](15-kubernetes-capacity-plan.md) 的阻断验收。
