@@ -61,12 +61,17 @@ def check(root: Path) -> list[str]:
         fence_len = 0
         for line in text.splitlines():
             match = FENCE.match(line)
+            if (
+                match is not None
+                and fence_char is None
+                and match.group(1)[0] == "`"
+                and "`" in line[match.end():]
+            ):
+                # Not a fence: continue through ordinary same-line link checking.
+                match = None
             if match:
                 token = match.group(1)
                 if fence_char is None:
-                    # Backtick fence info strings cannot themselves contain backticks.
-                    if token[0] == "`" and "`" in line[match.end():]:
-                        continue
                     fence_char, fence_len = token[0], len(token)
                 elif (
                     token[0] == fence_char

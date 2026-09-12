@@ -104,6 +104,18 @@ class ProjectMemoryTests(unittest.TestCase):
         self.write("README.md", "```lang`invalid\n")
         self.assertEqual(check(self.root), [])
 
+    def test_invalid_backtick_fence_checks_same_line_link(self):
+        self.write("README.md", "```lang`invalid [missing](does-not-exist.md)\n")
+        self.assertTrue(any("broken local file link" in e for e in check(self.root)))
+
+    def test_invalid_backtick_fence_allows_valid_same_line_link(self):
+        self.write("README.md", "```lang`invalid [state](PROJECT_STATE.md)\n")
+        self.assertEqual(check(self.root), [])
+
+    def test_invalid_backtick_fence_checks_same_line_escape(self):
+        self.write("README.md", "```lang`invalid [outside](../outside.md)\n")
+        self.assertTrue(any("escapes repository" in e for e in check(self.root)))
+
     def test_tilde_info_may_contain_backtick(self):
         self.write("README.md", "~~~lang`valid\n[code](missing.md)\n~~~\n")
         self.assertEqual(check(self.root), [])
