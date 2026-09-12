@@ -1,0 +1,6 @@
+interface:
+  display_name: "BidRadar 接棒与实践学习"
+  short_description: "核对真实进度、补中文关键注释、学习导图和证据化记忆"
+  default_prompt: "使用 $bidradar-handoff 接棒当前任务，按实际证据更新状态并给出关键代码阅读入口。"
+policy:
+  allow_implicit_invocation: true
