@@ -18,11 +18,19 @@
 
 不是只写摘要或给中标概率。技术相关不等于全部要求满足；没填资质不等于没有资质；没写驻场不等于允许远程。资料不足、取消、失败、预算暂停和旧报告陈旧都要能解释，不自动投标、报价或联系采购方。
 
+## 首批业务、企业档案与数据源
+
+已确认首批中国公开项目、中文优先、不限城市，产品给软件公司/AI服务团队使用；第一阶段做到“确认档案→真实项目→实际材料→引用与未知项分析→同项目追问→人工决定”。[23](docs/23-first-market-rag.md)区分RAG、目录检索与业务后端。
+
+企业档案按八类组织，首用先问主体、想接什么、能做什么、交付限制，再按项目补案例/资质/排期/商务信息。[24](docs/24-company-profile-minimum.md)说明事实、证明、偏好和硬限制如何分开。
+
+[25](docs/25-china-source-validation.md)登记中国政府采购网的首源验证方向、采购方/地方补证和三组真实网页样本；已复核正文不等于已接通采集或获得完整文件。江苏原公告与更正作版本走查，河南师大/宿迁原截止已过，仅作历史样本。完整来源许可、附件、API和稳定性仍待验证。
+
 ## 已确认方向与待验证方案
 
 | 已确认 | 仍待验证/审核 |
 | --- | --- |
-| 少量有用来源起步，项目优先，全球按需扩展 | 首个准入来源；1 个主源加按需第二源是提案 |
+| 国内软件开发/系统/AI采购外包机会，软件公司客户；少源和项目优先 | 中国政府采购网先验证，官方/地方平台按需补证；正式来源准入仍待完成 |
 | 微服务，Redis/K8s 从首条业务链纳入 | ingestion / processing / catalog / workspace / research / tracking 六服务边界 |
 | 真实网页/文件清洗、可追溯证据与故障验证 | 真实样本、评测效果、资源容量、具体框架与模型 |
 | 阿里云方向，总月预算约 100–200 元 | 机器、地域、网络、续费、备份与模型费用；预算不是购买授权 |
@@ -46,6 +54,8 @@ CMS 中文优先新增为明确要求：菜单、表单、验证提示、中文�
 任务在独立分支/工作树执行，授权内跨模块修改由 Codex 完成并记录。交付区分契约、模拟、真实联调；最终版本通过必要检查与独立审查后，经人工放行通过 PR 进入 main。发布另有授权、验证与恢复措施。
 
 ```bash
+python3 scripts/refresh_project_memory.py --write
+python3 scripts/refresh_project_memory.py --check
 python3 scripts/check_project_memory.py
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
@@ -79,5 +89,9 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 | [20 研发规范](docs/20-development-standard.md) | 最新执行分工、独立审查、验证和恢复 |
 | [21 上下文管理](docs/21-context-management.md) | AGENTS、短状态、按需知识与 Skill |
 | [22 中文 CMS 验收](docs/22-cms-chinese-acceptance.md) | 中文优先、选型证据与下一小流程 |
+| [23 首批市场与RAG](docs/23-first-market-rag.md) | 中国软件公司客户、首闭环和检索/生成分工 |
+| [24 企业档案](docs/24-company-profile-minimum.md) | 八类信息、四组首用问题和逐项补证 |
+| [25 国内来源](docs/25-china-source-validation.md) | 来源验证顺序、官方样本、材料限制和下一走查 |
+| [学习索引](docs/learning/INDEX.md) | 按任务恢复有用记录，不等于用户已经掌握 |
 
 main、任务分支与 PR 的实际 SHA 以 GitHub 为准。文档合并不等于业务开发、采购或上线获批；当前没有真实用户规模、业务测试成绩或生产 SLA。
