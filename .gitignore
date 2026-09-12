@@ -1,0 +1,3 @@
+# Python validation must not leave tracked bytecode artifacts.
+__pycache__/
+*.py[cod]
