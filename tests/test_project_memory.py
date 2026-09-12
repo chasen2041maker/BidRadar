@@ -59,6 +59,22 @@ class ProjectMemoryTests(unittest.TestCase):
         self.write("README.md", "```text\nunclosed\n")
         self.assertTrue(any("unclosed" in e for e in check(self.root)))
 
+    def test_info_string_is_not_a_closing_fence(self):
+        self.write("README.md", "```text\n```python\n")
+        self.assertTrue(any("unclosed" in e for e in check(self.root)))
+
+    def test_links_after_false_closer_remain_in_code(self):
+        self.write("README.md", "```text\n```python\n[example](missing.md)\n```\n")
+        self.assertEqual(check(self.root), [])
+
+    def test_tilde_info_string_is_not_a_closing_fence(self):
+        self.write("README.md", "~~~text\n~~~python\n")
+        self.assertTrue(any("unclosed" in e for e in check(self.root)))
+
+    def test_closing_fence_may_have_trailing_space_or_tab(self):
+        self.write("README.md", "```text\n[example](missing.md)\n``` \t\n")
+        self.assertEqual(check(self.root), [])
+
     def test_claude_must_import_rules(self):
         self.write("CLAUDE.md", "# duplicated policies\n")
         self.assertTrue(any("must import" in e for e in check(self.root)))

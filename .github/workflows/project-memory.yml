@@ -28,6 +28,11 @@ jobs:
         run: |
           python3 scripts/check_project_memory.py
           python3 -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Ensure validation keeps checkout clean
+        run: |
+          STATUS="$(git status --porcelain --untracked-files=all)"
+          printf '%s\n' "$STATUS"
+          test -z "$STATUS"
       - name: Check committed whitespace
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}

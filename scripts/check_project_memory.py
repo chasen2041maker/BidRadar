@@ -64,7 +64,12 @@ def check(root: Path) -> list[str]:
                 token = match.group(1)
                 if fence_char is None:
                     fence_char, fence_len = token[0], len(token)
-                elif token[0] == fence_char and len(token) >= fence_len:
+                elif (
+                    token[0] == fence_char
+                    and len(token) >= fence_len
+                    and not line[match.end():].strip(" \t")
+                ):
+                    # A closing fence cannot have an info string or other text.
                     fence_char = None
                 continue
             if fence_char is not None:
