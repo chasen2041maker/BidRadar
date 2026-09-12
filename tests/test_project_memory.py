@@ -75,6 +75,51 @@ class ProjectMemoryTests(unittest.TestCase):
         self.write("README.md", "```text\n[example](missing.md)\n``` \t\n")
         self.assertEqual(check(self.root), [])
 
+    def test_deeply_indented_fence_does_not_close(self):
+        for indent in ("    ", "        ", "\t", " \t"):
+            with self.subTest(indent=repr(indent)):
+                self.write("README.md", "```text\n" + indent + "```\n")
+                self.assertTrue(any("unclosed" in e for e in check(self.root)))
+
+    def test_deeply_indented_marker_does_not_open(self):
+        for indent in ("    ", "        ", "\t", " \t"):
+            with self.subTest(indent=repr(indent)):
+                self.write("README.md", "# Title\n\n" + indent + "```text\n")
+                self.assertEqual(check(self.root), [])
+
+    def test_zero_to_three_spaces_allow_fences(self):
+        for opening in range(4):
+            for closing in range(4):
+                with self.subTest(opening=opening, closing=closing):
+                    self.write("README.md", " " * opening + "```text\n[code](missing.md)\n" + " " * closing + "```\n")
+                    self.assertEqual(check(self.root), [])
+
+    def test_deep_false_closer_keeps_links_inside_code(self):
+        for indent in ("    ", "\t"):
+            with self.subTest(indent=repr(indent)):
+                self.write("README.md", "```text\n" + indent + "```\n[code](missing.md)\n```\n")
+                self.assertEqual(check(self.root), [])
+
+    def test_backtick_info_cannot_contain_backtick(self):
+        self.write("README.md", "```lang`invalid\n")
+        self.assertEqual(check(self.root), [])
+
+    def test_tilde_info_may_contain_backtick(self):
+        self.write("README.md", "~~~lang`valid\n[code](missing.md)\n~~~\n")
+        self.assertEqual(check(self.root), [])
+
+    def test_other_fence_type_does_not_close(self):
+        self.write("README.md", "```text\n~~~\n")
+        self.assertTrue(any("unclosed" in e for e in check(self.root)))
+
+    def test_shorter_fence_does_not_close(self):
+        self.write("README.md", "````text\n```\n")
+        self.assertTrue(any("unclosed" in e for e in check(self.root)))
+
+    def test_longer_fence_can_close(self):
+        self.write("README.md", "```text\n[code](missing.md)\n````\n")
+        self.assertEqual(check(self.root), [])
+
     def test_claude_must_import_rules(self):
         self.write("CLAUDE.md", "# duplicated policies\n")
         self.assertTrue(any("must import" in e for e in check(self.root)))

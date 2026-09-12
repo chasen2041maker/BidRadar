@@ -22,7 +22,8 @@ HEADINGS = {
     "CURRENT_TASK.md": ("## 目标", "## 范围", "## 验收", "## 未执行与阻塞", "## 下一步"),
 }
 LINK = re.compile(r"!?\[[^\]\n]*\]\(([^\s)]+)(?:\s+\"[^\"]*\")?\)")
-FENCE = re.compile(r"^\s*(`{3,}|~{3,})")
+# Top-level fenced blocks allow up to three literal leading spaces.
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 
 def check(root: Path) -> list[str]:
@@ -63,6 +64,9 @@ def check(root: Path) -> list[str]:
             if match:
                 token = match.group(1)
                 if fence_char is None:
+                    # Backtick fence info strings cannot themselves contain backticks.
+                    if token[0] == "`" and "`" in line[match.end():]:
+                        continue
                     fence_char, fence_len = token[0], len(token)
                 elif (
                     token[0] == fence_char
