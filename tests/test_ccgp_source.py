@@ -84,6 +84,22 @@ class CCGPSourceTests(unittest.TestCase):
         for message in ("访问受限", "访问过于频繁", "请输入验证码"):
             self.assertEqual(parse_search_page(f"<h1>{message}</h1>").status, ParseStatus.BLOCKED)
 
+    def test_challenge_shell_is_not_empty(self):
+        result = parse_search_page(page("", "共0条<h1>请输入验证码</h1>"))
+        self.assertEqual(result.status, ParseStatus.BLOCKED)
+        self.assertEqual(result.items, ())
+        self.assertEqual(result.issues, ("access_challenge",))
+
+    def test_challenge_shell_with_residual_rows_is_not_ok(self):
+        result = parse_search_page(page(row(), "<h1>访问过于频繁</h1>"))
+        self.assertEqual(result.status, ParseStatus.BLOCKED)
+        self.assertEqual(result.items, ())  # 不能把限制页残留的结果当作一次成功采集。
+
+    def test_captcha_procurement_title_is_not_a_challenge(self):
+        result = parse_search_page(page(row(title="虚构验证码系统采购")))
+        self.assertEqual(result.status, ParseStatus.OK)
+        self.assertEqual(result.items[0].title, "虚构验证码系统采购")
+
     def test_invalid_row_preserves_partial_status(self):
         result = parse_search_page(page(row() + "<li>损坏条目</li>"))
         self.assertEqual(result.status, ParseStatus.PARTIAL)

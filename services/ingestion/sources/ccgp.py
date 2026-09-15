@@ -98,7 +98,7 @@ class _Node:
             yield node
             pending.extend(child for child in reversed(node.children) if isinstance(child, _Node))
 
-    def text(self) -> str:
+    def text(self, *, skip_listing_rows: bool = False) -> str:
         pending: list[_Node | str] = [self]
         parts: list[str] = []
         while pending:
@@ -106,7 +106,13 @@ class _Node:
             if isinstance(item, str):
                 parts.append(item)
             elif item.tag not in ("script", "style"):
-                pending.extend(reversed(item.children))
+                # 页面级访问提示与招标标题分开；验证码系统采购不是验证码挑战页。
+                if (skip_listing_rows and item.tag == "ul"
+                        and "vT-srch-result-list-bid" in (item.attrs.get("class") or "").split()):
+                    pending.extend(child for child in reversed(item.children)
+                                   if not isinstance(child, _Node) or child.tag != "li")
+                else:
+                    pending.extend(reversed(item.children))
         return re.sub(r"\s+", " ", "".join(parts)).strip()
 
 
@@ -177,10 +183,13 @@ def parse_search_page(html: str) -> ListingResult:
         return ListingResult(ParseStatus.PARSE_ERROR, (), ("malformed_html",), fingerprint)
     containers = [node for node in document.root.walk()
                   if node.tag == "ul" and "vT-srch-result-list-bid" in (node.attrs.get("class") or "").split()]
+    # 验证码/限流页可能仍带空列表或旧行；必须先检查页面级挑战，再接受空结果或条目。
+    # 排除约定列表中的li正文，避免正常采购标题含“验证码”时误报访问失败。
+    challenge_text = document.root.text(skip_listing_rows=True)
+    if any(word in challenge_text for word in ("访问受限", "访问过于频繁", "验证码", "访问频繁")):
+        return ListingResult(ParseStatus.BLOCKED, (), ("access_challenge",), fingerprint)
     if len(containers) != 1:
-        blocked = any(word in document.root.text() for word in ("访问受限", "访问过于频繁", "验证码", "访问频繁"))
-        return ListingResult(ParseStatus.BLOCKED if blocked else ParseStatus.PARSE_ERROR, (),
-                             ("access_challenge" if blocked else "unexpected_listing_template",), fingerprint)
+        return ListingResult(ParseStatus.PARSE_ERROR, (), ("unexpected_listing_template",), fingerprint)
     rows = [node for node in containers[0].children if isinstance(node, _Node) and node.tag == "li"]
     if not rows:
         explicit_zero = re.search(r"共\s*0\s*条", document.root.text()) is not None

@@ -16,13 +16,13 @@
 
 services/ingestion/sources/ccgp.py：build_search_params接受关键词/页码/可选发布日期区间，输出字典；parse_search_page接受已解码HTML，返回候选/问题/指纹和ok/empty/partial/blocked/parse_error。函数不联网，不做并发抓取、后台任务或AI分析；链接检查不代替未来DNS/重定向安全。
 
-tests/test_ccgp_source.py：22项手写虚构HTML测试覆盖正常字段、日期/页码错误、未知值、模板变化、明确零条、访问限制、部分坏行、异常HTML、URL范围和无网络副作用。元数据原文不冒充完整原件归档，发布日期不当截止。
+tests/test_ccgp_source.py：25项手写虚构HTML测试覆盖正常字段、日期/页码错误、未知值、模板变化、明确零条、访问限制、部分坏行、异常HTML、URL范围和无网络副作用。元数据原文不冒充完整原件归档，发布日期不当截止。
 
 两阶段系统验收另列在28：空选择不建任务、重复提交幂等、固定ID/版本、只读/跨公司/撤权拒绝、预算与有效复核委托、刷新不调模型。它们尚未实现，不能用解析单测冒充通过。
 
 ## 未执行与阻塞
 
-局部目录/mnt/data/bidradar-source-task，Python3.13.5，2026-09-15T06:02:11Z执行 `python3 -m unittest discover -s tests -p 'test_ccgp_source.py' -v`，22项通过、退出0。
+局部目录/mnt/data/bidradar-source-task，Python3.13.5，2026-09-15T06:18:52Z执行 `python3 -m unittest discover -s tests -p 'test_ccgp_source.py' -v`，25项通过、退出0。
 
 本地远端DNS失败，未取得完整clone；源码和旧记忆输入按Git blob字节核对，运行原索引脚本生成/检查派生INDEX。完整仓库回归、提交后--base/差异检查由实际PR CI提供，最终SHA/审查结果留PR，不预填通过。
 
