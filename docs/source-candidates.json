@@ -1,0 +1,323 @@
+{
+  "inventory_version": 1,
+  "recorded_at": "2026-09-15",
+  "purpose": "documentation_only_not_runtime_config",
+  "live_sources_verified": 0,
+  "code_imported": [
+    "cn_ccgp"
+  ],
+  "entries": [
+    {
+      "source_id": "cn_ccgp",
+      "name": "中国政府采购网",
+      "entry": "http://search.ccgp.gov.cn/bxsearch",
+      "observed_in": "bidding-ai-analyzer/strategies/ccgp.py",
+      "network_enabled": false,
+      "status": "offline_adapter_only",
+      "note": "MIT参数与列表解析已改编；中央/地方/更正是同一来源的栏目，真实访问和准入未通过"
+    },
+    {
+      "source_id": "cn_buyer_official",
+      "name": "项目采购方官网",
+      "entry": "按获准公告中的采购方原始链接",
+      "observed_in": "BidRadar docs/25",
+      "network_enabled": false,
+      "status": "project_scoped",
+      "note": "不按公司名称猜域名；只按具体材料缺口加入"
+    },
+    {
+      "source_id": "cn_ggzy",
+      "name": "全国公共资源交易平台",
+      "entry": "https://www.ggzy.gov.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "candidate_only",
+      "note": "不能根据未验证的/rss.xml配置声称存在RSS"
+    },
+    {
+      "source_id": "cn_cebpubservice",
+      "name": "中国招标投标公共服务平台",
+      "entry": "https://bulletin.cebpubservice.com/",
+      "observed_in": "BidMaster-Pro/news_crawler_skill.py",
+      "network_enabled": false,
+      "status": "candidate_only",
+      "note": "入口/许可/真实响应待验证"
+    },
+    {
+      "source_id": "cn_chinabidding",
+      "name": "中国采购与招标网",
+      "entry": "https://www.chinabidding.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "commercial_candidate",
+      "note": "会员、收费、转载、登录与API许可待核验；不复制数据集"
+    },
+    {
+      "source_id": "cn_bidcenter",
+      "name": "采招网",
+      "entry": "https://www.bidcenter.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "commercial_candidate",
+      "note": "会员、收费、转载、登录与API许可待核验；不复制数据集"
+    },
+    {
+      "source_id": "cn_qianlima",
+      "name": "千里马招标网",
+      "entry": "https://www.qianlima.com/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "commercial_candidate",
+      "note": "会员、收费、转载、登录与API许可待核验；不复制数据集"
+    },
+    {
+      "source_id": "cn_bidlink",
+      "name": "必联网线索",
+      "entry": "https://www.bidlink.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "commercial_candidate",
+      "note": "会员、收费、转载、登录与API许可待核验；不复制数据集"
+    },
+    {
+      "source_id": "cn_ebidding",
+      "name": "比比招标线索",
+      "entry": "https://www.ebidding.com/notice",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "commercial_candidate",
+      "note": "会员、收费、转载、登录与API许可待核验；不复制数据集"
+    },
+    {
+      "source_id": "cn_zhaobiao",
+      "name": "招标网线索",
+      "entry": "https://www.zhaobiao.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "commercial_candidate",
+      "note": "会员、收费、转载、登录与API许可待核验；不复制数据集"
+    },
+    {
+      "source_id": "cn_dlzb",
+      "name": "中国电力招标网",
+      "entry": "http://www.dlzb.com/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "commercial_candidate",
+      "note": "会员、收费、转载、登录与API许可待核验；不复制数据集"
+    },
+    {
+      "source_id": "cn_chinabiddingcc",
+      "name": "中国采购招标网线索",
+      "entry": "http://www.chinabidding.cc/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "commercial_candidate",
+      "note": "会员、收费、转载、登录与API许可待核验；不复制数据集"
+    },
+    {
+      "source_id": "cn_mobile",
+      "name": "中国移动采购线索",
+      "entry": "https://b2b.10086.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_unicom",
+      "name": "中国联通采购线索",
+      "entry": "https://www.chinaunicom.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_telecom",
+      "name": "中国电信采购平台",
+      "entry": "https://caigou.chinatelecom.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_sgcc",
+      "name": "国家电网电子商务平台",
+      "entry": "https://ecp.sgcc.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_csg",
+      "name": "南方电网采购线索",
+      "entry": "https://ecp.csg.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_espic",
+      "name": "电能e招采",
+      "entry": "https://ebid.espic.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_chng",
+      "name": "华能采购线索",
+      "entry": "http://ec.chng.com.cn/ecmall/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_powerchina",
+      "name": "中国电建采购线索",
+      "entry": "https://bid.powerchina.cn/bidweb/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_ceec",
+      "name": "中国能建采购线索",
+      "entry": "https://ec.ceec.net.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_cdt",
+      "name": "中国大唐采购线索",
+      "entry": "http://www.cdt-ec.com/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_ceic",
+      "name": "国家能源集团采购线索",
+      "entry": "https://cooperation.ceic.com/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_ctg",
+      "name": "中国三峡采购线索",
+      "entry": "https://eps.ctg.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_crc",
+      "name": "华润守正电子招标",
+      "entry": "https://szecp.crc.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_cgn",
+      "name": "中广核采购线索",
+      "entry": "https://ecp.cgnpc.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_cccc",
+      "name": "中交供应链线索",
+      "entry": "http://ec.ccccltd.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_minmetals",
+      "name": "五矿供应链线索",
+      "entry": "https://ec.minmetals.com.cn/",
+      "observed_in": "BidMonitor-AI / BidMaster-Pro",
+      "network_enabled": false,
+      "status": "enterprise_candidate",
+      "note": "仅为上游首页/配置线索；采购入口、软件相关性、访问与数据权利未验证"
+    },
+    {
+      "source_id": "cn_local_procurement",
+      "name": "地方采购/公共资源平台",
+      "entry": "江苏、浙江、北京、上海、广东、山东等按项目关联链接进入",
+      "observed_in": "BidMaster-Pro/sources.yaml / BidRadar docs/25",
+      "network_enabled": false,
+      "status": "project_scoped",
+      "note": "不照搬未核实RSS或猜域名；真实附件需逐项目准入"
+    },
+    {
+      "source_id": "uk_contracts_finder",
+      "name": "UK Contracts Finder",
+      "entry": "https://www.contractsfinder.service.gov.uk/Published/Notices/OCDS/Search",
+      "observed_in": "tender-mcp/searchUKTenders",
+      "network_enabled": false,
+      "status": "overseas_deferred",
+      "note": "上游GET函数可见；本轮官方文档访问失败，客户端未验证"
+    },
+    {
+      "source_id": "eu_ted",
+      "name": "EU TED",
+      "entry": "https://api.ted.europa.eu/v3/notices/search",
+      "observed_in": "tender-mcp/searchEUTenders + 官方TED文档",
+      "network_enabled": false,
+      "status": "official_docs_checked_not_integrated",
+      "note": "已发布公告Search API匿名访问依据为官方文档；未联调，无海外扩展授权"
+    },
+    {
+      "source_id": "us_sam",
+      "name": "US SAM.gov",
+      "entry": "https://api.sam.gov/opportunities/v2/search",
+      "observed_in": "tender-mcp/searchSAMGov + 官方GSA文档",
+      "network_enabled": false,
+      "status": "official_docs_checked_not_integrated",
+      "note": "需用户API key；官方title参数、description链接和latest-only边界须遵守；不搬上游/prod路径/q参数假设"
+    },
+    {
+      "source_id": "reference_ai_tender_snapshots",
+      "name": "ai-tender-radar公开快照",
+      "entry": "https://github.com/HeyClioo/ai-tender-radar/tree/main/public/data/snapshots",
+      "observed_in": "ai-tender-radar/scripts/public-data.mjs",
+      "network_enabled": false,
+      "status": "not_adopted",
+      "note": "公开字段未保留原公告URL，数据权利非网站MIT；不是可信原始证据源"
+    },
+    {
+      "source_id": "uploaded_tender_documents",
+      "name": "用户获准上传招标材料",
+      "entry": "用户按资源权限上传的原件",
+      "observed_in": "bid-intelligence",
+      "network_enabled": false,
+      "status": "future_authorized_input",
+      "note": "不是公开商机采集源；不转存上游真实/示例材料，不借模板绕过公司权限"
+    }
+  ],
+  "excluded": [
+    "未核实的RSS派生地址",
+    "一般AI/财经/科技新闻与公司博客",
+    "GitHub仓库搜索作为招标数据源",
+    "未获许可的快照/完整公告/企业私有材料"
+  ]
+}
