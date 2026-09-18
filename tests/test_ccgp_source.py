@@ -3,6 +3,7 @@ import unittest
 from hashlib import sha256
 from unittest.mock import patch
 
+from services.ingestion.sources import ccgp
 from services.ingestion.sources.ccgp import (
     MAX_HTML_BYTES, ParseStatus, SEARCH_URL, build_search_params, parse_search_page,
 )
@@ -149,6 +150,56 @@ class CCGPSourceTests(unittest.TestCase):
             build_search_params("软件")
             result = parse_search_page(page(row() + "<script>throw new Error('not executed')</script>"))
         self.assertEqual(result.status, ParseStatus.OK)
+
+
+    def test_depth_limit_stops_before_unmatched_end_tags(self):
+        # 不依赖机器速度断言：应在第129层退出，根本不处理后续不匹配结束标签。
+        html = "<div>" * 16_000 + "</span>" * 16_000
+        with patch.object(ccgp._Document, "handle_endtag") as end_tag:
+            result = parse_search_page(html)
+        end_tag.assert_not_called()
+        self.assertEqual(result.status, ParseStatus.PARSE_ERROR)
+        self.assertEqual(result.issues, ("html_depth_limit",))
+        self.assertEqual(result.items, ())
+        self.assertEqual(result.input_sha256, sha256(html.encode()).hexdigest())
+
+    def test_depth_boundary_counts_elements_not_internal_root(self):
+        # html/body/ul恰为三层；第四层普通、空元素、自闭合元素均不得绕过限制。
+        with patch.object(ccgp, "MAX_HTML_DEPTH", 3):
+            self.assertEqual(parse_search_page(page("", "共0条")).status, ParseStatus.EMPTY)
+            for child in ("<div></div>", "<br>", "<img/>"):
+                with self.subTest(child=child):
+                    result = parse_search_page(page(child, "共0条"))
+                    self.assertEqual(result.issues, ("html_depth_limit",))
+
+    def test_node_limit_counts_all_element_forms(self):
+        with patch.object(ccgp, "MAX_HTML_NODES", 8):
+            for element in ("<i></i>", "<br>", "<hr/>"):
+                with self.subTest(element=element):
+                    result = parse_search_page(element * 9)
+                    self.assertEqual(result.status, ParseStatus.PARSE_ERROR)
+                    self.assertEqual(result.issues, ("html_node_limit",))
+
+    def test_text_fragments_count_toward_node_budget(self):
+        with patch.object(ccgp, "MAX_HTML_NODES", 6):
+            result = parse_search_page("a<br>b<br>c<br>d")
+        self.assertEqual(result.issues, ("html_node_limit",))
+
+    def test_node_budget_boundary_is_inclusive(self):
+        # 三个元素加一段文本等于四个节点，内部document不计数。
+        html = page("", "共0条")
+        with patch.object(ccgp, "MAX_HTML_NODES", 4):
+            self.assertEqual(parse_search_page(html).status, ParseStatus.EMPTY)
+        with patch.object(ccgp, "MAX_HTML_NODES", 3):
+            self.assertEqual(parse_search_page(html).issues, ("html_node_limit",))
+
+    def test_resource_limit_discards_preceding_valid_rows(self):
+        # 不能因开头有正常条目就交付资源超限页面的残缺结果。
+        with patch.object(ccgp, "MAX_HTML_NODES", 32):
+            result = parse_search_page(page(row()) + "<br>" * 33)
+        self.assertEqual(result.status, ParseStatus.PARSE_ERROR)
+        self.assertEqual(result.issues, ("html_node_limit",))
+        self.assertEqual(result.items, ())
 
 
 if __name__ == "__main__":

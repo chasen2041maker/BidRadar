@@ -18,6 +18,9 @@ from urllib.parse import urljoin, urlsplit
 SOURCE_ID = "cn_ccgp"
 SEARCH_URL = "http://search.ccgp.gov.cn/bxsearch"  # 保留上游入口，不声称HTTPS已验证。
 MAX_HTML_BYTES = 2 * 1024 * 1024  # 本片的防护上限，不是生产容量测量结果。
+# 限制树深与节点数，避免小体积畸形HTML触发长栈扫描或大量对象分配。
+MAX_HTML_DEPTH = 128
+MAX_HTML_NODES = 10_000  # 元素及文本片段计数，不含内部document根节点。
 _VOID_TAGS = frozenset("area base br col embed hr img input link meta param source track wbr".split())
 
 
@@ -116,6 +119,10 @@ class _Node:
         return re.sub(r"\s+", " ", "".join(parts)).strip()
 
 
+class _HTMLResourceLimit(ValueError):
+    """内部资源边界异常；整页失败，不交付已经解析出的部分条目。"""
+
+
 class _Document(HTMLParser):
     """标准库解析器，仅支持本片约定的列表模板；不加载图片、脚本或外链。"""
 
@@ -123,23 +130,38 @@ class _Document(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.root = _Node("document")
         self.stack = [self.root]
+        self.node_count = 0
 
-    def handle_starttag(self, tag, attrs):
+    def _reserve_node(self):
+        if self.node_count >= MAX_HTML_NODES:
+            raise _HTMLResourceLimit("html_node_limit")
+        self.node_count += 1
+
+    def _append_element(self, tag, attrs, *, push):
+        # stack包含内部根；其长度恰为待插入元素的深度。先检查，再分配节点。
+        if len(self.stack) > MAX_HTML_DEPTH:
+            raise _HTMLResourceLimit("html_depth_limit")
+        self._reserve_node()
         node = _Node(tag, dict(attrs))
         self.stack[-1].children.append(node)
-        if tag not in _VOID_TAGS:
+        if push:
             self.stack.append(node)
 
+    def handle_starttag(self, tag, attrs):
+        self._append_element(tag, attrs, push=tag not in _VOID_TAGS)
+
     def handle_startendtag(self, tag, attrs):
-        self.stack[-1].children.append(_Node(tag, dict(attrs)))
+        self._append_element(tag, attrs, push=False)
 
     def handle_endtag(self, tag):
+        # 栈深已受限；不匹配结束标签最多扫描MAX_HTML_DEPTH层。
         for index in range(len(self.stack) - 1, 0, -1):
             if self.stack[index].tag == tag:
                 del self.stack[index:]
                 return
 
     def handle_data(self, data):
+        self._reserve_node()
         self.stack[-1].children.append(data)
 
 
@@ -178,6 +200,8 @@ def parse_search_page(html: str) -> ListingResult:
     try:
         document.feed(html)
         document.close()
+    except _HTMLResourceLimit as exc:
+        return ListingResult(ParseStatus.PARSE_ERROR, (), (str(exc),), fingerprint)
     except (ValueError, AssertionError):
         # 畸形声明或不支持的HTML必须暴露为解析失败，不能当作零结果。
         return ListingResult(ParseStatus.PARSE_ERROR, (), ("malformed_html",), fingerprint)
