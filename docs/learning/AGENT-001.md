@@ -6,6 +6,8 @@
 
 新目标覆盖R1后半段及R2；基线fc68ef51353623c9dd638eb2219dadea99d79042，独立分支codex/r1-r2-agent。模型使用/测试预算由负责人本轮明确，凭据仓库外保存。范围、接口和验收见[33](../33-agent-research-tracking.md)。
 
+基础接口已增加服务身份、档案固定版本/授权代数、所属服务事件流和目录研究包。研究预算账本与可重建业务库分开，预留后才外发，未知费用继续占额。它们是实施中的依赖，不代表 Agent/R2 已验收。
+
 ## 阅读顺序
 
 阶段完成后整理三个AI核心文件入口：研究工具循环、证据/引用核验、变化影响与复核。当前不预填未完成代码位置。
@@ -17,6 +19,8 @@
 ## 验证与未验证
 
 实施中。尚无本轮真实模型质量、费用、R2或最终审查成绩；基线395项仅证明R1-A。使用两家虚构企业及获准公开样本，SQLite不冒充正式PostgreSQL/RLS。
+
+2026-10-01，本工作树 Windows/Python3.13.12/SQLite3.51.1，基于613f4ca工作树差异：`python -m unittest discover -s tests -p test_catalog_http.py -q` 21项、`test_workbench_http.py` 13项、`test_workspace_store.py` 34项、`test_research_budget.py` 5项均退出0。均本地虚构输入，包含真实回环HTTP；未调用模型。最终提交和全量验证另记。
 
 ## 我的参与
 

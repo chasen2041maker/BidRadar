@@ -114,6 +114,36 @@ class WorkbenchHTTPTests(unittest.TestCase):
     def route(self, action, wid=None):
         return f"/api/workspaces/{wid or self.a}/{action}"
 
+    def test_internal_authority_generation_and_owner_events(self):
+        from services.common.owner_clients import WorkspaceAccessClient
+        from services.common.local_http import LocalHTTPError
+        self.web.internal_tokens = {"research": "r" * 40, "tracking": "t" * 40}
+        research = WorkspaceAccessClient(self.origin, "r" * 40)
+        tracking = WorkspaceAccessClient(self.origin, "t" * 40)
+        grant = research.authorize(self.member, self.a, "analyze")
+        self.assertEqual(grant["membership_version"], 1)
+        self.assertEqual(research.context(self.member, self.a, 1)["profile"]["revision"], 1)
+        with self.assertRaises(LocalHTTPError):
+            research.context(self.member, self.b, 1)
+        with self.assertRaises(LocalHTTPError):
+            research.events()
+        before = tracking.events()
+        store = WorkspaceStore(self.workspace)
+        try:
+            store.change_member(self.admin, self.a, self.member, "member", False, 1)
+            with self.assertRaises(LocalHTTPError):
+                research.authorize(self.member, self.a, "analyze")
+            store.change_member(self.admin, self.a, self.member, "member", True, 2)
+        finally:
+            store.close()
+        self.assertEqual(research.authorize(self.member, self.a, "analyze")["membership_version"], 3)
+        events = tracking.events(before["next_after"])
+        self.assertEqual([e["membership_version"] for e in events["items"]], [2, 3])
+        self.assertTrue(all(e["event_type"] == "AccessChanged" for e in events["items"]))
+        # 服务 token 不替代浏览器 Cookie、Origin 或 CSRF。
+        with self.assertRaises(LocalHTTPError):
+            research.request("POST", "/api/logout", {})
+
     def create_selection(self, login, key="selection-one"):
         return self.request(self.route("selections"), login=login, data={"profile_revision": 1,
             "items": [{k: self.item[k] for k in ("notice_id", "observation_id")}], "key": key})

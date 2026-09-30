@@ -8,7 +8,9 @@
 
 采用单一研究主编排器和确定性校验节点。AI技术交付必须能展示真实工具选择轨迹、上下文/输入版本、引用、未知项、费用和对照评测；不靠角色数量、固定脚本或空服务展示Agent。模型原始思维不作为产品输出或审计证据，只保留工具调用和可解释结果。
 
-用户指定DeepSeek V4 Flash，本轮模型测试预算20–30元，执行取20元人民币上限；凭据只在仓库外本机文件。官方模型ID/调用/价格须核查，未确认不得擅自替换模型。预算按所有研究/追问/复核/失败调用累计预留并核对；供应商超时/用量缺失记未知，不能当零。应用限额不是供应商账单硬封顶保证。
+用户指定DeepSeek V4 Flash，本轮模型测试预算20–30元，执行取20元人民币上限；凭据只在仓库外本机文件。2026-10-01核查[官方价格/模型页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)及[升级说明](https://api-docs.deepseek.com/zh-cn/news/news260910/)：请求保留`deepseek-v4-flash`，官方现路由至V4.1 Flash，记录实际响应模型；关闭thinking，峰时无缓存输入2元/百万、缓存命中0.04元/百万、输出8元/百万做保守估算，保留价格版本。预算按所有研究/追问/复核/失败调用累计预留并核对；供应商超时/用量缺失记未知，不能当零。应用限额不是供应商账单硬封顶保证。
+
+本轮所有真实入口共享仓库外`deepseek-r12-20261001.sqlite3`预算账本；业务库重建不能刷新20元授权。公司上限10元、单任务1元均为本轮开发保护值，不是正式套餐。marker发现账本丢失即拒绝新调用。全部消息含恢复、工具结果、追问和历史报告统一做联系方式最小化，保存脱敏版本标识；原件不修改、不进供应商请求。权限代数在受理时冻结，移除再加入不能使旧任务或旧委托复活。
 
 只用两家虚构企业和既有获准公开采购样本的必要片段；真实企业、完整敏感证明、任意URL采集和生产部署不在本轮。现阶段服务各自SQLite/回环HTTP，保持D-TENANCY-01正式PostgreSQL/RLS方案。Redis/K8s和R3部署不冒充本轮验收；获准历史变化回放明确标识。
 
@@ -22,7 +24,7 @@ catalog、workspace、research、tracking各自拥有数据库，仅通过有界
 | --- | --- | --- |
 | workspace | POST authorize `{actor_id,workspace_id,action}`，action=read/analyze/track/admin | 当前成员角色、membership_version、current_profile_revision；无权限拒绝，依赖不可用则关闭动作 |
 | workspace | POST context `{actor_id,workspace_id,profile_revision,selection_id}`；selection_id可null | 指定不可变档案、当前版本、选定选择（若给ID须selected）；不自动换新档案 |
-| workspace | GET events?after=N&limit=M | 持久顺序事件引用：ProfileRevisionConfirmed/AccessChanged；不传私有正文 |
+| workspace | POST events `{schema_version,after,limit}` | 持久顺序事件引用：ProfileConfirmed/AccessChanged；不传私有正文，仅tracking可拉取 |
 | catalog | GET /v1/observations/{notice_id}/{observation_id} | 固定不可变观察，不存在404，不静默返回latest |
 | catalog | GET /v1/bundles/{notice_id}?snapshot=N | 截至接收序号的主观察和有依据的incoming更正/结果，候选/歧义单独保留；不按标题合并 |
 | catalog | GET /v1/changes?after=N&limit=M | 按提交接收序号分页的观察引用、高水位与next_after；seq不是来源业务版本 |
