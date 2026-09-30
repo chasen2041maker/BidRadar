@@ -291,14 +291,18 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
                        and {"title", "tc"}.intersection((node.attrs.get("class") or "").split())), None)
     if title_node is None:
         title_node = next((node for node in nodes if node.tag == "h1"), None)
-    # 已识别标题/正文属于公告数据，“验证码系统采购”不是页面挑战。
-    # 只跳过这个标题节点；残留公告旁的独立挑战提示仍会被拦截。
-    if any(word in document.root.text(skip_notice_body=True, omit=title_node if len(body) == 1 else None)
-           for word in ("验证码", "访问频繁", "访问过于频繁", "访问受限")):
+    # 公告标题允许“验证码系统采购”，但明确访问提示必须优先于残留正文/标题模板。
+    # 否则挑战页复用h2.tc或留下旧正文时，会被标题豁免误当作有效公告。
+    title = title_node.text() if title_node else None
+    title_challenge = bool(title and (any(word in title for word in (
+        "请输入验证码", "请填写验证码", "请完成验证", "请通过验证", "访问频繁", "访问过于频繁", "访问受限"))
+        or title in ("验证码", "人机验证", "安全验证")))
+    if title_challenge or any(word in document.root.text(skip_notice_body=True,
+                                                         omit=title_node if len(body) == 1 else None)
+                              for word in ("验证码", "访问频繁", "访问过于频繁", "访问受限")):
         return NoticePage(ParseStatus.BLOCKED, None, None, (), ("access_challenge",), fingerprint)
     if len(body) != 1 or not body[0].text():
         return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("unexpected_notice_template",), fingerprint)
-    title = title_node.text() if title_node else None
     attachments: list[dict[str, str]] = []
     issues = [] if title else ["missing_notice_title"]
     seen = set()

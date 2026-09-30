@@ -44,6 +44,14 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual(result.status, ParseStatus.BLOCKED)
         self.assertIsNone(result.text)
 
+    def test_explicit_challenge_heading_precedes_residual_body(self):
+        for heading in ('<h1>请输入验证码</h1>', '<h2 class="tc">访问受限</h2>',
+                        '<h2 class="title">访问过于频繁，请稍后再试</h2>', '<h1>安全验证</h1>'):
+            with self.subTest(heading=heading):
+                result = parse_notice_page(heading + '<div class="vF_detail_content">残留正文</div>', URL)
+                self.assertEqual(result.status, ParseStatus.BLOCKED)
+                self.assertIsNone(result.text)
+
     def test_script_not_executed_or_treated_as_text(self):
         result = parse_notice_page(self.page("范围<script>secret()</script>"), URL)
         self.assertNotIn("secret", result.text)
