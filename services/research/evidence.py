@@ -12,7 +12,7 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v5"
+VERSION = "frozen-evidence-v6"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -263,6 +263,9 @@ def _unsupported_completeness(text):
     for clause in re.split(r"[，,。；;！!？?\n]", text):
         for match in claims.finditer(clause):
             before, after = clause[:match.start()].rstrip(), clause[match.end():].lstrip()
+            direct_unread = re.search(r"(?:尚未|还未|未曾|从未|未)$", before)
+            if direct_unread and not re.search(r"(?:否认|并非|不是|不承认|不能说)$", before[:direct_unread.start()]):
+                continue
             if not before_negative.search(before) and not after_negative.search(after):
                 return True
     return False
@@ -297,7 +300,7 @@ def validate_report(report, index, read_ids):
     if not isinstance(report, dict) or set(report) != required:
         return ["report_schema"]
     if (not _string(report["summary"], 1800) or not isinstance(report["findings"], list)
-            or not 1 <= len(report["findings"]) <= 30 or not isinstance(report["questions"], list)
+            or not 0 <= len(report["findings"]) <= 30 or not isinstance(report["questions"], list)
             or len(report["questions"]) > 12 or any(not _string(x, 600) for x in report["questions"])
             or report["answer"] is not None and not _string(report["answer"], 3000)):
         return ["report_schema"]
@@ -328,7 +331,8 @@ def validate_report(report, index, read_ids):
         if any(x not in index.by_id or x not in read_ids for x in ids):
             errors.append(prefix + "citation_scope_or_unread")
             continue
-        if not ids and (finding["category"] != "materials" or finding["status"] != "unknown"):
+        # 模型只提出有来源的采购事项；覆盖缺口由服务器limitations承担，避免混成要求。
+        if not ids:
             errors.append(prefix + "missing_evidence")
         if finding["status"] == "unknown" and not finding["unknown_reason"]:
             errors.append(prefix + "missing_unknown_reason")
@@ -363,7 +367,7 @@ def finalize_report(proposal, index, read_ids, *, limitations=None):
     result = deepcopy(proposal)
     result["scope"] = deepcopy(index.scope)
     result["coverage"] = index.coverage(read_ids)
-    result["limitations"] = ["仅核查已取得的规范化证据片段，未阅读完整招标文件；已归档PDF不等于已抽取全文。",
+    result["limitations"] = ["本次研究输入为规范化证据片段，未阅读完整招标文件；这不表示系统全局未获取或未归档原件。",
                               "企业档案为用户确认声明，未独立验证资质证明。"] + list(limitations or [])
     result["references"] = [deepcopy(index.by_id[x]) for x in sorted(set(read_ids))]
     return result
@@ -377,10 +381,6 @@ def baseline_report(manifest):
                  "reason": "规则基线仅列出可得原文，尚未完成语义匹配或证明核验。",
                  "evidence_ids": [e["evidence_id"]], "profile_fields": [],
                  "unknown_reason": "需核对要求与企业证明，当前不判定满足或不满足。"} for e in selected]
-    if not findings:
-        findings = [{"category": "materials", "requirement": "当前材料覆盖情况待核查", "status": "unknown",
-                     "reason": "冻结输入中没有可用证据片段。", "evidence_ids": [], "profile_fields": [],
-                     "unknown_reason": "未取得可用于判断的原文。"}]
     proposal = {"summary": "规则基线：资料待核查，不构成参与资格结论。", "findings": findings,
                 "questions": ["需取得完整采购文件并核查企业相应证明。"],
                 "answer": "当前规则基线不能有据回答该追问，请核查所列原文与资料缺口。" if manifest.get("question") else None}

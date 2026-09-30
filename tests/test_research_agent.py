@@ -108,14 +108,15 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["trace"][1]["error"], "unknown_tool_or_arguments")
         self.assertIn("unknown_tool_or_arguments", json.dumps(script.calls[1][0]))
 
-    def test_wrong_project_or_unread_citation_rejected_and_only_one_revision(self):
+    def test_wrong_project_or_unread_citation_rejected_and_only_two_revisions(self):
         bad = proposal(self.index)
         bad["findings"][0]["evidence_ids"] = [ident("other-project")]
         script = Script([response([tool("finish_report", {"report": bad}, "f1")]),
-                         response([tool("finish_report", {"report": bad}, "f2")])])
+                         response([tool("finish_report", {"report": bad}, "f2")]),
+                         response([tool("finish_report", {"report": bad}, "f3")])])
         result = self.run_agent(script)
         self.assertEqual(result["state"], "partial")
-        self.assertEqual(result["quality"]["revisions"], 1)
+        self.assertEqual(result["quality"]["revisions"], 2)
         self.assertIn("finding_0_citation_scope_or_unread", result["quality"]["local_errors"])
         self.assertNotIn(ident("other-project"), json.dumps(result["report"]))
 
@@ -136,6 +137,61 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["quality"]["revisions"], 1)
         self.assertEqual(result["quality"]["model_calls"], 5)
         self.assertIn("summary_unsupported", json.dumps(script.calls[3][0]))
+
+    def test_local_repair_does_not_consume_only_chance_for_semantic_repair(self):
+        missing = proposal(self.index)
+        missing["findings"][0].update(category="commercial", evidence_ids=[], requirement="商务要求待核查。")
+        unsupported = proposal(self.index)
+        unsupported["findings"][0]["reason"] = "企业为独立法律主体，能够独立参与。"
+        fixed = proposal(self.index)
+        script = Script([response([tool("read_evidence", {"evidence_ids": [self.eid]}, "r")]),
+            response([tool("finish_report", {"report": missing}, "missing")]),
+            response([tool("finish_report", {"report": unsupported}, "unsupported")]),
+            supported(checks=[{"finding_index": 0, "verdict": "unsupported", "reason": "档案未提供法律主体与参与安排，不能假设。"}]),
+            response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["quality"]["revisions"], 2)
+        self.assertEqual(result["quality"]["model_calls"], 6)
+        self.assertLessEqual(result["quality"]["tool_calls"], 16)
+        # 两次修订的终态仍能恢复；不会误套旧revision<=1，也不会产生新模型调用。
+        self.assertEqual(self.run_agent(Script([]), resume=self.checkpoints[-1])["state"], "succeeded")
+
+    def test_dynamic_read_id_schema_is_exactly_validated_on_inflight_resume(self):
+        class Crash(Exception):
+            pass
+        saved = []
+        def checkpoint(state):
+            saved.append(deepcopy(state))
+            if state["phase"] == "model_inflight" and state["steps"] == 2:
+                raise Crash()
+        with self.assertRaises(Crash):
+            run_agent(self.input, self.happy(), guard=lambda action: None, checkpoint=checkpoint)
+        pending = saved[-1]
+        schema = pending["pending_request"]["tools"][-1]["function"]["parameters"]["properties"]["report"]["properties"]["findings"]
+        self.assertEqual(schema["items"]["properties"]["evidence_ids"]["items"]["enum"], [self.eid])
+        self.assertEqual(schema["items"]["properties"]["evidence_ids"]["minItems"], 1)
+        for tamper in ("foreign_id", "empty_allowed", "new_tool"):
+            broken = deepcopy(pending)
+            actual = broken["pending_request"]["tools"][-1]
+            ids = actual["function"]["parameters"]["properties"]["report"]["properties"]["findings"]["items"]["properties"]["evidence_ids"]
+            if tamper == "foreign_id":
+                ids["items"]["enum"].append(ident("foreign"))
+            elif tamper == "empty_allowed":
+                ids["minItems"] = 0
+            else:
+                actual["function"]["name"] = "run_shell"
+            with self.subTest(tamper=tamper), self.assertRaises(EvidenceError) as error:
+                self.run_agent(Script([]), resume=broken)
+            self.assertEqual(error.exception.code, "invalid_checkpoint_request")
+        replay = Script([supported()])
+        def known_response(messages, tools):
+            self.assertEqual(tools, pending["pending_request"]["tools"])
+            self.assertEqual(messages, pending["pending_request"]["messages"])
+            return response([tool("finish_report", {"report": proposal(self.index)}, "known-finish")])
+        replay.replay = known_response
+        self.assertEqual(self.run_agent(replay, resume=pending)["state"], "succeeded")
+        self.assertEqual(len(replay.calls), 1)
 
     def test_repeated_empty_searches_converge_with_semantic_review_and_one_revision_reserved(self):
         def searches(round_number):
@@ -162,6 +218,7 @@ class AgentTests(unittest.TestCase):
         script = self.happy()
         script.steps[-1] = unsupported
         script.steps.extend([response([tool("finish_report", {"report": proposal(self.index)}, "finish-2")]), unsupported])
+        script.steps.extend([response([tool("finish_report", {"report": proposal(self.index)}, "finish-3")]), unsupported])
         result = self.run_agent(script)
         self.assertEqual(result["state"], "partial")
         self.assertTrue(all(x["status"] == "unknown" for x in result["report"]["findings"]))
@@ -255,14 +312,16 @@ class AgentTests(unittest.TestCase):
         report = proposal(self.index)
         negatives = ["本报告未承诺任何资格满足结论，也不包含中标概率或投标动作建议。",
                      "尚未阅读全文，不能声称已读全文。", "已归档PDF不等于全文已读。",
-                     "不承诺所有资格均满足。中标概率不予评估。"]
+                     "不承诺所有资格均满足。中标概率不予评估。",
+                     "尚未完整阅读招标文件。", "未全部阅读采购文件。"]
         for statement in negatives:
             report["summary"] = statement
             with self.subTest(statement=statement):
                 self.assertNotIn("unsupported_completeness", validate_report(report, self.index, {self.eid}))
         positives = ["所有资格条件均已满足。", "已读全文。", "已完整阅读招标文件。", "企业已经满足全部资格。",
                      "中标概率很高。", "不提供中标概率，但中标概率很高。", "不能否认中标概率很高。",
-                     "不能声称已读全文，但本次已读全文。"]
+                     "不能声称已读全文，但本次已读全文。", "不能否认已经读完招标文件。",
+                     "并非未完整阅读招标文件。", "尚未完整阅读招标文件，但已读完全部采购文件。"]
         for statement in positives:
             report["summary"] = statement
             with self.subTest(statement=statement):
@@ -330,6 +389,9 @@ class AgentTests(unittest.TestCase):
             ("delivery", "合同签订后60日内完成系统开发。", "不接受连续60天驻场。",
              "conflicting", "企业拒绝连续60天驻场，故与开发期限存在矛盾。",
              "开发完成期限不同于驻场时长；原文没有驻场要求，不能判资料冲突。"),
+            ("delivery", "合同签订后60日内完成系统开发。", "不接受连续60天驻场。",
+             "unknown", "企业拒绝连续60天驻场，因此该开发期限尚不能确定。",
+             "已知开发期限必须保留；未知应是对应排期和资源计划，不能以另一维度的驻场限制代替。"),
             ("technical", "采购分类：专业技术服务/气象服务。", "软件开发服务。",
              "unknown", "公司需提供气象行业资质和相关业绩证明。",
              "分类只支持主题相关性，不能推导行业资质或业绩门槛，即使标unknown也错误。"),
@@ -399,6 +461,24 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(revision["review_feedback"]["report_issues"], [issue])
         self.assertEqual(result["report"]["questions"], fixed["questions"])
 
+    def test_open_question_is_allowed_but_question_with_unsupported_premise_is_revised(self):
+        bad = proposal(self.index)
+        bad["questions"] = ["既然采购必须要求驻场，应如何安排？"]
+        fixed = proposal(self.index)
+        fixed["questions"] = ["是否要求驻场？"]
+        def review(messages, tools):
+            self.assertIn("疑问本身不构成存在断言", messages[0]["content"])
+            self.assertIn("不得仅因可能误读而拒绝", messages[0]["content"])
+            # 本次只引用技术原文；问题不能把未读交付片段提升为已知前提。
+            self.assertEqual(json.loads(messages[1]["content"])["evidence"][0]["category"], "technical")
+            return supported(questions_supported=False, report_issues=["问题预设必须驻场，当前引用原文未支持这个前提。"])
+        script = self.happy(bad)
+        script.steps[-1] = review
+        script.steps.extend([response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["report"]["questions"], ["是否要求驻场？"])
+
     def test_known_explicit_delivery_mismatch_is_unmet(self):
         entry = next(e for e in self.index.entries if e["category"] == "delivery")
         report = proposal(self.index, eid=entry["evidence_id"], category="delivery", status="unmet")
@@ -465,16 +545,16 @@ class AgentTests(unittest.TestCase):
         result = self.run_agent(script)
         self.assertEqual(result["state"], "succeeded")
         revision = next(json.loads(m["content"]) for m in script.calls[2][0] if m["role"] == "user" and "revision_request" in m["content"])
-        self.assertIn("移到questions", revision["corrections"][0]["correction"])
+        self.assertIn("开放questions", revision["corrections"][0]["correction"])
         for category in ("technical", "delivery", "commercial", "other"):
             bad["findings"][0]["category"] = category
             self.assertIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
         bad["findings"][0]["category"] = "materials"
-        self.assertNotIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
+        self.assertIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
         bad["findings"][0]["status"] = "not_applicable"
         self.assertIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
 
-    def test_material_coverage_exception_and_actual_input_metadata_reach_semantic_review(self):
+    def test_material_coverage_is_server_limitations_instead_of_model_requirement(self):
         self.input["observations"][0]["material_status"] = "see_ingestion_evidence"
         self.input["observations"][0]["evidence_fields"]["acquisition_methods"] = [
             {"text": "采购文件通过交易平台领取。", "locator": "p:5"}]
@@ -482,10 +562,7 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(index.category_available_count["materials"], 0)
         self.assertEqual(index.category_available_count["other"], 1)
         report = proposal(index)
-        report["findings"].append({"category": "materials", "status": "unknown", "evidence_ids": [],
-            "profile_fields": [], "requirement": "本次研究输入的完整文件正文覆盖情况待核查。",
-            "reason": "当前仅有规范化片段，不能据此说明系统全局未获取或未归档原件。",
-            "unknown_reason": "本次研究未提供完整文件正文。"})
+        report["questions"] = ["是否另有需要核查的参与条件？"]
         def review(messages, tools):
             context = json.loads(messages[1]["content"])
             self.assertEqual(context["input_coverage"]["material_status"], ["see_ingestion_evidence"])
@@ -493,14 +570,15 @@ class AgentTests(unittest.TestCase):
             self.assertEqual(context["input_coverage"]["evidence_ids"], [index.entries[0]["evidence_id"]])
             self.assertEqual(context["category_available_count"]["materials"], 0)
             self.assertEqual(context["category_available_count"]["other"], 1)
-            self.assertIn("不能仅因无引用/不是要求而判unsupported", messages[0]["content"])
+            self.assertIn("覆盖说明由服务器生成", messages[0]["content"])
             self.assertIn("不能把措辞偏好或风格建议当作阻断", messages[0]["content"])
-            return supported(2)
+            return supported()
         script = self.happy(report)
         script.steps[-1] = review
         result = self.run_agent(script)
         self.assertEqual(result["state"], "succeeded")
-        self.assertEqual(result["report"]["findings"][1]["evidence_ids"], [])
+        self.assertEqual(len(result["report"]["findings"]), 1)
+        self.assertIn("不表示系统全局未获取", result["report"]["limitations"][0])
         self.assertEqual(result["report"]["coverage"]["material_status"], ["see_ingestion_evidence"])
 
     def test_truncated_citation_is_rejected_then_exact_read_id_is_available_for_revision(self):
@@ -523,6 +601,7 @@ class AgentTests(unittest.TestCase):
         # 若模型继续抄短，程序仍拒绝，不做自动补字或近似匹配。
         script = self.happy(bad)
         script.steps[-1] = response([tool("finish_report", {"report": bad}, "still-short")])
+        script.steps.append(response([tool("finish_report", {"report": bad}, "still-short-again")]))
         result = self.run_agent(script)
         self.assertEqual(result["state"], "partial")
         self.assertIn("finding_0_citation_scope_or_unread", result["quality"]["local_errors"])
@@ -588,8 +667,20 @@ class AgentTests(unittest.TestCase):
     def test_no_evidence_is_explicit_partial_not_empty_success(self):
         self.input["observations"][0]["evidence_fields"] = {}
         report = baseline_report(self.input)
-        self.assertEqual(report["findings"][0]["status"], "unknown")
+        self.assertEqual(report["findings"], [])
         self.assertFalse(report["coverage"]["full_tender_read"])
+        empty = {key: report[key] for key in ("summary", "findings", "questions", "answer")}
+        script = Script([response([tool("finish_report", {"report": empty}, "empty")])])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "partial")
+        self.assertFalse(result["quality"]["verified"])
+        self.assertEqual(result["quality"]["verification"], "not_verified")
+        self.assertEqual(result["quality"]["local_errors"], ["no_supported_findings"])
+        self.assertEqual(len(script.calls), 1)
+        schema = script.calls[0][1][-1]["function"]["parameters"]["properties"]["report"]["properties"]["findings"]
+        self.assertEqual(schema["maxItems"], 0)
+        self.assertEqual([t["function"]["name"] for t in script.calls[0][1]],
+                         ["search_evidence", "read_evidence", "get_profile_snapshot", "finish_report"])
 
     def test_evaluation_same_inputs_missing_labels_do_not_make_up_metrics(self):
         report = baseline_report(self.input)
