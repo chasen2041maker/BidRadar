@@ -57,6 +57,8 @@ class ListingResult:
     items: tuple[NoticeCandidate, ...]
     issues: tuple[str, ...]
     input_sha256: str
+    # 静态栏目可提供已核实的下一页；旧搜索适配器四参数构造保持兼容。
+    next_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -336,7 +338,9 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
             if node.strip():
                 segments.append({"text": node.strip(), "locator": locator})
             continue
-        if node.tag in ("p", "li", "tr", "h1", "h2", "h3", "h4"):
+        # 富文本可能把table嵌进p；此时须继续下钻到tr，避免预算单位/列值失去对应。
+        if node.tag in ("p", "li", "tr", "h1", "h2", "h3", "h4") and not any(
+                child is not node and child.tag == "table" for child in node.walk()):
             cells = [child.text() for child in node.children if isinstance(child, _Node) and child.tag in ("td", "th")]
             text = " | ".join(cells) if node.tag == "tr" else node.text()
             if text:
