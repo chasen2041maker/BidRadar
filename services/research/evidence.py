@@ -12,7 +12,7 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v10-money-comparison-references"
+VERSION = "frozen-evidence-v11-qualification-extract"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -255,6 +255,9 @@ class EvidenceIndex:
                                  "raw_sha256": observation["raw_sha256"], "locator": locator,
                                  "field": path, "category": _category(path), "text": snippet,
                                  "offset": offset + start}
+                        if entry["category"] == "qualification":
+                            # 被长度切片或隐私删除截开的资格段不能冒充完整条款，尤其不能丢掉后半段替代条件。
+                            entry["qualification_extractable"] = len(text.strip()) <= 2400 and CONTACT.search(text) is None
                         # 标签是原始规范化证据的一部分；模型能辨认“48万元”所属字段。
                         label = value.get("label")
                         if _string(label, 512):
@@ -443,7 +446,7 @@ def validate_report(report, index, read_ids):
         if (not isinstance(finding, dict) or set(finding) != {"category", "requirement", "status", "reason", "evidence_ids", "profile_fields", "unknown_reason"}
                 or not isinstance(finding["category"], str) or finding["category"] not in CATEGORIES
                 or not isinstance(finding["status"], str) or finding["status"] not in STATUSES
-                or not _string(finding["requirement"], 1200) or not _string(finding["reason"], 1600)
+                or not _string(finding["requirement"], 2400) or not _string(finding["reason"], 1600)
                 or not isinstance(finding["evidence_ids"], list) or len(finding["evidence_ids"]) > 12
                 or any(not isinstance(x, str) for x in finding["evidence_ids"])
                 or len(set(finding["evidence_ids"])) != len(finding["evidence_ids"])
@@ -459,6 +462,20 @@ def validate_report(report, index, read_ids):
         # 模型只提出有来源的采购事项；覆盖缺口由服务器limitations承担，避免混成要求。
         if not ids:
             errors.append(prefix + "missing_evidence")
+        qualification_ids = [eid for eid in ids if index.by_id[eid]["category"] == "qualification"]
+        if finding["category"] == "qualification" or qualification_ids:
+            # 来源也触发约束，不能把资格条款改标other/technical后再摘要、截句或拼接。
+            if finding["category"] != "qualification":
+                errors.append(prefix + "qualification_category_mismatch")
+            if len(ids) != 1 or len(qualification_ids) != 1:
+                errors.append(prefix + "qualification_single_evidence_required")
+            else:
+                entry = index.by_id[ids[0]]
+                if not entry["qualification_extractable"]:
+                    errors.append(prefix + "qualification_incomplete_source")
+                # 只比较规范空白后的完整文本，不程序补引文、不重写候选、不接受子串。
+                if " ".join(finding["requirement"].split()) != " ".join(entry["text"].split()):
+                    errors.append(prefix + "qualification_exact_quote_required")
         if finding["status"] == "unknown" and not finding["unknown_reason"]:
             errors.append(prefix + "missing_unknown_reason")
         if finding["status"] in ("met", "unmet"):
@@ -523,11 +540,13 @@ def baseline_report(manifest):
     """无模型对照：忠实列出片段和未知，不凭关键词宣布企业满足条件。"""
     index = EvidenceIndex(manifest)
     selected = index.entries[:24]
-    findings = [{"category": e["category"], "requirement": e["text"][:1200], "status": "unknown",
+    findings = [{"category": e["category"], "requirement": e["text"] if e["category"] == "qualification" else e["text"][:1200], "status": "unknown",
                  "reason": "规则基线仅列出可得原文，尚未完成语义匹配或证明核验。",
                  "evidence_ids": [e["evidence_id"]], "profile_fields": [],
                  "unknown_reason": "需核对要求与企业证明，当前不判定满足或不满足。"} for e in selected]
     proposal = {"summary": "规则基线：资料待核查，不构成参与资格结论。", "findings": findings,
                 "questions": ["需取得完整采购文件并核查企业相应证明。"],
                 "answer": "当前规则基线不能有据回答该追问，请核查所列原文与资料缺口。" if manifest.get("question") else None}
-    return finalize_report(proposal, index, [e["evidence_id"] for e in selected])
+    limitations = (["资格来源经长度或隐私处理形成片段，基线展示不代表完整资格条款。"]
+                   if any(e["category"] == "qualification" and not e["qualification_extractable"] for e in selected) else [])
+    return finalize_report(proposal, index, [e["evidence_id"] for e in selected], limitations=limitations)

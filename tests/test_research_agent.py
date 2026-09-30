@@ -140,6 +140,85 @@ class AgentTests(unittest.TestCase):
         self.assertIn("finding_0_missing_profile", errors)
         self.assertIn("finding_0_qualification_not_verified", errors)
 
+    def test_qualification_requirement_copies_full_branch_and_cannot_relabel_or_merge_entries(self):
+        cases = [("应提供营业执照、组织机构代码证和税务登记证；\n已办理三证合一的，仅需提供营业执照。", "仅需提供营业执照。"),
+                 ("本项目不接受联合体投标。", "本项目接受联合体投标。"),
+                 ("单位负责人相同或存在直接控股、管理关系的不同供应商，不得共同参加同一合同项下采购活动。", "供应商不得存在直接控股、管理关系。")]
+        for source, changed in cases:
+            with self.subTest(source=source):
+                data = manifest()
+                data["observations"][0]["evidence_fields"] = {"qualification_evidence": [
+                    {"text": source, "label": "资格条件", "locator": "p:qualification"},
+                    {"text": "其他资格条款请查阅原文。", "label": "资格条件", "locator": "p:other"}],
+                    "technical_evidence": [{"text": "采购系统服务。", "label": "需求", "locator": "p:technical"}]}
+                index = EvidenceIndex(data)
+                eid, other, technical = [e["evidence_id"] for e in index.entries]
+                report = proposal(index, eid=eid, category="qualification")
+                report["findings"][0]["requirement"] = "  " + " ".join(source.split()) + "  "
+                self.assertEqual(validate_report(report, index, {eid, other, technical}), [])
+                original = deepcopy(report)
+                report["findings"][0]["requirement"] = changed
+                self.assertIn("finding_0_qualification_exact_quote_required", validate_report(report, index, {eid, other, technical}))
+                self.assertEqual(report["findings"][0]["requirement"], changed)  # 校验不代替模型补全文。
+                for category in ("other", "technical"):
+                    report["findings"][0]["category"] = category
+                    errors = validate_report(report, index, {eid, other, technical})
+                    self.assertIn("finding_0_qualification_category_mismatch", errors)
+                    self.assertIn("finding_0_qualification_exact_quote_required", errors)
+                report = original
+                report["findings"][0]["evidence_ids"] = [eid, other]
+                self.assertIn("finding_0_qualification_single_evidence_required", validate_report(report, index, {eid, other, technical}))
+                report["findings"][0]["evidence_ids"] = [technical]
+                self.assertIn("finding_0_qualification_single_evidence_required", validate_report(report, index, {eid, other, technical}))
+
+    def test_qualification_2400_character_limit_preserves_baseline_and_rejects_partial_source(self):
+        prefix = "资格条件："
+        source = prefix + "甲" * (2400 - len(prefix) - 1) + "。"
+        data = manifest()
+        data["observations"][0]["evidence_fields"] = {"qualification_evidence": [{"text": source, "label": "资格", "locator": "p:qualification"}]}
+        index = EvidenceIndex(data)
+        eid = index.entries[0]["evidence_id"]
+        report = proposal(index, eid=eid, category="qualification")
+        self.assertEqual(len(report["findings"][0]["requirement"]), 2400)
+        self.assertEqual(validate_report(report, index, {eid}), [])
+        self.assertEqual(baseline_report(data)["findings"][0]["requirement"], source)
+        report["findings"][0]["requirement"] += "甲"
+        self.assertIn("finding_0_schema", validate_report(report, index, {eid}))
+        for partial in (source + "乙", "应核查资格证明。邮箱：synthetic@example.test；另有替代材料条件。"):
+            data["observations"][0]["evidence_fields"]["qualification_evidence"][0]["text"] = partial
+            clipped = EvidenceIndex(data)
+            eid = clipped.entries[0]["evidence_id"]
+            self.assertFalse(clipped.entries[0]["qualification_extractable"])
+            report = proposal(clipped, eid=eid, category="qualification")
+            self.assertIn("finding_0_qualification_incomplete_source", validate_report(report, clipped, {eid}))
+            self.assertIn("资格来源经长度或隐私处理", baseline_report(data)["limitations"][-1])
+
+    def test_qualification_model_revision_copies_exact_quote_without_automatic_candidate_change(self):
+        source = "应提供营业执照、组织机构代码证和税务登记证；已办理三证合一的，仅需提供营业执照。"
+        data = manifest()
+        data["observations"][0]["evidence_fields"] = {"qualification_evidence": [{"text": source, "label": "资格", "locator": "p:qualification"}]}
+        index = EvidenceIndex(data)
+        eid = index.entries[0]["evidence_id"]
+        bad = proposal(index, eid=eid, category="qualification")
+        bad["findings"][0]["requirement"] = "供应商应提供营业执照。"
+        untouched = deepcopy(bad)
+        def revise(messages, tools):
+            request = next(json.loads(m["content"]) for m in messages if m["role"] == "user" and "revision_request" in m["content"])
+            self.assertIn("finding_0_qualification_exact_quote_required", request["validation_codes"])
+            self.assertEqual(request["qualification_quotes"], [{"evidence_id": eid, "text": source}])
+            schema = tools[-1]["function"]["parameters"]["properties"]["report"]["properties"]["findings"]["items"]
+            self.assertEqual(schema["properties"]["requirement"]["maxLength"], 2400)
+            fixed = proposal(index, eid=eid, category="qualification")
+            fixed["findings"][0]["requirement"] = request["qualification_quotes"][0]["text"]
+            return response([tool("finish_report", {"report": fixed}, "fixed")])
+        script = Script([response([tool("read_evidence", {"evidence_ids": [eid]}, "r")]),
+                         response([tool("finish_report", {"report": bad}, "bad")]), revise, supported()])
+        result = run_agent(data, script, guard=lambda _: None, checkpoint=lambda _: None)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["report"]["findings"][0]["requirement"], source)
+        self.assertEqual(bad, untouched)
+        self.assertEqual(len(script.calls), 4)
+
     def test_semantics_can_reject_clickable_citation_then_revision_succeeds(self):
         script = self.happy()
         script.steps[-1] = supported(summary_supported=False)
