@@ -59,18 +59,20 @@ def _bad_upstream(body, *, status=200, extra_headers=None, delay=0):
 
         def do_GET(self):
             self.server.calls += 1
+            response_body = body(self.path) if callable(body) else body
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(len(response_body)))
             for key, value in extra_headers or []:
                 self.send_header(key, value)
             self.end_headers()
             time.sleep(delay)
             try:
-                self.wfile.write(body)
+                self.wfile.write(response_body)
             except OSError:
                 pass
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server.daemon_threads = False  # 测试结束等待故意延迟的响应收尾，不能把 socket 留给下一例。
     server.calls = 0
     with _running(server):
         yield server
@@ -201,6 +203,20 @@ class CatalogHTTPTests(unittest.TestCase):
         self.assert_catalog_error("catalog_version_changed", 409, lambda: self.client.validate_selection(selected))
         self.assertEqual(len(self.client.detail(self.one["notice_id"])["history"]), 2)
         self.assertEqual(snapshots[0]["observation_id"], self.one["observation_id"])
+
+    def test_selection_shares_total_deadline_across_actual_http_requests(self):
+        # 单请求 1 秒仍足够，但两个详情各 0.2 秒超过整次选择 0.3 秒；不能重置预算。
+        selected = [{k: item[k] for k in ("notice_id", "observation_id")} for item in (self.one, self.two)]
+        payloads = {item["notice_id"]: json.dumps(self.catalog.detail(item["notice_id"])).encode()
+                    for item in (self.one, self.two)}
+        with _bad_upstream(lambda path: payloads[path.rsplit("/", 1)[1]], delay=0.2) as server:
+            client = CatalogClient(f"http://127.0.0.1:{server.server_port}", self.token, timeout=1, selection_timeout=0.3)
+            started = time.monotonic()
+            self.assert_catalog_error("catalog_unavailable", 503, lambda: client.validate_selection(selected))
+            self.assertLess(time.monotonic() - started, 0.8)
+        for invalid in (0, 16, True, float("nan")):
+            with self.assertRaises(ValueError):
+                CatalogClient(self.address, self.token, selection_timeout=invalid)
 
     def test_empty_duplicate_invalid_or_extra_selection_never_means_all(self):
         item = {"notice_id": self.one["notice_id"], "observation_id": self.one["observation_id"]}

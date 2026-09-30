@@ -73,7 +73,7 @@ def _observation(value):
 
 
 class CatalogClient:
-    def __init__(self, base_url, token, *, timeout=5, max_bytes=8 * 1024 * 1024):
+    def __init__(self, base_url, token, *, timeout=5, max_bytes=8 * 1024 * 1024, selection_timeout=15):
         # 用完整字符串文法拒绝 localhost、userinfo、路径/查询、替代 IP 表示法与任意 URL。
         match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", base_url) if isinstance(base_url, str) else None
         if match is None or not 1 <= int(match[1]) <= 65535:
@@ -81,15 +81,21 @@ class CatalogClient:
         if not isinstance(token, str) or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None:
             raise ValueError("invalid_service_token")
         if (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 30
-                or type(max_bytes) is not int or not 1 <= max_bytes <= 32 * 1024 * 1024):
+                or type(max_bytes) is not int or not 1 <= max_bytes <= 32 * 1024 * 1024
+                or isinstance(selection_timeout, bool) or not isinstance(selection_timeout, (int, float))
+                or not 0 < selection_timeout <= 15):
             raise ValueError("invalid_client_limits")
         self._port, self._token, self._timeout, self._max_bytes = int(match[1]), token, timeout, max_bytes
+        self._selection_timeout = selection_timeout
 
-    def _request(self, target):
+    def _request(self, target, *, deadline=None):
         if len(target) > 8192:
             raise CatalogError("invalid_query", 400)
-        connection = HTTPConnection("127.0.0.1", self._port, timeout=self._timeout)
-        deadline = time.monotonic() + self._timeout
+        now = time.monotonic()
+        deadline = min(now + self._timeout, deadline) if deadline is not None else now + self._timeout
+        if deadline <= now:
+            raise CatalogError("catalog_unavailable", 503)
+        connection = HTTPConnection("127.0.0.1", self._port, timeout=deadline - now)
         response = None
         try:
             connection.request("GET", target, headers={"Authorization": "Bearer " + self._token,
@@ -178,9 +184,12 @@ class CatalogClient:
         return result
 
     def detail(self, notice_id):
+        return self._detail(notice_id)
+
+    def _detail(self, notice_id, *, deadline=None):
         if not isinstance(notice_id, str) or not _HEX.fullmatch(notice_id):
             raise CatalogError("invalid_notice_id", 400)
-        result = self._request("/v1/notices/" + notice_id)
+        result = self._request("/v1/notices/" + notice_id, deadline=deadline)
         try:
             if (set(result) != {"current", "history", "currentness", "relationships", "snapshot"}
                     or not isinstance(result["history"], list) or not result["history"]
@@ -197,7 +206,11 @@ class CatalogClient:
         return result
 
     def validate_selection(self, items):
-        """只接受 1..20 个唯一公告的固定版本；全部核验成功才交付最小快照。"""
+        """只接受 1..20 个唯一公告的固定版本；全部核验成功才交付最小快照。
+
+        所有串行详情共享至多 15 秒总截止，同时保留单次请求上限；前面已读成功
+        不会重置预算，也不会在超时后返回一部分“已验证”的选择。
+        """
         if not isinstance(items, list) or not 1 <= len(items) <= 20:
             raise CatalogError("invalid_selection", 400)
         seen, versions = set(), set()
@@ -209,9 +222,10 @@ class CatalogClient:
             seen.add(item["notice_id"])
             versions.add(item["observation_id"])
         snapshots = []
+        deadline = time.monotonic() + self._selection_timeout
         for item in items:
             try:
-                current = self.detail(item["notice_id"])["current"]
+                current = self._detail(item["notice_id"], deadline=deadline)["current"]
             except CatalogError as exc:
                 if exc.code == "notice_not_found":
                     raise CatalogError("catalog_version_changed", 409) from None
@@ -219,4 +233,6 @@ class CatalogClient:
             if current["observation_id"] != item["observation_id"]:
                 raise CatalogError("catalog_version_changed", 409)
             snapshots.append({k: current[k] for k in ("notice_id", "observation_id", "title", "source_url", "simulation")})
+        if time.monotonic() >= deadline:
+            raise CatalogError("catalog_unavailable", 503)
         return snapshots
