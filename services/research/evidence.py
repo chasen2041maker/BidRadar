@@ -8,11 +8,12 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal, localcontext
 from hashlib import sha256
+from itertools import combinations
 import json
 import math
 import re
 
-VERSION = "frozen-evidence-v11-qualification-extract"
+VERSION = "frozen-evidence-v12-answer-reasons"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -421,6 +422,26 @@ def _without_cited_ids(text, cited_ids):
     return clean, unknown
 
 
+def answer_reason_indices(report):
+    """将追问答案绑定到本报告1–3条完整理由；只比较，不改写模型候选。
+
+    空白仅用于比较视图，理由内部换行不拆段。最多30项的有序组合是固定小上界；
+    拒绝半句、套话、新增句、重排和重复理由。文本相同不代表语义有据，仍须核验。
+    """
+    answer, findings = report.get("answer"), report.get("findings")
+    if (not _string(answer, 3000) or not isinstance(findings, list) or not 1 <= len(findings) <= 30
+            or any(not isinstance(f, dict) or not _string(f.get("reason"), 1600) for f in findings)):
+        return None
+    text = " ".join(answer.split())
+    reasons = [" ".join(f["reason"].split()) for f in findings]
+    for count in range(1, min(3, len(reasons)) + 1):
+        for positions in combinations(range(len(reasons)), count):
+            selected = [reasons[i] for i in positions]
+            if len(set(selected)) == count and text == " ".join(selected):
+                return list(positions)
+    return None
+
+
 def validate_report(report, index, read_ids):
     """机械校验不等于语义证明；错误只返回码，避免不可信文本进入修订指令。"""
     errors = []
@@ -432,8 +453,13 @@ def validate_report(report, index, read_ids):
             or len(report["questions"]) > 12 or any(not _string(x, 600) for x in report["questions"])
             or report["answer"] is not None and not _string(report["answer"], 3000)):
         return ["report_schema"]
-    if index.manifest["kind"] == "question" and report["answer"] is None:
-        errors.append("question_answer_missing")
+    if index.manifest["kind"] == "question":
+        if report["answer"] is None:
+            errors.append("question_answer_missing")
+        elif answer_reason_indices(report) is None:
+            errors.append("answer_not_from_current_reasons")
+    elif report["answer"] is not None:
+        errors.append("unexpected_answer")
     if CONTACT.search(canonical(report)):
         errors.append("report_contact_information")
     if _unsupported_completeness(canonical(report)):
@@ -546,7 +572,8 @@ def baseline_report(manifest):
                  "unknown_reason": "需核对要求与企业证明，当前不判定满足或不满足。"} for e in selected]
     proposal = {"summary": "规则基线：资料待核查，不构成参与资格结论。", "findings": findings,
                 "questions": ["需取得完整采购文件并核查企业相应证明。"],
-                "answer": "当前规则基线不能有据回答该追问，请核查所列原文与资料缺口。" if manifest.get("question") else None}
+                # 基线也复用自己的保守理由，不给模型校验器增加固定模板豁免。
+                "answer": findings[0]["reason"] if manifest.get("question") and findings else None}
     limitations = (["资格来源经长度或隐私处理形成片段，基线展示不代表完整资格条款。"]
                    if any(e["category"] == "qualification" and not e["qualification_extractable"] for e in selected) else [])
     return finalize_report(proposal, index, [e["evidence_id"] for e in selected], limitations=limitations)

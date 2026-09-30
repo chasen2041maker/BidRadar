@@ -92,7 +92,7 @@ class FakeProvider:
                            "status": "unknown", "reason": "仅有公告片段，仍需核验企业声明和完整材料。",
                            "evidence_ids": [entry["evidence_id"]], "profile_fields": [], "unknown_reason": "证明尚未核验。"}],
                           "questions": ["需要取得完整采购材料。"],
-                          "answer": "同项目证据不足以判定资格满足。" if context["kind"] == "question" else None}
+                          "answer": "仅有公告片段，仍需核验企业声明和完整材料。" if context["kind"] == "question" else None}
                 name, arguments = "finish_report", {"report": report}
             message = {"role": "assistant", "content": None, "tool_calls": [{"type": "function",
                        "id": "call-" + str(len(self.calls)), "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}]}

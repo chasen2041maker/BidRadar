@@ -5,7 +5,7 @@ import json
 import unittest
 
 from services.research.agent import run_agent, REVIEW_SYSTEM, _review_errors
-from services.research.evidence import EvidenceIndex, EvidenceError, PROFILE_FIELDS, baseline_report, validate_report
+from services.research.evidence import EvidenceIndex, EvidenceError, PROFILE_FIELDS, baseline_report, validate_report, answer_reason_indices
 from services.research.evaluation import evaluate_report, compare_reports
 from services.research.provider import ProviderError
 
@@ -375,7 +375,7 @@ class AgentTests(unittest.TestCase):
             "scope": {"notice_id": self.input["scope_notice_id"]}, "summary": "旧回答声称全部满足", "answer": "旧回答不是证据"})
         index = EvidenceIndex(self.input)
         report = proposal(index)
-        report["answer"] = "现有证据不足以判定资格满足，仍须核验。"
+        report["answer"] = report["findings"][0]["reason"]
         script = self.happy(report)
         result = self.run_agent(script)
         self.assertEqual(result["state"], "succeeded")
@@ -384,6 +384,131 @@ class AgentTests(unittest.TestCase):
         self.input["previous_report"]["scope"]["notice_id"] = ident("other")
         with self.assertRaises(EvidenceError):
             self.run_agent(Script([]))
+
+    def test_question_answer_selects_one_to_three_whole_current_reasons_in_order(self):
+        data = manifest()
+        data.update(kind="question", question="请说明技术、证明和履约资料缺口。")
+        index = EvidenceIndex(data)
+        report = proposal(index)
+        reasons = ["技术能力仍需核查。\n对应证明尚未提供。", "资格证明未核验，应核对适用分支。",
+                   "履约排期尚未提供。", "商务安排尚待核查。"]
+        report["findings"] = [{**deepcopy(report["findings"][0]), "reason": reason} for reason in reasons]
+        for positions in ([0], [1, 3], [0, 1, 2]):
+            with self.subTest(positions=positions):
+                report["answer"] = "\n\n".join(reasons[i] for i in positions)
+                before = deepcopy(report)
+                self.assertEqual(answer_reason_indices(report), positions)
+                self.assertEqual(validate_report(report, index, {self.eid}), [])
+                self.assertEqual(report, before)  # 只建立验证视图，不改候选或理由内部换行。
+        report["answer"] = "  技术能力仍需核查。\t 对应证明尚未提供。 \n\n 履约排期尚未提供。  "
+        self.assertEqual(answer_reason_indices(report), [0, 2])
+
+    def test_question_answer_rejects_fragments_additions_reordering_duplicates_and_old_text(self):
+        data = manifest()
+        data.update(kind="question", question="哪些事项还需核查？")
+        index = EvidenceIndex(data)
+        report = proposal(index)
+        first, second = "企业证明尚未核验。请核对资格原文条目。", "企业履约安排未提供。"
+        report["findings"][0]["reason"] = first
+        report["findings"].append({**deepcopy(report["findings"][0]), "reason": second})
+        for answer in (first.split("。")[0] + "。", "请核对资格原文条目。企业证明尚未核验。",
+                       second + "\n\n" + first, first + "\n\n" + first,
+                       "结论如下：" + first, first + "无需任何其他证明。", "旧报告中的保守理由。"):
+            with self.subTest(answer=answer):
+                report["answer"] = answer
+                self.assertIn("answer_not_from_current_reasons", validate_report(report, index, {self.eid}))
+        for answer, error in ((None, "question_answer_missing"), ("", "report_schema"), ("  ", "report_schema")):
+            report["answer"] = answer
+            self.assertIn(error, validate_report(report, index, {self.eid}))
+        report["findings"] += deepcopy(report["findings"])
+        report["findings"][2]["reason"] = "技术范围待核查。"
+        report["findings"][3]["reason"] = "商务范围待核查。"
+        report["answer"] = "\n\n".join(f["reason"] for f in report["findings"])
+        self.assertIsNone(answer_reason_indices(report))
+        nonquestion = proposal(self.index)
+        nonquestion["answer"] = nonquestion["findings"][0]["reason"]
+        self.assertEqual(validate_report(nonquestion, self.index, {self.eid}), ["unexpected_answer"])
+
+    def test_copied_question_reason_can_still_be_rejected_for_rewriting_qualification_branch(self):
+        data = manifest()
+        data.update(kind="question", question="企业证明缺口和适用材料分支是什么？")
+        source = "供应商应提供三份登记证明；已经办理登记合一的供应商可仅提供统一登记证件。"
+        data["observations"][0]["evidence_fields"] = {"qualification_evidence": [{"text": source, "label": "资格", "locator": "p:branch"}]}
+        index = EvidenceIndex(data)
+        eid = index.entries[0]["evidence_id"]
+        fixed = proposal(index, eid=eid, category="qualification")
+        fixed["findings"][0].update(reason="企业登记及证明资料未提供，当前不能判断满足条件；适用材料分支请核对本条完整原文。", profile_fields=["qualifications"])
+        fixed["answer"] = fixed["findings"][0]["reason"]
+        bad = deepcopy(fixed)
+        bad["answer"] = bad["findings"][0]["reason"] = "企业只需提供统一登记证件，当前资料待补。"
+        self.assertEqual(validate_report(bad, index, {eid}), [])
+        def reject(messages, tools):
+            context = json.loads(messages[1]["content"])
+            self.assertEqual(context["answer_finding_indices"], [0])
+            self.assertEqual(context["report"]["findings"][0]["requirement"], source)
+            return supported(checks=[{"finding_index": 0, "verdict": "unsupported", "reason": "理由省去已经登记合一的替代前提。"}], answer_supported=False,
+                             report_issues=["复制理由没有消除其中将条件性替代材料扩大为普遍材料的错误。"])
+        script = Script([response([tool("read_evidence", {"evidence_ids": [eid]}, "read")]),
+            response([tool("finish_report", {"report": bad}, "bad")]), reject,
+            response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
+        result = run_agent(data, script, guard=lambda _: None, checkpoint=lambda _: None)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["report"]["answer"], fixed["answer"])
+        self.assertEqual(bad["answer"], "企业只需提供统一登记证件，当前资料待补。")
+
+    def test_question_baseline_reuses_own_reason_without_candidate_template_bypass(self):
+        data = manifest()
+        data.update(kind="question", question="参与条件是否满足？")
+        report = baseline_report(data)
+        self.assertEqual(report["answer"], report["findings"][0]["reason"])
+        candidate = proposal(EvidenceIndex(data))
+        candidate["answer"] = report["answer"]
+        self.assertIn("answer_not_from_current_reasons", validate_report(candidate, EvidenceIndex(data), {self.eid}))
+        data["observations"][0].update(title="", evidence_fields={})
+        self.assertEqual(baseline_report(data)["findings"], [])
+        self.assertIsNone(baseline_report(data)["answer"])
+
+    def test_composite_question_copied_reasons_still_need_semantic_support_and_relevance(self):
+        """脚本核验错误、修订、再核验链；不能据此宣布真实模型已理解每个子问题。"""
+        data = manifest()
+        data.update(kind="question", question="技术是否相关，企业履约安排还有什么缺口？")
+        index = EvidenceIndex(data)
+        technical = next(e for e in index.entries if e["category"] == "technical")
+        delivery = next(e for e in index.entries if e["category"] == "delivery")
+        ids = [technical["evidence_id"], delivery["evidence_id"]]
+        fixed = proposal(index, eid=ids[0])
+        fixed["findings"][0].update(reason="企业声明的软件开发能力与原文主题相关，具体要求仍待核查。", profile_fields=["capabilities"])
+        second = proposal(index, eid=ids[1], category="delivery")["findings"][0]
+        second.update(reason="企业履约排期和资源安排尚未提供，需进一步核查。", profile_fields=["staffing"])
+        fixed["findings"].append(second)
+        fixed["answer"] = "\n\n".join(f["reason"] for f in fixed["findings"])
+        for case in ("unrelated", "wrong_source_action"):
+            with self.subTest(case=case):
+                bad = deepcopy(fixed)
+                if case == "unrelated":
+                    # 所选内容正确但漏掉履约子问题，不因完整复制便自动当作回答完整。
+                    bad["answer"] = bad["findings"][0]["reason"]
+                else:
+                    bad["findings"][1]["reason"] = "企业是否能在开发完成期限内履约仍需核查。"
+                    bad["answer"] = "\n\n".join(f["reason"] for f in bad["findings"])
+                self.assertEqual(validate_report(bad, index, set(ids)), [])
+                def reject(messages, tools):
+                    context = json.loads(messages[1]["content"])
+                    self.assertEqual(context["answer_finding_indices"], [0] if case == "unrelated" else [0, 1])
+                    self.assertEqual(context["finding_evidence"][1], {"finding_index": 1, "evidence_ids": [ids[1]], "profile": {"staffing": None}})
+                    return supported(2, answer_supported=False, report_issues=["答案未回应履约子问题。" if case == "unrelated" else "原文驻场服务不能改成开发完成期限。"])
+                def accept(messages, tools):
+                    context = json.loads(messages[1]["content"])
+                    self.assertEqual(context["answer_finding_indices"], [0, 1])
+                    self.assertEqual(context["report"]["answer"], fixed["answer"])
+                    return supported(2)
+                script = Script([response([tool("read_evidence", {"evidence_ids": ids}, "read")]),
+                    response([tool("finish_report", {"report": bad}, "bad")]), reject,
+                    response([tool("finish_report", {"report": fixed}, "fixed")]), accept])
+                result = run_agent(data, script, guard=lambda _: None, checkpoint=lambda _: None)
+                self.assertEqual(result["state"], "succeeded")
+                self.assertEqual(result["quality"]["revisions"], 1)
+                self.assertEqual(result["report"]["answer"], fixed["answer"])
 
     def test_invalid_duplicate_json_arguments_do_not_run_tool(self):
         malformed = tool("get_profile_snapshot", {}, "bad")
@@ -496,7 +621,9 @@ class AgentTests(unittest.TestCase):
                 self.assertIn("finding_0_unsupported_money_role_budget", validate_report(report, index, {eid}))
 
     def test_quote_comparison_checks_referenced_roles_without_making_source_ranges_exact(self):
-        index = EvidenceIndex(money_manifest())
+        data = money_manifest()
+        data.update(kind="question", question="报价条件是否匹配？")
+        index = EvidenceIndex(data)
         budget, ceiling, fee = [e["evidence_id"] for e in index.entries]
         original = proposal(index, eid=ceiling, category="budget")
         original["findings"][0]["evidence_ids"] = [budget, ceiling, fee]
@@ -510,6 +637,9 @@ class AgentTests(unittest.TestCase):
                     report = deepcopy(original)
                     target = report if field in ("summary", "answer") else report["findings"][0]
                     target[field] = comparison
+                    if field == "answer":
+                        report["findings"][0]["reason"] = comparison
+                    report["answer"] = report["findings"][0]["reason"]
                     self.assertEqual(validate_report(report, index, {budget, ceiling, fee}), [])
             # 疑问/比较不是角色豁免：已读但本条没引的预算仍不支持预算阈值。
             report = deepcopy(original)
@@ -544,7 +674,8 @@ class AgentTests(unittest.TestCase):
                 report = proposal(index, eid=budget, category="budget")
                 text = "预算48万元（原文引用 evidence_id：" + budget + "），企业证明待核查。"
                 report[field] = text
-                self.assertEqual(validate_report(report, index, {budget, ceiling}), [])
+                # answer现在只能复用reason；新增引用ID仍经过数值/引用检查，但不可绕过组合契约。
+                self.assertEqual(validate_report(report, index, {budget, ceiling}), [] if field == "summary" else ["unexpected_answer"])
                 self.assertEqual(report[field], text)  # 检查视图去元数据，原回答及引用不改。
                 for other in (ceiling, ident("unread-fake-citation"), "a" * 64):
                     report[field] = "预算48万元（原文引用：" + other + "）。"
@@ -612,13 +743,18 @@ class AgentTests(unittest.TestCase):
         self.assertIn("finding_0_unsupported_money_role_budget", validate_report(report, index, set(ids)))
 
     def test_combined_equal_roles_and_summary_answer_require_cited_roles(self):
-        index = EvidenceIndex(money_manifest())
+        data = money_manifest()
+        data.update(kind="question", question="请说明已知预算和限价。")
+        index = EvidenceIndex(data)
         budget, ceiling, fee = [e["evidence_id"] for e in index.entries]
         report = proposal(index, eid=ceiling, category="budget")
         for field in ("summary", "answer"):
+            report["answer"] = report["findings"][0]["reason"]
             report[field] = "预算和最高限价均为48万元。"
             self.assertIn(field + "_unsupported_money_role_budget", validate_report(report, index, {budget, ceiling}))
             report[field] = "预算待核查，已知最高限价48万元。"
+            if field == "answer":
+                report["findings"][0]["reason"] = report[field]
             self.assertEqual(validate_report(report, index, {budget, ceiling}), [])
         report["findings"][0]["evidence_ids"] = [budget, ceiling]
         report["summary"] = "预算与最高限价均为48万元。"
@@ -774,7 +910,7 @@ class AgentTests(unittest.TestCase):
                 self.assertEqual(validate_report(bad, index, {eid}), [])
                 def review(messages, tools):
                     self.assertEqual(tools, [])
-                    self.assertIn("开发完成期限不等于驻场时长", messages[0]["content"])
+                    self.assertIn("原文交付完成期限不等于驻场时长", messages[0]["content"])
                     self.assertIn("主体、触发条件", messages[0]["content"])
                     context = json.loads(messages[1]["content"])
                     self.assertEqual(context["evidence"][0]["text"], text)
@@ -843,14 +979,14 @@ class AgentTests(unittest.TestCase):
         index = EvidenceIndex(data)
         eid = index.entries[0]["evidence_id"]
         fixed = proposal(index, eid=eid, category="qualification")
-        fixed["answer"] = "企业资料尚不足以核查参与安排。请按该资格条目核对是否有具有关联关系的其他供应商同时参加同一合同，并对照原文准备适用证明。"
+        fixed["answer"] = fixed["findings"][0]["reason"] = "企业参与安排资料尚未提供，当前不能确认相应参与条件。请核对资格原文条目的供应商关系适用分支。"
         fixed["questions"] = ["是否有同一负责人或存在直接控股、管理关系的其他供应商参加本次同一合同？"]
         for field in ("answer", "questions"):
             with self.subTest(field=field):
                 bad = deepcopy(fixed)
                 incorrect = "本回答不是完整清单，企业应承诺单位负责人非同一人且不存在直接控股或管理关系。"
                 bad[field] = incorrect if field == "answer" else ["企业能否出具承诺，证明单位负责人非同一人且不存在直接控股或管理关系？"]
-                self.assertEqual(validate_report(bad, index, {eid}), [])
+                self.assertEqual(validate_report(bad, index, {eid}), ["answer_not_from_current_reasons"] if field == "answer" else [])
                 def review(messages, tools):
                     context = json.loads(messages[1]["content"])
                     self.assertEqual(context["report"]["findings"][0]["requirement"], source)
@@ -858,15 +994,18 @@ class AgentTests(unittest.TestCase):
                     self.assertEqual(context["finding_evidence"][0]["evidence_ids"], [eid])
                     # finding原义正确；单独拒绝回答/问题中的扩大陈述，不能因finding通过而放行。
                     return supported(**{field + "_supported": False}, report_issues=["回答或问题遗漏其他供应商这个比较对象与共同参加同一合同的条件，扩大为公司自身不得存在关联关系。"])
-                script = Script([response([tool("read_evidence", {"evidence_ids": [eid]}, "r")]),
-                                 response([tool("finish_report", {"report": bad}, "bad")]), review,
-                                 response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
+                steps = [response([tool("read_evidence", {"evidence_ids": [eid]}, "r")]),
+                         response([tool("finish_report", {"report": bad}, "bad")])]
+                if field == "questions":
+                    steps.append(review)
+                script = Script(steps + [response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
                 result = run_agent(data, script, guard=lambda _: None, checkpoint=lambda _: None)
                 self.assertEqual(result["state"], "succeeded")
                 self.assertEqual(result["report"][field], fixed[field])
-                revision = next(json.loads(m["content"]) for m in script.calls[3][0] if m["role"] == "user" and "revision_request" in m["content"])
-                self.assertIn(field + "_unsupported", revision["validation_codes"])
-                self.assertEqual(len(script.calls), 5)
+                revision = next(json.loads(m["content"]) for m in script.calls[-2][0] if m["role"] == "user" and "revision_request" in m["content"])
+                self.assertIn("answer_not_from_current_reasons" if field == "answer" else "questions_unsupported", revision["validation_codes"])
+                self.assertEqual(revision["current_reasons"], [{"finding_index": 0, "reason": fixed["findings"][0]["reason"]}])
+                self.assertEqual(len(script.calls), 4 if field == "answer" else 5)
 
     def test_summary_status_and_explicit_capability_absence_are_semantically_revised(self):
         """通用组合脚本负例：语义意见触发修订，不把脚本结果计为真实模型质量。"""
