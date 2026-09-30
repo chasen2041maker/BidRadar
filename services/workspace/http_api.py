@@ -309,7 +309,11 @@ class Handler(BaseHTTPRequestHandler):
     def _handle(self):
         try:
             self._dispatch()
-        except (WorkspaceError, CatalogError, LocalHTTPError) as error:
+        except (CatalogError, LocalHTTPError) as error:
+            # 内部Bearer配置失效不是浏览器会话失效；不得把用户踢回一个无法解决的登录循环。
+            self._error("dependency_authentication_failed" if error.status == 401 else error.code,
+                        503 if error.status == 401 else error.status)
+        except WorkspaceError as error:
             self._error(error.code, error.status)
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             self._error("invalid_request", 400)

@@ -144,6 +144,17 @@ class WorkbenchHTTPTests(unittest.TestCase):
         with self.assertRaises(LocalHTTPError):
             research.request("POST", "/api/logout", {})
 
+    def test_service_credential_failure_does_not_invalidate_browser_session(self):
+        from services.common.local_http import LocalHTTPError
+        from unittest.mock import Mock
+        login = self.login()
+        self.web.research_client = Mock()
+        self.web.research_client.request.side_effect = LocalHTTPError("unauthorized", 401)
+        status, _, body = self.request(self.route("research/runs"), login=login)
+        self.assertEqual(status, 503)
+        self.assertEqual(body["error"]["code"], "dependency_authentication_failed")
+        self.assertEqual(self.request("/api/session", login=login)[0], 200)
+
     def create_selection(self, login, key="selection-one"):
         return self.request(self.route("selections"), login=login, data={"profile_revision": 1,
             "items": [{k: self.item[k] for k in ("notice_id", "observation_id")}], "key": key})

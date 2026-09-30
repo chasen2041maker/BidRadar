@@ -10,6 +10,7 @@ const statusNames = {known: "已提取", missing: "尚未取得依据", unparsed
 const errors = {unauthenticated: "登录已失效，请重新登录。", invalid_credentials: "账号或密码不正确。", login_limited: "登录尝试过多，请稍后重试。", forbidden: "你目前没有执行此操作的权限，请刷新公司空间。", invalid_csrf: "登录状态已变化，请刷新页面后重试。", profile_version_conflict: "企业档案已有新版本，请重新读取后提交。", profile_revision_conflict: "企业档案已有新版本，请重新读取后提交。", stale_profile: "企业档案已有新版本，请重新准备选择。", catalog_version_changed: "公告已有新版本，请刷新目录，查看新内容后重新选择。", catalog_unavailable: "目录服务暂时不可用，已保存的档案和选择仍保留。", idempotency_conflict: "相同操作标识对应了不同内容，请刷新后重新操作。", version_conflict: "记录已变化，请刷新后重新确认。", last_admin: "公司需要保留至少一位管理员。", last_admin_required: "公司需要保留至少一位管理员。", profile_required: "请先由管理员确认一版企业档案。", not_found: "记录不存在或当前无权访问。"};
 const profileFields = [["company_name", "公司名称 / 简称", "例如：山岚软件（虚构）"], ["city", "所在城市", "城市不限定可承接的地区"], ["project_types", "希望承接的项目", "软件定制、业务系统、AI应用；也可注明不接的类型"], ["capabilities", "技术与交付能力", "能负责哪些工作，有哪些技术与交付经验"], ["delivery_constraints", "交付与地域限制", "区分优先远程、可出差与明确不接受的驻场要求"], ["cases", "相关案例", "工作范围、团队角色、时间；尚不接收证明文件"], ["qualifications", "资质与证明声明", "确认有 / 没有 / 尚未确认；文字声明不是核验结果"], ["staffing", "人力与排期", "可投入角色、人数、最早时间与已知冲突"], ["commercial_constraints", "商务偏好与硬限制", "请分别写清偏好和明确不能接受的条件"]];
 Object.assign(errors, {
+  dependency_authentication_failed: "内部服务连接配置失效，暂时无法完成操作。你的登录仍有效，请由维护者检查服务配置。",
   billing_unknown: "本次调用计费结果未知，已停止自动执行。请先人工核对供应商账单与用量，不能盲目重试。",
   configuration_changed: "研究配置已升级，这个旧任务已停止。核对固定输入后，可明确新建任务。",
   selection_input_stale: "这次选择的公告或档案输入已有变化。请重新查看并确认选择，再明确发起新任务。",
