@@ -12,7 +12,7 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v4"
+VERSION = "frozen-evidence-v5"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -270,6 +270,12 @@ def _unsupported_completeness(text):
 
 def _numbers(text):
     """仅规范数值本身的前导/尾随零；不把元数据或没有引用的数字加入事实池。"""
+    # 只消除明确日期和时分窗口中的分隔符；空格排版不能让下一段变成负数。
+    # 不全局删除负号：负金额/百分比仍是不同数值，未知数字也不能因此放行。
+    text = re.sub(r"(?<!\d)(\d{4})\s*-\s*(0?[1-9]|1[0-2])\s*-\s*(0?[1-9]|[12]\d|3[01])(?!\d)",
+                  r"\1 \2 \3", text)
+    clock = r"(?:[01]?\d|2[0-3])[:：][0-5]\d(?:[:：][0-5]\d)?"
+    text = re.sub(r"(?<!\d)(" + clock + r")\s*-\s*(" + clock + r")(?!\d)", r"\1 \2", text)
     return {Decimal(value) for value in re.findall(r"(?<!\d)[+-]?\d+(?:\.\d+)?", text)}
 
 

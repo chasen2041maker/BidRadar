@@ -294,6 +294,36 @@ class AgentTests(unittest.TestCase):
         report["summary"] = "revision 1。"
         self.assertIn("summary_contains_metadata", validate_report(report, index, {index.entries[0]["evidence_id"]}))
 
+    def test_date_and_time_window_separators_do_not_create_negative_numbers(self):
+        for date, window in (("2026-10-19", "9:00-12:00"),
+                             ("2026 -10 -19", "9:00 -12:00"),
+                             ("2026 - 10 - 19", "9：00 - 12：00")):
+            with self.subTest(date=date, window=window):
+                self.input["observations"][0]["evidence_fields"]["money"][0]["evidence"][0]["text"] = (
+                    "截止日期" + date + "；获取文件时间" + window + "；预算48.000000万元。")
+                index = EvidenceIndex(self.input)
+                entry = next(e for e in index.entries if e["category"] == "budget")
+                report = proposal(index, eid=entry["evidence_id"], category="budget")
+                report["summary"] = "截止2026年10月19日，获取文件时间09:00至12:00，预算48万元。"
+                self.assertEqual(validate_report(report, index, {entry["evidence_id"]}), [])
+                report["summary"] = "截止2026年10月20日，获取文件时间09:00至13:00。"
+                self.assertIn("summary_unsupported_number", validate_report(report, index, {entry["evidence_id"]}))
+
+    def test_negative_amount_remains_distinct_from_positive_amount(self):
+        for source, same, opposite in (("48.000000万元", "+48万元", "-48万元"),
+                                       ("-48.000000万元", "-48万元", "48万元")):
+            with self.subTest(source=source):
+                self.input["observations"][0]["evidence_fields"]["money"][0]["evidence"][0]["text"] = "调整金额：" + source
+                index = EvidenceIndex(self.input)
+                entry = next(e for e in index.entries if e["category"] == "budget")
+                report = proposal(index, eid=entry["evidence_id"], category="budget")
+                report["summary"] = "调整金额：" + same
+                self.assertEqual(validate_report(report, index, {entry["evidence_id"]}), [])
+                report["summary"] = "调整金额：" + opposite
+                errors = validate_report(report, index, {entry["evidence_id"]})
+                self.assertIn("summary_unsupported_number", errors)
+                self.assertIn("summary_unsupported_numeric_unit", errors)
+
     def test_semantic_revision_preserves_dimensions_topic_and_conditional_materials(self):
         # 这些是代表性合成语义错例；脚本核验器只证明拒绝/反馈/修订流程，不能当成真实模型成绩。
         cases = [
@@ -443,6 +473,59 @@ class AgentTests(unittest.TestCase):
         self.assertNotIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
         bad["findings"][0]["status"] = "not_applicable"
         self.assertIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
+
+    def test_material_coverage_exception_and_actual_input_metadata_reach_semantic_review(self):
+        self.input["observations"][0]["material_status"] = "see_ingestion_evidence"
+        self.input["observations"][0]["evidence_fields"]["acquisition_methods"] = [
+            {"text": "采购文件通过交易平台领取。", "locator": "p:5"}]
+        index = EvidenceIndex(self.input)
+        self.assertEqual(index.category_available_count["materials"], 0)
+        self.assertEqual(index.category_available_count["other"], 1)
+        report = proposal(index)
+        report["findings"].append({"category": "materials", "status": "unknown", "evidence_ids": [],
+            "profile_fields": [], "requirement": "本次研究输入的完整文件正文覆盖情况待核查。",
+            "reason": "当前仅有规范化片段，不能据此说明系统全局未获取或未归档原件。",
+            "unknown_reason": "本次研究未提供完整文件正文。"})
+        def review(messages, tools):
+            context = json.loads(messages[1]["content"])
+            self.assertEqual(context["input_coverage"]["material_status"], ["see_ingestion_evidence"])
+            self.assertFalse(context["input_coverage"]["full_tender_read"])
+            self.assertEqual(context["input_coverage"]["evidence_ids"], [index.entries[0]["evidence_id"]])
+            self.assertEqual(context["category_available_count"]["materials"], 0)
+            self.assertEqual(context["category_available_count"]["other"], 1)
+            self.assertIn("不能仅因无引用/不是要求而判unsupported", messages[0]["content"])
+            self.assertIn("不能把措辞偏好或风格建议当作阻断", messages[0]["content"])
+            return supported(2)
+        script = self.happy(report)
+        script.steps[-1] = review
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["report"]["findings"][1]["evidence_ids"], [])
+        self.assertEqual(result["report"]["coverage"]["material_status"], ["see_ingestion_evidence"])
+
+    def test_truncated_citation_is_rejected_then_exact_read_id_is_available_for_revision(self):
+        bad = proposal(self.index)
+        bad["findings"][0]["evidence_ids"] = [self.eid[:-1]]
+        def revise(messages, tools):
+            revision = next(json.loads(m["content"]) for m in messages if m["role"] == "user" and "revision_request" in m["content"])
+            self.assertIn("finding_0_citation_scope_or_unread", revision["validation_codes"])
+            self.assertEqual(revision["read_citations"], [{"evidence_id": self.eid, "category": "technical",
+                "preview": self.index.by_id[self.eid]["text"][:160]}])
+            fixed = proposal(self.index)
+            fixed["findings"][0]["evidence_ids"] = [revision["read_citations"][0]["evidence_id"]]
+            return response([tool("finish_report", {"report": fixed}, "fixed")])
+        script = self.happy(bad)
+        script.steps[-1:] = [revise, supported()]
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["quality"]["revisions"], 1)
+        self.assertEqual(result["report"]["findings"][0]["evidence_ids"], [self.eid])
+        # 若模型继续抄短，程序仍拒绝，不做自动补字或近似匹配。
+        script = self.happy(bad)
+        script.steps[-1] = response([tool("finish_report", {"report": bad}, "still-short")])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "partial")
+        self.assertIn("finding_0_citation_scope_or_unread", result["quality"]["local_errors"])
 
     def test_scope_and_manifest_digest_guard_checkpoint(self):
         self.run_agent(self.happy())
