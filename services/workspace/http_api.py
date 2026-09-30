@@ -19,6 +19,8 @@ from urllib.parse import parse_qs, urlsplit
 from services.workspace.catalog_client import CatalogClient, CatalogError
 from services.workspace.store import WorkspaceStore, WorkspaceError
 from services.common.local_http import token_valid
+from services.common.local_http import LocalHTTPError
+from services.workspace.research_routes import dispatch as dispatch_research
 
 ASSETS = Path(__file__).with_name("web")
 MAX_BODY = 128 * 1024
@@ -205,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
                 store.check_csrf(token, csrf_values[0])
             if parts.path == "/api/session" and self.command == "GET" and not parts.query:
                 self._send(200, {"user": user, "workspaces": store.list_workspaces(uid),
-                                 "mode": "local_development", "analysis_enabled": False})
+                                 "mode": "local_development", "analysis_enabled": self.server.research_client is not None})
                 return
             if parts.path == "/api/logout" and self.command == "POST" and not parts.query:
                 _fields(body, "")
@@ -230,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
                 return member
 
             current_member()
+            handled, result = dispatch_research(self.command, action, parts.query, body, uid, wid, self.server, current_member)
+            if handled:
+                self._send(200, result)
+                return
             client = self.server.catalog_client
             if self.command == "GET":
                 if action == "notices":
@@ -303,7 +309,7 @@ class Handler(BaseHTTPRequestHandler):
     def _handle(self):
         try:
             self._dispatch()
-        except (WorkspaceError, CatalogError) as error:
+        except (WorkspaceError, CatalogError, LocalHTTPError) as error:
             self._error(error.code, error.status)
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             self._error("invalid_request", 400)
@@ -332,7 +338,8 @@ class Handler(BaseHTTPRequestHandler):
         raise AttributeError(name)
 
 
-def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0, internal_tokens=None):
+def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0, internal_tokens=None,
+                  research_client=None, tracking_client=None):
     """端口0供集成测试；只允许回环，不能把开发身份系统暴露到网卡。"""
     if host != "127.0.0.1" or type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("loopback_required")
@@ -345,6 +352,7 @@ def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0
     server.store_path = Path(store)
     server.catalog_client = client
     server.internal_tokens = internal_tokens
+    server.research_client, server.tracking_client = research_client, tracking_client
     server.authority = f"127.0.0.1:{server.server_port}"
     server.origin = "http://" + server.authority
     return server

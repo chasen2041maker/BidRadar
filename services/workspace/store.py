@@ -518,7 +518,7 @@ class WorkspaceStore:
 
     def authorize(self, user_id, workspace_id, action):
         """仅由认证过的内部入口调用；授权代数防止撤权后重新加入复活旧任务。"""
-        if action not in ("read", "analyze", "follow", "admin"):
+        if action not in ("read", "analyze", "track", "admin"):
             raise WorkspaceError("invalid_action")
         roles = ROLES if action == "read" else ({"admin"} if action == "admin" else WRITERS)
         with self._transaction():

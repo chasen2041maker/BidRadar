@@ -28,3 +28,26 @@ class CatalogEvidenceClient(LocalClient):
 
     def changes(self, after=0, limit=100):
         return self.request("GET", "/v1/changes?" + urlencode({"after": after, "limit": limit}))
+
+
+class ResearchClient(LocalClient):
+    def create_analysis(self, request):
+        return self.request("POST", "/internal/v1/analyses", request)
+
+    def run(self, run_id, workspace_id, actor_id):
+        return self.request("POST", "/internal/v1/runs/get", {"schema_version": 1,
+                            "run_id": run_id, "workspace_id": workspace_id, "actor_id": actor_id})
+
+    def command(self, workspace_id, actor_id, key):
+        return self.request("POST", "/internal/v1/commands/get", {"schema_version": 1,
+                            "key": key, "workspace_id": workspace_id, "actor_id": actor_id})
+
+    def cancel(self, run_id, workspace_id, actor_id, key):
+        return self.request("POST", "/internal/v1/runs/cancel", {"schema_version": 1,
+                            "run_id": run_id, "workspace_id": workspace_id, "actor_id": actor_id, "key": key})
+
+
+class TrackingClient(LocalClient):
+    def check_delegation(self, actor_id, workspace_id, delegation):
+        return self.request("POST", "/internal/v1/delegations/check", {"schema_version": 1,
+                            "actor_id": actor_id, "workspace_id": workspace_id, "delegation": delegation})
