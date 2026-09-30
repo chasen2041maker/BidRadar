@@ -71,7 +71,8 @@ class TransportTests(unittest.TestCase):
                          **kwargs)
 
     def fetch(self, transport, url=NOTICE, **kwargs):
-        return transport.fetch(url, max_bytes=kwargs.get("max_bytes", 1024), kind=kwargs.get("kind", "notice"))
+        return transport.fetch(url, max_bytes=kwargs.get("max_bytes", 1024), kind=kwargs.get("kind", "notice"),
+                               checkpoint=kwargs.get("checkpoint"))
 
     def assert_error(self, code, transport, url=NOTICE, **kwargs):
         with self.assertRaises(FetchError) as caught:
@@ -309,6 +310,126 @@ class TransportTests(unittest.TestCase):
         transport = self.transport([])
         for value in (0, True, 17 * 1024 * 1024):
             self.assert_error("invalid_byte_limit", transport, max_bytes=value)
+
+    def test_checkpoint_cancelled_before_robots_sends_nothing(self):
+        transport = self.transport([])
+        error = RuntimeError("cancelled")
+        def checkpoint():
+            raise error
+        with self.assertRaises(RuntimeError) as caught:
+            self.fetch(transport, checkpoint=checkpoint)
+        self.assertIs(error, caught.exception)
+        self.assertEqual((0, []), (transport.requests, self.exchange.calls))
+
+    def test_checkpoint_stops_after_robots_before_material(self):
+        transport = self.transport([ALLOW])
+        def checkpoint():
+            if transport.requests:
+                raise RuntimeError("cancelled")
+        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+            self.fetch(transport, checkpoint=checkpoint)
+        self.assertEqual([ROBOTS], [call[0] for call in self.exchange.calls])
+
+    def test_checkpoint_rechecks_after_rate_limit_sleep(self):
+        transport = self.transport([ALLOW])
+        state = {"cancelled": False}
+        def sleep(seconds):
+            self.clock.sleep(seconds)
+            state["cancelled"] = True
+        def checkpoint():
+            if state["cancelled"]:
+                raise RuntimeError("cancelled_during_wait")
+        transport.sleep = sleep
+        with self.assertRaisesRegex(RuntimeError, "cancelled_during_wait"):
+            self.fetch(transport, checkpoint=checkpoint)
+        self.assertEqual(1, transport.requests)
+        self.assertEqual([2], self.clock.waits)
+
+    def test_checkpoint_rechecks_after_dns_before_exchange(self):
+        state = {"resolutions": 0}
+        def resolver(host, port):
+            state["resolutions"] += 1
+            return ["8.8.8.8"]
+        def checkpoint():
+            if state["resolutions"] == 2:
+                raise RuntimeError("lease_lost_during_dns")
+        transport = self.transport([ALLOW], resolver=resolver)
+        with self.assertRaisesRegex(RuntimeError, "lease_lost_during_dns"):
+            self.fetch(transport, checkpoint=checkpoint)
+        self.assertEqual([ROBOTS], [call[0] for call in self.exchange.calls])
+
+    def test_checkpoint_rechecks_after_retry_wait(self):
+        for failure in (TimeoutError(), (503, {"retry-after": "7"}, b"")):
+            with self.subTest(failure=failure):
+                transport = self.transport([ALLOW, failure])
+                state = {"cancelled": False}
+                def sleep(seconds):
+                    self.clock.sleep(seconds)
+                    if transport.requests == 2:
+                        state["cancelled"] = True
+                def checkpoint():
+                    if state["cancelled"]:
+                        raise RuntimeError("cancelled_during_retry_wait")
+                transport.sleep = sleep
+                with self.assertRaisesRegex(RuntimeError, "cancelled_during_retry_wait"):
+                    self.fetch(transport, checkpoint=checkpoint)
+                self.assertEqual([ROBOTS, NOTICE], [call[0] for call in self.exchange.calls])
+                self.assertEqual(2, transport.requests)
+
+    def test_checkpoint_stops_redirect_target_and_followup_material(self):
+        transport = self.transport([ALLOW, (302, {"location": OTHER}, b"")])
+        def checkpoint():
+            if transport.requests == 2:
+                raise RuntimeError("cancelled_after_redirect")
+        with self.assertRaisesRegex(RuntimeError, "cancelled_after_redirect"):
+            self.fetch(transport, checkpoint=checkpoint)
+        self.assertEqual([ROBOTS, NOTICE], [call[0] for call in self.exchange.calls])
+        # 第二次fetch即使复用robots缓存，仍不能借缓存绕过持久取消检查。
+        transport = self.transport([ALLOW, PAGE])
+        self.fetch(transport)
+        with self.assertRaisesRegex(RuntimeError, "cancelled_after_redirect"):
+            self.fetch(transport, OTHER, checkpoint=checkpoint)
+        self.assertEqual(2, transport.requests)
+
+    def test_checkpoint_errors_are_not_retried_wrapped_or_mutated(self):
+        # 模拟StoreError可能继承的异常；robots的错误包装和网络重试都不能吞掉它。
+        for error in (RuntimeError("store_cancelled"), OSError("store_io"),
+                      FetchError("store_cancelled", attempts=17)):
+            with self.subTest(error=error):
+                state = {"resolved": False}
+                def resolver(host, port):
+                    state["resolved"] = True
+                    return ["8.8.8.8"]
+                def checkpoint():
+                    if state["resolved"]:
+                        raise error
+                transport = self.transport([], resolver=resolver)
+                with self.assertRaises(type(error)) as caught:
+                    self.fetch(transport, checkpoint=checkpoint)
+                self.assertIs(error, caught.exception)
+                self.assertEqual(0, transport.requests)
+                if isinstance(error, FetchError):
+                    self.assertEqual(17, error.attempts)
+
+    def test_checkpoint_does_not_interrupt_inflight_exchange(self):
+        transport = self.transport([ALLOW, PAGE])
+        original = transport.exchange
+        state = {"cancelled": False, "completed": False}
+        def exchange(*args):
+            response = original(*args)
+            if args[0] == NOTICE:
+                state["cancelled"] = True
+                # 取消发生在请求中途，当前HTTP仍完成，之后才传播取消而不交付后续动作。
+                state["completed"] = True
+            return response
+        def checkpoint():
+            if state["cancelled"]:
+                raise RuntimeError("cancelled_in_flight")
+        transport.exchange = exchange
+        with self.assertRaisesRegex(RuntimeError, "cancelled_in_flight"):
+            self.fetch(transport, checkpoint=checkpoint)
+        self.assertTrue(state["completed"])
+        self.assertEqual(2, transport.requests)
 
 
 class FakeSocket:

@@ -37,6 +37,22 @@ class FetchError(Exception):
         super().__init__(code)
 
 
+class _CheckpointFailure(Exception):
+    """只在传输内部穿过重试/robots包装；fetch边界恢复回调抛出的原异常。"""
+
+    def __init__(self, error):
+        self.error, self.traceback = error, error.__traceback__
+
+
+def _checkpoint(callback):
+    if callback is not None:
+        try:
+            callback()
+        except Exception as error:
+            # StoreError等属于任务控制；即使其继承OSError/FetchError，也不得误当网络故障。
+            raise _CheckpointFailure(error) from None
+
+
 @dataclass(frozen=True)
 class FetchResult:
     url: str
@@ -412,11 +428,13 @@ class Transport:
             raise FetchError("time_budget_exceeded")
         return remaining
 
-    def _wait(self, delay):
+    def _wait(self, delay, checkpoint):
+        _checkpoint(checkpoint)
         if delay >= self._remaining():
             raise FetchError("time_budget_exceeded")
         if delay > 0:
             self.sleep(delay)
+        _checkpoint(checkpoint)
         self._remaining()
 
     def _authorize(self, url, kind):
@@ -426,25 +444,32 @@ class Transport:
         if urlsplit(url).hostname in self.blocked_hosts:
             raise FetchError("blocked")
 
-    def _request(self, url, kind, max_bytes, delay):
+    def _request(self, url, kind, max_bytes, delay, checkpoint):
+        _checkpoint(checkpoint)
         self._authorize(url, kind)
         if self.requests >= self.max_requests:
             raise FetchError("request_budget_exceeded")
         if self.bytes_received >= MAX_TOTAL_BYTES:
             raise FetchError("byte_budget_exceeded")
         if self.last_request is not None:
-            self._wait(max(0, max(self.min_interval, delay) - (self.clock() - self.last_request)))
+            self._wait(max(0, max(self.min_interval, delay) - (self.clock() - self.last_request)), checkpoint)
+        _checkpoint(checkpoint)
         self._authorize(url, kind)  # 限频等待后可能已过期，不能沿用等待前的批准。
         parts = urlsplit(url)
         port = 443 if parts.scheme == "https" else 80
-        addresses = (self.resolver(parts.hostname, port) if self.resolver else
-                     _resolve(parts.hostname, port, min(self.timeout, self._remaining())))
+        try:
+            addresses = (self.resolver(parts.hostname, port) if self.resolver else
+                         _resolve(parts.hostname, port, min(self.timeout, self._remaining())))
+        finally:
+            _checkpoint(checkpoint)
         try:
             addresses = tuple(ipaddress.ip_address(value) for value in addresses)
             if not addresses or any(not _public_unicast(address) for address in addresses):
                 raise ValueError()
         except ValueError:
             raise FetchError("dns_not_public") from None
+        # 等待与DNS期间可能已取消或丢失租约；不能让开始fetch时的检查覆盖后续请求。
+        _checkpoint(checkpoint)
         self._authorize(url, kind)
         timeout = min(self.timeout, self._remaining())
         self.last_request = self.clock()
@@ -468,12 +493,13 @@ class Transport:
             raise FetchError("content_encoding_not_supported", status)
         return status, headers, body
 
-    def _robots_for(self, url):
+    def _robots_for(self, url, checkpoint):
+        _checkpoint(checkpoint)
         parts = urlsplit(url)
         origin = f"{parts.scheme}://{parts.netloc}"
         if origin not in self.robots:
             try:
-                _, status, _, body = self._read(origin + "/robots.txt", "robots", MAX_ROBOTS_BYTES)
+                _, status, _, body = self._read(origin + "/robots.txt", "robots", MAX_ROBOTS_BYTES, checkpoint)
                 self.robots[origin] = _parse_robots(body)
             except FetchError as exc:
                 if exc.code in ("blocked", "policy_expired_or_not_yet_valid", "request_budget_exceeded", "time_budget_exceeded"):
@@ -494,31 +520,36 @@ class Transport:
         except (ValueError, TypeError, OverflowError):
             raise FetchError("retry_after_out_of_bounds") from None
 
-    def _read(self, url, kind, max_bytes):
+    def _read(self, url, kind, max_bytes, checkpoint):
+        _checkpoint(checkpoint)
         self._authorize(url, kind)
         initial_host = urlsplit(url).hostname
         for redirects in range(4):
+            _checkpoint(checkpoint)
             self._authorize(url, kind)
-            robots = self._robots_for(url) if kind != "robots" else _Robots((), 0)
+            robots = self._robots_for(url, checkpoint) if kind != "robots" else _Robots((), 0)
             if not robots.permits(url):
                 raise FetchError("robots_denied")
             for attempt in range(self.max_attempts):
                 try:
-                    status, headers, body = self._request(url, kind, max_bytes, robots.delay)
+                    status, headers, body = self._request(url, kind, max_bytes, robots.delay, checkpoint)
                 except ssl.SSLError:
+                    _checkpoint(checkpoint)
                     raise FetchError("tls_error") from None
                 except (OSError, http.client.HTTPException):
+                    _checkpoint(checkpoint)
                     if attempt + 1 == self.max_attempts:
                         raise FetchError("network_error") from None
-                    self._wait(min(2 ** attempt, 10))
+                    self._wait(min(2 ** attempt, 10), checkpoint)
                     continue
+                _checkpoint(checkpoint)
                 if status in (401, 403, 429):
                     self.blocked_hosts.add(urlsplit(url).hostname)
                     raise FetchError("blocked", status)
                 if status in (500, 502, 503, 504):
                     if attempt + 1 == self.max_attempts:
                         raise FetchError("http_error", status)
-                    self._wait(self._retry_delay(headers, attempt))
+                    self._wait(self._retry_delay(headers, attempt), checkpoint)
                     continue
                 break
             if status in (301, 302, 303, 307, 308):
@@ -539,16 +570,22 @@ class Transport:
             return url, status, headers, body
         raise FetchError("redirect_limit")
 
-    def fetch(self, url, *, max_bytes, kind):
-        """只交付完整成功响应；失败不给半截原件。robots未知时不发送资料请求。"""
+    def fetch(self, url, *, max_bytes, kind, checkpoint=None):
+        """完整响应或故障；checkpoint在每次后续网络动作前重验持久取消/租约。
+
+        回调来自可信编排代码，不来自policy或网页；其异常原样返回。不强行中断已在途
+        HTTP，而在它结束以及等待/DNS后检查，阻止后续robots、材料、重试或重定向请求。
+        """
         before = self.requests
         try:
             if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_BODY_BYTES:
                 raise FetchError("invalid_byte_limit")
-            final_url, status, headers, body = self._read(url, kind, max_bytes)
+            final_url, status, headers, body = self._read(url, kind, max_bytes, checkpoint)
             return FetchResult(url, final_url, status, headers, body,
                                self.utcnow().astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
                                self.requests - before)
+        except _CheckpointFailure as exc:
+            raise exc.error.with_traceback(exc.traceback) from None
         except FetchError as exc:
             exc.attempts = self.requests - before
             raise
