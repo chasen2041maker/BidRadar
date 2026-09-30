@@ -83,17 +83,21 @@ def _role(label):
 def _claim(label, value, proof, parse_money, *, package=None, label_unit=None):
     """仅解析标签后的数值前缀；范围、约数和单位不明均保留为未解析。"""
     money = None
+    foreign = re.search(r"美元|美金|欧元|港元|港币|日元|日圆|英镑|\b(?:USD|EUR|HKD|JPY|GBP)\b", value, re.I)
     match = re.match(r"\s*(?:人民币\s*)?[￥¥]?\s*(" + NUMBER + r")\s*(万元|元)?", value)
     if match:
         number, unit = match.groups()
         tail = value[match.end():]
         # 10-12万元/10余万元不能被截成10元；小数/逗号残片也不能部分成功。
-        if not re.match(r"\s*(?:[-~～—至到余多.\d]|[,，]\d|左右|上下|以上|以下|起|以内|不等|[（(](?:暂定|估算|约))", tail):
+        uncertain = re.match(r"\s*(?:[-~～—至到余多.\d]|[,，]\d|左右|上下|以上|以下|起|以内|不等|[（(](?:暂定|估算|约))", tail)
+        # 标签上的“万元”不能把未支持的“亿元/亿美元”数值前缀变成10万元。
+        wrong_unit = unit is None and re.match(r"\s*(?:亿|万亿|千|百|十|USD|EUR|HKD|JPY|GBP)", tail, re.I)
+        if not uncertain and not foreign and not wrong_unit:
             unit = unit or label_unit
             if unit is None and re.match(r"\s*[（(](?:元|万元)(?:[/／]|[）)])", tail):
                 unit = "万元" if "万元" in tail[:8] else "元"
             money = parse_money(number + (unit or ""), label)
-    if money is None and _role(label) == "deposit":
+    if money is None and _role(label) == "deposit" and not foreign:
         # 大写人民币保证金常附括号阿拉伯数；只接受唯一显式人民币符号，不解析百分比为总额。
         amounts = re.findall(r"[（(]\s*[￥¥]\s*(" + NUMBER + r")\s*[）)]", value)
         if len(amounts) == 1 and "人民币" in value:

@@ -127,6 +127,12 @@ class EvidenceSemanticsTests(unittest.TestCase):
         self.assertFalse(any(x["role"] == "unit_price" and x["amount"] == "0" for x in extra["money"]))
         self.assertEqual(extra["budget_assessment"]["status"], "context_required")
 
+    def test_prefix_parser_does_not_override_unsupported_currency_or_large_unit(self):
+        for value in ("10元（美元）", "10亿元", "10亿美元", "10元 USD"):
+            item = observation(metadata=[("预算（万元）", value)])
+            self.assertEqual(item["facts"]["budget"]["status"], "unparsed")
+            self.assertIsNone(item["evidence_fields"]["money"][0]["amount"])
+
     def test_source_precedence_without_recovered_body_amount_does_not_trust_summary(self):
         item = observation("因系统问题，预算金额以正文采购需求为准。", metadata=[("预算金额", "1万元")])
         self.assertEqual(item["facts"]["budget"]["status"], "unparsed")
