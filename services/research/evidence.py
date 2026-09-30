@@ -11,7 +11,7 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v2"
+VERSION = "frozen-evidence-v3"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -195,19 +195,45 @@ class EvidenceIndex:
                 self._walk(item, path + "." + str(i), observation, depth + 1)
 
     def search(self, query, category=None, limit=6):
-        if (not _string(query, 200) or category is not None and (not isinstance(category, str) or category not in CATEGORIES)
+        """兼容原列表接口；带匹配模式/覆盖信息的Agent工具使用search_result。"""
+        return self.search_result(query, category, limit)["evidence"]
+
+    @property
+    def category_available_count(self):
+        return {category: sum(entry["category"] == category for entry in self.entries) for category in sorted(CATEGORIES)}
+
+    def search_result(self, query, category=None, limit=6):
+        """关键词零命中时有标记地回退同分类原片段，不能据此宣称采购没有要求。
+
+        query=''仅在指定分类时表示浏览。回退仍受limit限制，返回原始证据对象，
+        不改写原文或生成新引用；调用方与普通命中一样记录read_ids。
+        """
+        if (not _string(query, 200, empty=True) or not query.strip() and category is None
+                or category is not None and (not isinstance(category, str) or category not in CATEGORIES)
                 or type(limit) is not int or not 1 <= limit <= 8):
             raise EvidenceError("invalid_search")
+        query = query.strip()
         terms = _terms(query)
-        ranked = []
+        ranked, candidates = [], []
         for entry in self.entries:
             if category is not None and entry["category"] != category:
                 continue
-            score = len(terms & _terms(entry["text"])) + (5 if query.lower() in entry["text"].lower() else 0)
+            candidates.append(entry)
+            score = len(terms & _terms(entry["text"])) + (5 if query and query.lower() in entry["text"].lower() else 0)
             if score:
                 ranked.append((score, entry["evidence_id"], entry))
         ranked.sort(key=lambda item: (-item[0], item[1]))
-        return [deepcopy(x[2]) for x in ranked[:limit]]
+        if ranked:
+            selected, mode = [x[2] for x in ranked], "keyword"
+        elif category is not None:
+            selected, mode = candidates, "category_fallback" if query else "category_browse"
+        else:
+            selected, mode = [], "no_match"
+        return {"evidence": deepcopy(selected[:limit]), "match_mode": mode, "category": category,
+                "keyword_match_count": len(ranked), "category_available_count": self.category_available_count,
+                "selected_category_available_count": len(candidates) if category is not None else None,
+                "truncated": len(selected) > limit,
+                "retrieval_note": "零关键词命中不代表要求不存在。分类回退/浏览是原始候选片段，仍须逐条判断；可用空query浏览指定分类。"}
 
     def read(self, ids):
         if (not isinstance(ids, list) or not 1 <= len(ids) <= 8 or any(not isinstance(x, str) for x in ids)
@@ -219,6 +245,26 @@ class EvidenceIndex:
         return {"mode": "normalized_snippets", "full_tender_read": False, "observation_ids": self.observation_ids,
                 "evidence_ids": sorted(set(read_ids)), "available_evidence_count": len(self.entries),
                 "material_status": [str(x.get("material_status", "unknown"))[:200] for x in self.manifest["observations"]]}
+
+
+def _unsupported_completeness(text):
+    """明确否定不因出现关键词而被误伤，复杂含义仍须语义核验。
+
+    否定作用域限定当前分句和紧邻词组，不能用前一句免责声明豁免后面的实际承诺。
+    """
+    claims = re.compile(r"(?:已经|已|全部|完整)(?:完整|全部)?(?:阅读|读完|审阅|取得|读).{0,10}(?:全文|标书|招标文件|采购文件|PDF全文)"
+                        r"|(?:全文|全部标书)(?:已读|已阅读|已审阅)"
+                        r"|(?:全部|所有)(?:资格条件|资格|条件)(?:均|都)?(?:已)?满足"
+                        r"|(?:已|已经)满足(?:全部|所有)(?:资格|条件)|中标概率", re.I)
+    before_negative = re.compile(r"(?:不|未|没有)(?:会|能|可|应)?(?:承诺|保证|包含|提供|计算|评估|预测|估算|宣称|声称|认定|确认|判断|给出|输出|涉及)(?:任何|具体|精确)?$"
+                                 r"|(?:并非|不是|不代表|不意味着|不等于|不能据此认为|不能认定|未能确认|尚无法确认)$")
+    after_negative = re.compile(r"^(?:暂不|不|未|尚未|无法|不能)(?:予以|予)?(?:提供|计算|评估|预测|估算|给出|确认)")
+    for clause in re.split(r"[，,。；;！!？?\n]", text):
+        for match in claims.finditer(clause):
+            before, after = clause[:match.start()].rstrip(), clause[match.end():].lstrip()
+            if not before_negative.search(before) and not after_negative.search(after):
+                return True
+    return False
 
 
 def validate_report(report, index, read_ids):
@@ -236,7 +282,7 @@ def validate_report(report, index, read_ids):
         errors.append("question_answer_missing")
     if CONTACT.search(canonical(report)):
         errors.append("report_contact_information")
-    if re.search(r"(?:已|全部|完整)(?:阅读|读完|审阅|取得).{0,10}(?:标书|招标文件|采购文件|PDF全文)|(?:全部|所有)(?:资格|条件)(?:均)?满足|中标概率", canonical(report), re.I):
+    if _unsupported_completeness(canonical(report)):
         errors.append("unsupported_completeness")
     supported_numbers = set()
     for i, finding in enumerate(report["findings"]):
@@ -257,7 +303,7 @@ def validate_report(report, index, read_ids):
         if any(x not in index.by_id or x not in read_ids for x in ids):
             errors.append(prefix + "citation_scope_or_unread")
             continue
-        if not ids and finding["category"] != "materials":
+        if not ids and (finding["category"] != "materials" or finding["status"] != "unknown"):
             errors.append(prefix + "missing_evidence")
         if finding["status"] == "unknown" and not finding["unknown_reason"]:
             errors.append(prefix + "missing_unknown_reason")

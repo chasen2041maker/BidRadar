@@ -250,6 +250,70 @@ class AgentTests(unittest.TestCase):
         self.assertIn("finding_0_unsupported_number", errors)
         self.assertIn("unsupported_completeness", errors)
 
+    def test_negated_disclaimer_not_confused_with_positive_completeness_claims(self):
+        report = proposal(self.index)
+        negatives = ["本报告未承诺任何资格满足结论，也不包含中标概率或投标动作建议。",
+                     "尚未阅读全文，不能声称已读全文。", "已归档PDF不等于全文已读。",
+                     "不承诺所有资格均满足。中标概率不予评估。"]
+        for statement in negatives:
+            report["summary"] = statement
+            with self.subTest(statement=statement):
+                self.assertNotIn("unsupported_completeness", validate_report(report, self.index, {self.eid}))
+        positives = ["所有资格条件均已满足。", "已读全文。", "已完整阅读招标文件。", "企业已经满足全部资格。",
+                     "中标概率很高。", "不提供中标概率，但中标概率很高。", "不能否认中标概率很高。",
+                     "不能声称已读全文，但本次已读全文。"]
+        for statement in positives:
+            report["summary"] = statement
+            with self.subTest(statement=statement):
+                self.assertIn("unsupported_completeness", validate_report(report, self.index, {self.eid}))
+
+    def test_empty_category_keyword_returns_labelled_original_deadline_and_agent_reads_it(self):
+        text = "合同履行期限：合同签订后60日内完成系统开发"
+        self.input["observations"][0]["evidence_fields"]["delivery_evidence"][0]["text"] = text
+        index = EvidenceIndex(self.input)
+        query = "服务期 交付 工期 部署 驻场"
+        fallback = index.search_result(query, "delivery", 8)
+        self.assertEqual(fallback["match_mode"], "category_fallback")
+        self.assertEqual(fallback["keyword_match_count"], 0)
+        self.assertEqual(fallback["category_available_count"]["delivery"], 1)
+        self.assertEqual(fallback["evidence"][0]["text"], text)
+        self.assertEqual(index.search_result("", "delivery")["match_mode"], "category_browse")
+        self.assertEqual(index.search_result("未匹配关键词", None)["evidence"], [])
+        with self.assertRaises(EvidenceError):
+            index.search_result("", None)
+        eid = fallback["evidence"][0]["evidence_id"]
+        def finish(messages, tools):
+            output = json.loads(next(m["content"] for m in messages if m["role"] == "tool"))
+            self.assertEqual(output["match_mode"], "category_fallback")
+            self.assertEqual(output["evidence"][0]["evidence_id"], eid)
+            return response([tool("finish_report", {"report": proposal(index, eid=eid, category="delivery")}, "finish")])
+        script = Script([response([tool("search_evidence", {"query": query, "category": "delivery", "limit": 8}, "search")]), finish, supported()])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertIn(eid, result["report"]["coverage"]["evidence_ids"])
+        self.assertEqual(next(e["text"] for e in result["report"]["references"] if e["evidence_id"] == eid), text)
+        self.assertEqual(json.loads(script.calls[0][0][1]["content"])["category_available_count"]["delivery"], 1)
+
+    def test_missing_requirement_evidence_has_chinese_revision_guidance_and_moves_to_questions(self):
+        bad = proposal(self.index)
+        bad["findings"][0].update(evidence_ids=[], category="delivery", requirement="交付期限尚未取得原文。")
+        fixed = proposal(self.index)
+        fixed["questions"].append("交付期限仍需补充原文核查。")
+        script = Script([response([tool("search_evidence", {"query": "软件开发", "category": "technical", "limit": 6}, "s")]),
+                         response([tool("finish_report", {"report": bad}, "bad")]),
+                         response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        revision = next(json.loads(m["content"]) for m in script.calls[2][0] if m["role"] == "user" and "revision_request" in m["content"])
+        self.assertIn("移到questions", revision["corrections"][0]["correction"])
+        for category in ("technical", "delivery", "commercial", "other"):
+            bad["findings"][0]["category"] = category
+            self.assertIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
+        bad["findings"][0]["category"] = "materials"
+        self.assertNotIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
+        bad["findings"][0]["status"] = "not_applicable"
+        self.assertIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
+
     def test_scope_and_manifest_digest_guard_checkpoint(self):
         self.run_agent(self.happy())
         changed = deepcopy(self.input)
