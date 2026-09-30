@@ -51,7 +51,7 @@ python -m services.ingestion cancel RUN_ID
 python -m services.ingestion resume RUN_ID
 ```
 
-show输出当前状态；replay校验字节后新增解析记录，不联网、不覆盖旧解析。取消只能作用queued/running，终态保持不变；取消不会中断已在途的HTTP，但提交前重验会拒绝迟到结果。Ctrl+C尽量释放运行为queued；进程被强杀后等待120秒租约过期再resume。租约过期执行者不能提交，极慢请求可能需要恢复；不承诺每次HTTP恰好一次。
+show输出当前状态；replay校验字节后新增解析记录，不联网、不覆盖旧解析。取消只能作用queued/running，终态保持不变；取消不会中断已在途的HTTP，但内部每次请求前、等待/DNS后及提交前重验持久租约，覆盖robots/重试/重定向，拒绝后续请求与迟到结果。Ctrl+C尽量释放运行为queued；进程被强杀后等待120秒租约过期再resume。租约过期执行者不能提交，极慢请求可能需要恢复；不承诺每次HTTP恰好一次。
 
 成功/部分/受阻/失败/取消均为终态，resume直接返回已有结果。需要重新获取时使用新幂等键，不能靠换键绕过站点限制；须先解决实际原因并复核准入。
 

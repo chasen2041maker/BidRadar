@@ -114,14 +114,15 @@ class _Node:
             yield node
             pending.extend(child for child in reversed(node.children) if isinstance(child, _Node))
 
-    def text(self, *, skip_listing_rows: bool = False, skip_notice_body: bool = False) -> str:
+    def text(self, *, skip_listing_rows: bool = False, skip_notice_body: bool = False,
+             omit: _Node | None = None) -> str:
         pending: list[_Node | str] = [self]
         parts: list[str] = []
         while pending:
             item = pending.pop()
             if isinstance(item, str):
                 parts.append(item)
-            elif item.tag not in ("script", "style"):
+            elif item is not omit and item.tag not in ("script", "style", "head"):
                 if skip_notice_body and "vF_detail_content" in (item.attrs.get("class") or "").split():
                     continue
                 # 页面级访问提示与招标标题分开；验证码系统采购不是验证码挑战页。
@@ -286,16 +287,17 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
         return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("malformed_html",), fingerprint)
     nodes = list(document.root.walk())
     body = [node for node in nodes if "vF_detail_content" in (node.attrs.get("class") or "").split()]
-    # 只在正文外判挑战，避免正常正文中的“验证码系统”触发误报。
-    if any(word in document.root.text(skip_notice_body=True)
-           for word in ("验证码", "访问频繁", "访问过于频繁", "访问受限")):
-        return NoticePage(ParseStatus.BLOCKED, None, None, (), ("access_challenge",), fingerprint)
-    if len(body) != 1 or not body[0].text():
-        return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("unexpected_notice_template",), fingerprint)
     title_node = next((node for node in nodes if node.tag == "h2"
                        and {"title", "tc"}.intersection((node.attrs.get("class") or "").split())), None)
     if title_node is None:
         title_node = next((node for node in nodes if node.tag == "h1"), None)
+    # 已识别标题/正文属于公告数据，“验证码系统采购”不是页面挑战。
+    # 只跳过这个标题节点；残留公告旁的独立挑战提示仍会被拦截。
+    if any(word in document.root.text(skip_notice_body=True, omit=title_node if len(body) == 1 else None)
+           for word in ("验证码", "访问频繁", "访问过于频繁", "访问受限")):
+        return NoticePage(ParseStatus.BLOCKED, None, None, (), ("access_challenge",), fingerprint)
+    if len(body) != 1 or not body[0].text():
+        return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("unexpected_notice_template",), fingerprint)
     title = title_node.text() if title_node else None
     attachments: list[dict[str, str]] = []
     issues = [] if title else ["missing_notice_title"]

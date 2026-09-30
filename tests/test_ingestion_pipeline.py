@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from services.ingestion.__main__ import main
-from services.ingestion.archive import Store
+from services.ingestion.archive import Store, StoreError
 from services.ingestion.demo import ATTACHMENT_URL, NOTICE_URL, DemoTransport, demo_request
 from services.ingestion.pipeline import execute, parse_capture, replay, request_spec
 from services.ingestion.transport import FetchError, FetchResult, SourcePolicy, Transport
@@ -54,6 +54,33 @@ class PipelineTests(unittest.TestCase):
             result = replay(self.store, capture["id"])
         self.assertEqual(result["parsed"]["raw_sha256"], capture["sha256"])
         self.assertEqual(self.store.capture(capture["id"]), before)
+
+    def test_equivalent_listing_and_explicit_urls_share_task_identity_and_version(self):
+        uppercase = NOTICE_URL.replace("https://www.ccgp.gov.cn", "HTTPS://WWW.CCGP.GOV.CN")
+        class RepeatedCase(DemoTransport):
+            def fetch(self, url, **kwargs):
+                response = super().fetch(url, **kwargs)
+                if kwargs["kind"] != "listing":
+                    return response
+                rows = ''.join('<li><a href="' + link + '">虚构系统</a><span>日期未知</span></li>'
+                               for link in (NOTICE_URL, uppercase + "#section"))
+                body = ('<ul class="vT-srch-result-list-bid">' + rows + '</ul>').encode()
+                return FetchResult(url, url, 200, response.headers, body, response.fetched_at, 1)
+        transport = RepeatedCase()
+        report = execute(self.store, self.register(request_spec(keyword="软件", max_notices=1)), transport)
+        self.assertEqual(self.store.task_count(report["run"]["id"], "notice"), 1)
+        self.assertEqual(sum(kind == "notice" for _, kind in transport.calls), 1)
+        self.assertEqual(report["captures"][0]["parsed"]["notices_outside_run_limit"], 0)
+        # 原始列表证据保留大小写；用于入队、身份、内容版本的地址则共用规范规则。
+        self.assertIn("WWW.CCGP", report["captures"][0]["parsed"]["items"][1]["url"])
+        notice = next(c for c in report["captures"] if c["kind"] == "notice")
+        explicit = execute(self.store, self.register(request_spec(notice_urls=[uppercase]), "explicit"), DemoTransport())
+        self.assertEqual(explicit["captures"][0]["version_id"], notice["version_id"])
+        self.assertEqual(explicit["captures"][0]["parsed"]["notice_id"], notice["parsed"]["notice_id"])
+        parsed = parse_capture("notice", self.store.read_blob(notice["sha256"]), notice["headers"], uppercase)
+        self.assertEqual(parsed["notice_id"], notice["parsed"]["notice_id"])
+        self.assertNotEqual(request_spec(notice_urls=[NOTICE_URL])["notice_urls"],
+                            request_spec(notice_urls=[NOTICE_URL.replace("https:", "http:")])["notice_urls"])
 
     def test_process_interruption_resumes_without_repeating_committed_page(self):
         run_id = self.register()
@@ -245,6 +272,44 @@ class PipelineTests(unittest.TestCase):
             code = main(["--store", str(self.root), "verify"])
         self.assertEqual(code, 4)
         self.assertEqual(json.loads(output.getvalue()), {"event": "error", "code": "storage_database_error"})
+
+    def test_persistent_cancellation_stops_internal_robots_retry_and_redirect_requests(self):
+        # 调用真实Transport内部循环，在前一次HTTP完成时持久取消；不得再发下一次HTTP。
+        for phase in ("robots", "retry", "redirect", "dns", "lease_expiry"):
+            with self.subTest(phase=phase):
+                run_id = self.register(request_spec(notice_urls=[NOTICE_URL]), key=phase)
+                now = datetime.now(timezone.utc)
+                policy = SourcePolicy.from_dict({"schema_version": 1, "approved": True,
+                    "purpose": "synthetic cancel test", "reviewed_at": (now - timedelta(hours=1)).isoformat(),
+                    "expires_at": (now + timedelta(hours=1)).isoformat(), "evidence": ["synthetic-only"],
+                    "attachments_allowed": False, "allowed": [
+                        {"host": "www.ccgp.gov.cn", "path_prefix": "/cggg/", "kinds": ["notice"]}]})
+                calls = []
+                def resolver(host, port):
+                    if phase == "dns":
+                        self.store.cancel(run_id)
+                    return ["8.8.8.8"]
+                def exchange(url, ip, timeout, limit):
+                    calls.append(url)
+                    if url.endswith("/robots.txt"):
+                        if phase == "robots":
+                            self.store.cancel(run_id)
+                        if phase == "lease_expiry":
+                            with self.store.db:
+                                self.store.db.execute("UPDATE runs SET lease_until=0 WHERE id=?", (run_id,))
+                        return 200, {}, b"User-agent: *\nAllow: /\n"
+                    self.store.cancel(run_id)
+                    return (503, {"retry-after": "0"}, b"") if phase == "retry" else (302, {"location": NOTICE_URL}, b"")
+                transport = Transport(policy, exchange=exchange, resolver=resolver, min_interval=0)
+                with patch("socket.socket", side_effect=AssertionError("取消集成测试禁止联网")):
+                    if phase == "lease_expiry":
+                        with self.assertRaisesRegex(StoreError, "lease_lost_or_cancelled"):
+                            execute(self.store, run_id, transport)
+                        self.assertEqual(self.store.run(run_id)["status"], "queued")
+                    else:
+                        self.assertEqual(execute(self.store, run_id, transport)["run"]["status"], "cancelled")
+                self.assertEqual(len(calls), 0 if phase == "dns" else (1 if phase in ("robots", "lease_expiry") else 2))
+                self.assertEqual(self.store.report(run_id)["captures"], [])
 
 
 if __name__ == "__main__":

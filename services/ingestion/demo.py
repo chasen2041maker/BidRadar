@@ -22,7 +22,9 @@ class DemoTransport:
     def __init__(self):
         self.calls = []
 
-    def fetch(self, url, *, max_bytes, kind):
+    def fetch(self, url, *, max_bytes, kind, checkpoint=None):
+        if checkpoint is not None:
+            checkpoint()
         self.calls.append((url, kind))
         if kind == "listing":
             body = ('<ul class="vT-srch-result-list-bid"><li><a href="' + NOTICE_URL

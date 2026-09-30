@@ -29,6 +29,21 @@ class NoticeTests(unittest.TestCase):
     def test_captcha_system_in_notice_body_is_not_a_challenge(self):
         self.assertEqual(parse_notice_page(self.page("验证码系统采购"), URL).status, ParseStatus.OK)
 
+    def test_captcha_system_in_notice_title_is_not_a_challenge(self):
+        for heading in ('<h2 class="tc">验证码系统采购</h2>', '<h1>验证码系统采购</h1>'):
+            with self.subTest(heading=heading):
+                page = '<head><title>验证码系统采购</title></head>' + heading + '<div class="vF_detail_content">正常正文</div>'
+                result = parse_notice_page(page, URL)
+                self.assertEqual(result.status, ParseStatus.OK)
+                self.assertEqual(result.title, "验证码系统采购")
+                self.assertEqual(result.text, "正常正文")
+
+    def test_residual_captcha_project_title_does_not_hide_external_challenge(self):
+        page = self.page("残留正文").replace("虚构采购", "验证码系统采购")
+        result = parse_notice_page(page + '<aside>请输入验证码后继续访问</aside>', URL)
+        self.assertEqual(result.status, ParseStatus.BLOCKED)
+        self.assertIsNone(result.text)
+
     def test_script_not_executed_or_treated_as_text(self):
         result = parse_notice_page(self.page("范围<script>secret()</script>"), URL)
         self.assertNotIn("secret", result.text)

@@ -27,6 +27,19 @@ BLOCKING_ERRORS = frozenset({
 })
 
 
+def _canonical_notice_url(url: str) -> str:
+    """入口、列表后继和公告身份共用规则；不合并HTTP/HTTPS或不同查询参数。
+
+    主机/协议大小写与片段不改变本次获取对象。列表原始链接仍留在解析结果/payload，
+    只用规范链接排队及生成身份，避免同一公告提前耗尽条数上限。
+    """
+    accepted = _notice_url(url) if isinstance(url, str) else None
+    if accepted is None:
+        raise ValueError("公告须为CCGP已登记路径")
+    parts = urlsplit(accepted)
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, ""))
+
+
 def request_spec(*, keyword: str | None = None, notice_urls=(), pages: int = 1,
                  max_notices: int = 10, max_attachments: int = 5,
                  attachments: bool = False, start_date=None, end_date=None) -> dict:
@@ -41,10 +54,7 @@ def request_spec(*, keyword: str | None = None, notice_urls=(), pages: int = 1,
         raise ValueError("公告数量超出本次上限")
     urls = []
     for url in notice_urls:
-        if not isinstance(url, str) or _notice_url(url) is None:
-            raise ValueError("公告须为CCGP已登记路径")
-        parts = urlsplit(_notice_url(url))
-        canonical = urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, ""))
+        canonical = _canonical_notice_url(url)
         if canonical not in urls:
             urls.append(canonical)
     if keyword is not None:
@@ -102,7 +112,7 @@ def parse_capture(kind: str, body: bytes, headers: dict, url: str) -> dict:
     parsed["raw_sha256"] = sha256(body).hexdigest()
     parsed["encoding"] = encoding
     if kind == "notice":
-        parsed["notice_id"] = sha256(("cn_ccgp\n" + url).encode()).hexdigest()
+        parsed["notice_id"] = sha256(("cn_ccgp\n" + _canonical_notice_url(url)).encode()).hexdigest()
     return parsed
 
 
@@ -120,7 +130,7 @@ def _following(store: Store, run_id: str, request: dict, task: dict, parsed: dic
         known = store.task_urls(run_id, "notice")
         skipped = 0
         for item in parsed.get("items", ()):
-            url = item["url"].split("#", 1)[0]
+            url = _canonical_notice_url(item["url"])
             if url in known:
                 continue
             if len(known) >= request["max_notices"]:
@@ -165,8 +175,11 @@ def execute(store: Store, run_id: str, transport) -> dict:
         while task := store.next_task(run_id):
             store.heartbeat(run_id, token)
             try:
+                # 回调在每个实际HTTP请求前重验持久取消/租约，覆盖内部robots、重试和跳转。
+                # 不仅等整个fetch结束才检查；在途请求无法撤回，但之后不能再发下一次请求。
                 response = transport.fetch(task["url"], max_bytes=(MAX_ATTACHMENT_BYTES if task["kind"] == "attachment"
-                                                                  else MAX_HTML_BYTES), kind=task["kind"])
+                                                                  else MAX_HTML_BYTES), kind=task["kind"],
+                                           checkpoint=lambda: store.heartbeat(run_id, token))
             except FetchError as exc:
                 store.record(run_id, token, task, error=exc.code, http_status=exc.http_status, attempts=exc.attempts)
                 # 一旦当前来源规则/访问受限，停止后续任务，不把剩余页面逐个再试一遍。
