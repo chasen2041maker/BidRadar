@@ -174,6 +174,10 @@ def execute(store, run_id, transport):
             checkpoint()
             parsed = parse_page(store.read_blob(store.put_blob(response.body)), req["page_size"])
             page = item["payload"]["page"]
+            if (parsed["status"] in ("ok", "empty") and len(parsed["rows"]) < req["page_size"]
+                    and (page - 1) * req["page_size"] + len(parsed["rows"]) < parsed["total_count"]):
+                # “总数还有记录但本页提前空/短”不是成功零结果；不盲目向后补抓掩盖问题。
+                parsed.update(status="parse_error", issues=["inconsistent_pagination"])
             more = (parsed["status"] == "ok" and page * req["page_size"] < parsed["total_count"])
             within_limit = page + 1 < req["start_page"] + req["pages"]
             parsed["page_number"] = page

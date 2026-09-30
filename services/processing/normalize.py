@@ -111,7 +111,7 @@ def _date(text):
 
 def _money(text, label):
     # 不接受区间、约数、最高限价、多币种或一段多金额；保持原文供人工核对。
-    match = re.fullmatch(r"\s*(?:人民币\s*)?([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(万元|元)?(?:\s*（人民币）)?\s*", text)
+    match = re.fullmatch(r"\s*(?:人民币\s*)?((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?)\s*(万元|元)?(?:\s*（人民币）)?\s*", text)
     if not match:
         return None
     number, unit = match.groups()

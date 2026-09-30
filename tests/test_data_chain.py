@@ -58,7 +58,7 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(len(item["evidence"]), 2)
         item = self.fact("budget", [("预算金额", "10万元"), ("预算金额", "另见附件")])
         self.assertEqual(item["status"], "unparsed")
-        for value in ("约10万元", "10-12万元", "人民币12", "12美元", "最高10万元"):
+        for value in ("约10万元", "10-12万元", "人民币12", "12美元", "最高10万元", "1234,567元"):
             self.assertEqual(self.fact("budget", [("预算金额", value)])["status"], "unparsed")
 
     def test_date_role_timezone_precision_and_invalid_calendar(self):

@@ -17,7 +17,7 @@ from services.processing.normalize import normalize_bundle
 from services.catalog.store import Catalog
 
 
-def response_body(*, rows=None, total=2):
+def response_body(*, rows=None, total=1):
     return json.dumps({"code": 200, "columnNames": ["公告标题", "项目编号", "采购人名称", "预算（万元）"],
                        "list": rows if rows is not None else [["虚构软件竞争性谈判公告", "DEMO-002", "虚构单位", "8"]],
                        "totalCount": total}, ensure_ascii=False).encode()
@@ -163,7 +163,7 @@ class TianjinPipelineTests(unittest.TestCase):
 
     def test_full_local_chain_preserves_api_snapshot_and_attribution(self):
         run = self.run_id(pages=2, page_size=1)
-        fake = FakeTianjin()
+        fake = FakeTianjin(response_body(total=2))
         with patch("socket.socket", side_effect=AssertionError("不应联网")):
             report = tj.execute(self.store, run, fake)
             exported = export_bundle(self.store, run)
@@ -206,9 +206,9 @@ class TianjinPipelineTests(unittest.TestCase):
                     raise KeyboardInterrupt
                 return super().fetch_page(page_number, page_size, **kwargs)
         with self.assertRaises(KeyboardInterrupt):
-            tj.execute(self.store, run, Interrupt())
+            tj.execute(self.store, run, Interrupt(response_body(total=2)))
         self.assertEqual(self.store.run(run)["status"], "queued")
-        resumed = FakeTianjin()
+        resumed = FakeTianjin(response_body(total=2))
         tj.execute(self.store, run, resumed)
         self.assertEqual(resumed.calls, [2])
         self.assertEqual(len(self.store.report(run)["captures"]), 2)
@@ -236,3 +236,8 @@ class TianjinPipelineTests(unittest.TestCase):
         empty = tj.execute(self.store, self.run_id("empty"), FakeTianjin(response_body(rows=[], total=0)))
         self.assertEqual(empty["run"]["status"], "succeeded")
         self.assertEqual(export_bundle(self.store, empty["run"]["id"])["documents"], [])
+
+    def test_empty_page_with_remaining_total_is_failure_not_zero_result(self):
+        report = tj.execute(self.store, self.run_id(), FakeTianjin(response_body(rows=[], total=10)))
+        self.assertEqual(report["run"]["status"], "failed")
+        self.assertEqual(report["run"]["error_code"], "inconsistent_pagination")

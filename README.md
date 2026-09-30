@@ -4,9 +4,9 @@
 >
 > An evidence-based tender research and tracking agent for software and AI service teams.
 
-**当前：已进入实现。已有普通资源权限纯函数、CCGP列表/正文解析，以及SOURCE-002本地数据获取流程。真实来源准入和自动发现受阻，尚未完成真实站点联调；CMS/缓存/模型/云部署未运行。**
+**当前：第一阶段数据获取仍在验收。已有权限纯函数、原件获取归档，DATA-001新增天津接口适配、证据清洗和可查询目录。离线整链可运行；天津真实接口待开发者凭据与契约核实，不能称整个阶段完成。CMS/模型/部署后置，Redis/K8s不作为当前阶段门槛。**
 
-数据获取阶段可先运行完全离线的虚构样本：`python -m services.ingestion demo`，再执行 `python -m services.ingestion verify`。原件和SQLite账本在忽略目录`.bidradar-data/`。完整命令、接口、失败与真实准入条件见[29运行说明](docs/29-acquisition-stage.md)，三个核心文件的带读见[SOURCE-002](docs/learning/SOURCE-002.md)。
+离线整链演示：`python scripts/run_data_demo.py`，依次运行获取、清洗、导入/查询CLI；虚构原件与各服务独立SQLite在忽略目录`.bidradar-data/demo-chain/`。当前契约/天津接入/限制见[30](docs/30-r0-data-contract.md)，中文核心阅读入口见[DATA-001](docs/learning/DATA-001.md)。已合并获取工具的历史用法见[29](docs/29-acquisition-stage.md)。
 
 ## 新会话先读
 
@@ -22,7 +22,7 @@
 
 ## 首批业务、企业档案与数据源
 
-已确认首批中国公开项目、中文优先、不限城市，产品给软件公司/AI服务团队使用；第一阶段做到“确认档案→真实项目→实际材料→引用与未知项分析→同项目追问→人工决定”。[23](docs/23-first-market-rag.md)区分RAG、目录检索与业务后端。
+已确认首批中国公开项目、中文优先、不限城市，产品给软件公司/AI服务团队使用；首轮产品闭环目标是“确认档案→真实项目→实际材料→引用与未知项分析→同项目追问→人工决定”，分阶段实施，当前只做其中数据获取/证据目录。[23](docs/23-first-market-rag.md)区分RAG、目录检索与业务后端。
 
 企业档案按八类组织，首用先问主体、想接什么、能做什么、交付限制，再按项目补案例/资质/排期/商务信息。[24](docs/24-company-profile-minimum.md)说明事实、证明、偏好和硬限制如何分开。
 
