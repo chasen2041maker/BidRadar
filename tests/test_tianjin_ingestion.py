@@ -2,6 +2,7 @@
 from copy import deepcopy
 from dataclasses import replace
 import json
+import re
 from pathlib import Path
 import tempfile
 import unittest
@@ -123,6 +124,29 @@ class TianjinTransportTests(unittest.TestCase):
             self.transport().fetch_page(1, 10, checkpoint=checkpoint)
         self.assertEqual(self.urls, [])
 
+    def test_budget_expiring_during_dns_prevents_http_start(self):
+        with patch.object(tj.time, "monotonic", side_effect=[0, 179, 181]):
+            transport = self.transport()
+            with self.assertRaises(FetchError) as error:
+                transport.fetch_page(1, 10, checkpoint=lambda: None)
+        self.assertEqual(error.exception.code, "request_budget_exceeded")
+        self.assertEqual(self.urls, [])
+
+    def test_unicode_escaped_token_is_rejected_before_any_blob_is_saved(self):
+        encoded = "".join("\\u%04x" % ord(c) for c in self.fake_token)
+        body = response_body(rows=[["PLACEHOLDER", "DEMO", "虚构单位", "1"]]).replace(b"PLACEHOLDER", encoded.encode())
+        store = Store(Path(self.temp.name) / "archive")
+        try:
+            run = store.create_run({**tj.request_spec(), "simulation": True}, "echo-test")[0]
+            transport = self.transport(exchange=lambda *args: (200, {"content-type": "application/json"}, body))
+            result = tj.execute(store, run, transport)
+            self.assertEqual(result["run"]["error_code"], "credential_echo_rejected")
+            self.assertEqual(list(store.blobs.iterdir()), [])
+            self.assertEqual(export_bundle(store, run)["documents"], [])
+            self.assertNotIn(self.fake_token, json.dumps(result))
+        finally:
+            store.close()
+
 
 class TianjinParsingTests(unittest.TestCase):
     def test_zero_result_differs_from_business_error_and_preview(self):
@@ -146,6 +170,10 @@ class TianjinParsingTests(unittest.TestCase):
         for args in ({"pages": True}, {"page_size": 5000}, {"start_page": 0}, {"start_page": 10000, "pages": 2}):
             with self.assertRaises(ValueError):
                 tj.request_spec(**args)
+
+    def test_unpaired_unicode_surrogate_is_parse_error(self):
+        raw = response_body(rows=[["PLACEHOLDER", "DEMO", "虚构单位", "1"]]).replace(b"PLACEHOLDER", b"\\ud800")
+        self.assertEqual(tj.parse_page(raw, 10)["status"], "parse_error")
 
 
 class TianjinPipelineTests(unittest.TestCase):
@@ -175,6 +203,12 @@ class TianjinPipelineTests(unittest.TestCase):
         self.assertEqual(first["identity_kind"], "content_snapshot")
         self.assertEqual(first["material_status"], "not_provided_by_api")
         self.assertEqual(first["attribution"], tj.ATTRIBUTION)
+        # 定位必须能索引回原JSON数组；中文字段名来自对应columnNames，不能伪装对象路径。
+        original_json = json.loads(response_body(total=2))
+        for entry in exported["documents"][0]["content"]["metadata"]:
+            row_index, column_index = map(int, re.fullmatch(r"\$\.list\[(\d+)\]\[(\d+)\]", entry["locator"]).groups())
+            self.assertEqual(entry["text"], original_json["list"][row_index][column_index])
+            self.assertEqual(entry["label"], original_json["columnNames"][column_index])
         self.assertEqual(first["notice_id"], bundle["observations"][1]["notice_id"])
         self.assertNotEqual(first["observation_id"], bundle["observations"][1]["observation_id"])
         sources = [r[0] for r in self.store.db.execute("SELECT DISTINCT source_id FROM versions")]

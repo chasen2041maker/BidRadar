@@ -11,7 +11,7 @@ import ipaddress
 import json
 from pathlib import Path
 import time
-from urllib.parse import urlencode
+from urllib.parse import urlencode, unquote
 
 from services.ingestion.archive import StoreError, utc_now, encode_json
 from services.ingestion.transport import FetchError, FetchResult, _exchange, _resolve, _public_unicast
@@ -86,9 +86,12 @@ class TianjinTransport:
         if self.last_request is not None:
             time.sleep(max(0, 1 - (time.monotonic() - self.last_request)))
         checkpoint()
+        request_started = time.monotonic()
+        if request_started - self.started > 180:
+            raise FetchError("request_budget_exceeded")
         safe_url = page_url(page_number, page_size)
         self.calls += 1
-        self.last_request = time.monotonic()
+        self.last_request = request_started
         try:
             status, headers, body = self.exchange(safe_url + "&" + urlencode({"authToken": token}),
                                                    addresses[0], 20, MAX_BYTES)
@@ -109,6 +112,24 @@ class TianjinTransport:
                      json.dumps(token)[1:-1].encode())
         if any(secret in body for secret in forbidden) or b'"authToken"' in body:
             raise FetchError("credential_echo_rejected", status, 1)
+        try:
+            decoded = json.loads(body.decode("utf-8-sig"))
+        except (UnicodeError, ValueError, RecursionError):
+            raise FetchError("api_invalid_json", status, 1) from None
+        # JSON的\u转义在字节里看不到原token；按消费者实际解码后的字符串/键再次核查。
+        # 迭代遍历不增加Python递归深度；未通过检查前不把字节交给Store。
+        pending = [decoded]
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                if any(key.lower() == "authtoken" for key in value):
+                    raise FetchError("credential_echo_rejected", status, 1)
+                pending.extend(value.keys())
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+            elif isinstance(value, str) and (token in value or token in unquote(value)):
+                raise FetchError("credential_echo_rejected", status, 1)
         return FetchResult(safe_url, safe_url, status, {"content-type": media}, body, utc_now(), 1)
 
 
@@ -141,7 +162,10 @@ def parse_page(body: bytes, page_size: int) -> dict:
             return {"status": "parse_error", "issues": ["incomplete_or_invalid_row"]}
         fields = dict(zip(columns, row))
         # 没有官方唯一记录号：内容哈希只标识一个快照，不伪造跨变更稳定的公告ID。
-        digest = sha256(encode_json(fields).encode()).hexdigest()
+        try:
+            digest = sha256(encode_json(fields).encode()).hexdigest()
+        except UnicodeError:
+            return {"status": "parse_error", "issues": ["invalid_unicode_row"]}
         result.append({"fields": fields, "row_index": index, "record_sha256": digest})
     return {"status": "ok" if rows else "empty", "rows": result, "total_count": total,
             "issues": [], "attribution": ATTRIBUTION}

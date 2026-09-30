@@ -215,6 +215,17 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual({rel["status"] for rel in relations}, {"ambiguous"})
         self.assertEqual(len(relations), 2)
 
+    def test_explicit_link_does_not_override_known_lot_conflict(self):
+        original = self.add(entries=[("包号", "1")])
+        for lot, expected in (("2", "conflicting"), ("1", "evidenced")):
+            correction = self.add(title="虚构更正公告", key="https://example.test/correction/" + lot,
+                capture="correction" + lot, entries=[("包号", lot)],
+                links=[{"url": original["source_record_key"], "name": "原公告", "locator": "a[1]"}])
+            result = self.store.detail(correction["notice_id"])["relationships"][0]
+            self.assertEqual(result["status"], expected)
+            if expected == "conflicting":
+                self.assertNotIn("target_notice_id", result)
+
     def test_missing_original_link_is_not_replaced_by_name_guess(self):
         self.add()
         correction = self.add(title="虚构软件更正公告", key="https://example.test/correction", capture="correction",

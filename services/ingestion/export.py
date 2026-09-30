@@ -40,7 +40,8 @@ def export_bundle(store, run_id: str) -> dict:
                     "content": {"status": "ok", "title": fields.get("公告标题"),
                         "body_text": "\n".join(k + "：" + v for k, v in fields.items() if v),
                         "metadata": [{"label": k, "text": v,
-                            "locator": f"$.list[{row['row_index']}].{k}"} for k, v in fields.items() if v],
+                            "locator": f"$.list[{row['row_index']}][{column_index}]"}
+                            for column_index, (k, v) in enumerate(fields.items()) if v],
                         "segments": [], "links": [], "attachments": [],
                         "material_status": "not_provided_by_api", "attribution": tianjin.ATTRIBUTION}})
         elif capture["kind"] == "notice" and source == "cn_ccgp":

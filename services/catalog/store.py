@@ -280,26 +280,35 @@ def relationships(current, candidates):
     """关系每次绑定当前两端观察，不将旧关联自动套用到新正文；只有更正作为起点。"""
     if current["notice_type"] != "correction":
         return []
+    def value(item, name):
+        fact = item["facts"][name]
+        return fact["value"] if fact["status"] == "known" else None
+    def different_lot(other):
+        return (value(current, "lot_identifier") and value(other, "lot_identifier")
+                and value(current, "lot_identifier") != value(other, "lot_identifier"))
     pool = [c for c in candidates if c["source_id"] == current["source_id"]
             and c["simulation"] == current["simulation"] and c["notice_type"] == "procurement"]
     explicit = [(other, ref) for other in pool for ref in current["references"]
                 if other["identity_kind"] == "source_url" and other["source_record_key"] == ref["url"]]
     if explicit:
+        conflicts = [(other, ref) for other, ref in explicit if different_lot(other)]
+        if conflicts:
+            # 原文链接不能推翻已知包号冲突；保留两边版本供核对，不建立可用关联。
+            return [{"status": "conflicting", "basis": "original_link_lot_mismatch",
+                     "source_observation_id": current["observation_id"], "target_observation_id": other["observation_id"],
+                     "evidence": [ref] + current["facts"]["lot_identifier"]["evidence"]
+                     + other["facts"]["lot_identifier"]["evidence"]} for other, ref in conflicts]
         matches = {other["notice_id"]: (other, ref) for other, ref in explicit}
         return [{"target_notice_id": other["notice_id"], "source_observation_id": current["observation_id"],
                  "target_observation_id": other["observation_id"], "status": "evidenced" if len(matches) == 1 else "ambiguous",
                  "basis": "explicit_original_link", "evidence": [ref]} for other, ref in matches.values()]
     if current["references"]:
         return [{"status": "unresolved", "basis": "original_link_not_in_catalog", "evidence": current["references"]}]
-    def value(item, name):
-        fact = item["facts"][name]
-        return fact["value"] if fact["status"] == "known" else None
     buyer, number = value(current, "buyer"), value(current, "project_number")
     if not buyer or not number:
         return [{"status": "unresolved", "basis": "missing_buyer_or_project_number", "evidence": []}]
     possible = [other for other in pool if value(other, "buyer") == buyer and value(other, "project_number") == number
-                and not (value(current, "lot_identifier") and value(other, "lot_identifier")
-                         and value(current, "lot_identifier") != value(other, "lot_identifier"))]
+                and not different_lot(other)]
     if not possible:
         return [{"status": "unresolved", "basis": "no_matching_original", "evidence": []}]
     return [{"target_notice_id": other["notice_id"], "source_observation_id": current["observation_id"],
