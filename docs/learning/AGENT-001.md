@@ -68,6 +68,8 @@ flowchart LR
 
 c16独立research100项/13.235秒退出0，根JS语法与compileall通过。根全量537项28.872秒有1项HTTP早拒绝测试WinError10053；不把这次记为通过。windows_checks在独立树确认共用HTTP/test blob一致，目标测试5次正常通过，但header发出后body延迟20ms可确定复现Host/Forwarded/类型早拒绝与后到body竞态；重复键JSON先读body控制组400。未抓包不声称已证明TCP RST；后续535f2fc已补有界关闭处理及分段发送回归，见下一节。原失败日志保留`checks-c16e01c0-0.txt`，不删除重试历史。
 
+收尾文字澄清：契约中“不会主动采集源站”只消除“不定时”的歧义，未改变R2只消费已导入观察的范围，无新增代码或学习要求。
+
 ## 最后工程修复与交付检查
 
 `535f2fc34ec08938c7670db0a4c75a9c5ffeec09`仅修共用HTTP与对应测试，不改AI配置/输入/提示词。拒绝后先完整JSON、Connection:close及半关闭写端，再只丢弃最多min(64KiB,max_bytes)、总250ms；可确定Content-Length按剩余字节，歧义framing不解析、不dispatch。正常请求read1记录已消耗体量并执行总10秒截止，防慢滴答刷新等待；超时仍503。超过清理限额的发送者仍可能中断，不承诺无限恶意body能正常读完响应。

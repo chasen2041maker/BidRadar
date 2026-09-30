@@ -70,7 +70,7 @@ questions对外仍为string[]，产品含义为待核查缺口，不要求疑问
 
 人工decision状态needs_review/follow_up/dismissed，带reason、expected_version、key，历史追加。watch独立active和auto_reassess（默认false），包含actor、公司、notice_id、rule_version、期望版本及明确复核范围；自动委托默认且最长7天，成员授权版本变化后须重新授权。停跟踪不删除历史也不自动改变人工决定。
 
-本轮持续跟踪处理已进入catalog的新观察和workspace正式档案事件；四服务运行器不定时采集源站，源站变化尚未导入时无法发现。因此本阶段不承诺网站无人值守持续更新。
+本轮持续跟踪处理已进入catalog的新观察和workspace正式档案事件；四服务运行器不会主动采集源站，源站变化尚未导入时无法发现。因此本阶段不承诺网站无人值守持续更新。
 
 tracking保存每个owner的连续接收游标和Inbox，按固定snapshot消费每个新观察，不只轮询latest以免A→B→A丢中间变化。新更正/结果通过incoming有依据关联映射到watch；关系不明给待核查，不能自动改写原公告。只比较结构化字段相同不足以声称原文只是排版变化：raw变化但缺完整正文fingerprint时记unclassified_content_change，保守提示/复核。
 

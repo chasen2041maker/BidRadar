@@ -4,7 +4,7 @@
 
 先读 [规则](../../AGENTS.md)、[状态](../../PROJECT_STATE.md)、[当前任务](../../CURRENT_TASK.md)，再按需读下列记录。
 
-来源指纹：`e326d18c0851af54360351f4bfce1d671ffc7159e12c9240748a6ba9f993d852`
+来源指纹：`0b1a0ddbf1e18be26e41d2484d9b1cad87920b656a7afe045587dfd0a7fa2b27`
 
 ## 已记录任务（共 10 条，按编号倒序显示最多 20 条）
 
