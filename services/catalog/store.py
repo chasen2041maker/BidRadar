@@ -16,9 +16,16 @@ import re
 import secrets
 import sqlite3
 
-VERSION = "procurement-facts-v1"
+VERSION = "procurement-facts-v2"
 KINDS = {"procurement", "correction", "award", "termination", "intention", "unknown"}
 FIELDS = {"project_number", "buyer", "published_at", "budget", "response_deadline", "lot_identifier"}
+V2_FIELDS = FIELDS | {"original_published_at", "original_contract_reference"}
+# 发布方映射属于目录关系契约；只列已核实资源，不能按tj_前缀放宽关联范围。
+SOURCE_FAMILIES = {"cn_ccgp": "cn_ccgp", "tj_procurement_negotiation": "tj_finance_procurement",
+                   "tj_procurement_consultation": "tj_finance_procurement",
+                   "tj_procurement_correction": "tj_finance_procurement"}
+SCHEMAS = {1: ("procurement-facts-v1", {"cn_ccgp", "tj_procurement_negotiation"}),
+           2: (VERSION, set(SOURCE_FAMILIES))}
 
 
 def _json(value):
@@ -53,6 +60,8 @@ def _validate(observation, bundle):
     required = {"observation_id", "notice_id", "source_id", "simulation", "source_record_key", "identity_kind",
                 "source_url", "capture_id", "raw_sha256", "parser_version", "normalizer_version", "observed_at",
                 "title", "notice_type", "facts", "references", "material_status", "attribution", "run_id"}
+    if bundle["schema_version"] == 2:
+        required.add("material_reference_evidence")
     if set(observation) != required:
         raise ValueError("unsupported_observation_fields")
     value = {k: v for k, v in observation.items() if k != "observation_id"}
@@ -73,7 +82,8 @@ def _validate(observation, bundle):
     _string(observation["title"], 2000, empty=True)
     _time(observation["observed_at"])
     facts = observation["facts"]
-    if not isinstance(facts, dict) or set(facts) != FIELDS:
+    expected_fields = V2_FIELDS if bundle["schema_version"] == 2 else FIELDS
+    if not isinstance(facts, dict) or set(facts) != expected_fields:
         raise ValueError("invalid_facts")
     for name, fact in facts.items():
         if not isinstance(fact, dict) or set(fact) != {"status", "value", "evidence"}:
@@ -90,7 +100,7 @@ def _validate(observation, bundle):
                 _string(item, 200000)
         if state != "known":
             continue
-        if name in ("published_at", "response_deadline"):
+        if name in ("published_at", "response_deadline", "original_published_at"):
             if (not isinstance(value, dict) or set(value) != {"local", "precision", "timezone", "timezone_basis"}
                     or value["precision"] not in ("date", "minute", "second") or value["timezone"] not in (None, "+08:00")):
                 raise ValueError("invalid_date_fact")
@@ -110,6 +120,15 @@ def _validate(observation, bundle):
                 raise ValueError("invalid_budget_fact")
         else:
             _string(value, 200000)
+    if bundle["schema_version"] == 2:
+        evidence = observation["material_reference_evidence"]
+        if not isinstance(evidence, list) or len(evidence) > 10000:
+            raise ValueError("invalid_material_reference_evidence")
+        for entry in evidence:
+            if not isinstance(entry, dict) or set(entry) != {"label", "text", "locator"}:
+                raise ValueError("invalid_material_reference_evidence")
+            for item in entry.values():
+                _string(item, 200000)
     refs = observation["references"]
     if not isinstance(refs, list) or len(refs) > 1000:
         raise ValueError("invalid_references")
@@ -168,9 +187,12 @@ class Catalog:
         self.db.close()
 
     def import_bundle(self, bundle):
-        if (not isinstance(bundle, dict) or type(bundle.get("schema_version")) is not int or bundle["schema_version"] != 1
-                or bundle.get("kind") != "normalized_observations" or bundle.get("normalizer_version") != VERSION
-                or bundle.get("source_id") not in ("cn_ccgp", "tj_procurement_negotiation")
+        if (not isinstance(bundle, dict) or type(bundle.get("schema_version")) is not int
+                or bundle["schema_version"] not in SCHEMAS
+                or bundle.get("kind") != "normalized_observations"
+                or bundle.get("normalizer_version") != SCHEMAS[bundle["schema_version"]][0]
+                or not isinstance(bundle.get("source_id"), str)
+                or bundle.get("source_id") not in SCHEMAS[bundle["schema_version"]][1]
                 or type(bundle.get("simulation")) is not bool or bundle.get("coverage") != "bounded_sample"
                 or bundle.get("run_status") not in ("succeeded", "partial", "failed", "blocked", "cancelled")):
             raise ValueError("unsupported_normalized_bundle")
@@ -280,13 +302,20 @@ def relationships(current, candidates):
     """关系每次绑定当前两端观察，不将旧关联自动套用到新正文；只有更正作为起点。"""
     if current["notice_type"] != "correction":
         return []
+    contract_reference = current["facts"].get("original_contract_reference", {}).get("evidence", [])
+    if contract_reference:
+        # “原合同”不是“原采购公告”。即使同项目号也不建立错误的采购更正关系。
+        # v1没有此字段，按旧行为读取；v2始终保留它的原文和定位。
+        return [{"status": "unresolved", "basis": "original_contract_outside_scope",
+                 "source_observation_id": current["observation_id"], "evidence": contract_reference}]
     def value(item, name):
         fact = item["facts"][name]
         return fact["value"] if fact["status"] == "known" else None
     def different_lot(other):
         return (value(current, "lot_identifier") and value(other, "lot_identifier")
                 and value(current, "lot_identifier") != value(other, "lot_identifier"))
-    pool = [c for c in candidates if c["source_id"] == current["source_id"]
+    family = SOURCE_FAMILIES.get(current["source_id"])
+    pool = [c for c in candidates if family is not None and SOURCE_FAMILIES.get(c["source_id"]) == family
             and c["simulation"] == current["simulation"] and c["notice_type"] == "procurement"]
     explicit = [(other, ref) for other in pool for ref in current["references"]
                 if other["identity_kind"] == "source_url" and other["source_record_key"] == ref["url"]]
@@ -313,5 +342,6 @@ def relationships(current, candidates):
         return [{"status": "unresolved", "basis": "no_matching_original", "evidence": []}]
     return [{"target_notice_id": other["notice_id"], "source_observation_id": current["observation_id"],
              "target_observation_id": other["observation_id"], "status": "candidate" if len(possible) == 1 else "ambiguous",
-             "basis": "same_source_buyer_project_number", "evidence": current["facts"]["project_number"]["evidence"]
+             "basis": ("same_source_buyer_project_number" if other["source_id"] == current["source_id"]
+                       else "same_publisher_buyer_project_number"), "evidence": current["facts"]["project_number"]["evidence"]
              + current["facts"]["buyer"]["evidence"]} for other in possible]

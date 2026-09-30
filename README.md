@@ -4,7 +4,7 @@
 >
 > An evidence-based tender research and tracking agent for software and AI service teams.
 
-**当前：第一阶段数据获取仍在验收。已有权限纯函数、原件获取归档，DATA-001新增天津接口适配、证据清洗和可查询目录。离线整链可运行；天津开发者凭据已配置，但平台仍拒绝令牌，真实成功响应与契约待核实，不能称整个阶段完成。CMS/模型/部署后置，Redis/K8s不作为当前阶段门槛。**
+**当前：第一阶段数据获取仍未完成。已有权限纯函数、原件获取归档；DATA-001新增天津谈判/磋商/更正资源路由、证据清洗和可查询目录，离线整链可运行。天津开发者凭据已配置但平台仍拒绝；成功响应/稳定身份待核实，天津附件只有引用保存，实际下载和真实整链仍待完成。CMS/模型/部署后置，Redis/K8s不作为当前阶段门槛。**
 
 离线整链演示：`python scripts/run_data_demo.py`，依次运行获取、清洗、导入/查询CLI；虚构原件与各服务独立SQLite在忽略目录`.bidradar-data/demo-chain/`。当前契约/天津接入/限制见[30](docs/30-r0-data-contract.md)，中文核心阅读入口见[DATA-001](docs/learning/DATA-001.md)。已合并获取工具的历史用法见[29](docs/29-acquisition-stage.md)。
 

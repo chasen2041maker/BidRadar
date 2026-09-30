@@ -12,9 +12,9 @@ import json
 import re
 from urllib.parse import urlsplit, urlunsplit
 
-VERSION = "procurement-facts-v1"
+VERSION = "procurement-facts-v2"
 MAX_JSON_BYTES = 32 * 1024 * 1024
-SOURCES = {"cn_ccgp", "tj_procurement_negotiation"}
+SOURCES = {"cn_ccgp", "tj_procurement_negotiation", "tj_procurement_consultation", "tj_procurement_correction"}
 KINDS = {"procurement", "correction", "award", "termination", "intention", "unknown"}
 LABELS = {
     "project_number": ("项目编号", "采购项目编号"),
@@ -23,7 +23,12 @@ LABELS = {
     "budget": ("预算（万元）", "预算(万元)", "预算金额", "项目预算", "采购预算"),
     "response_deadline": ("响应文件提交的截止时间", "响应文件提交截止时间", "投标截止时间", "提交投标文件截止时间"),
     "lot_identifier": ("包号", "标段编号"),
+    # 首次公告属于被引用的原公告；不能写进本次更正的published_at。
+    "original_published_at": ("首次公告日期",),
+    "original_contract_reference": ("原合同公告链接",),
 }
+DATE_FIELDS = {"published_at", "response_deadline", "original_published_at"}
+MATERIAL_LABELS = {"其他附件文件下载链接", "更正附件链接"}
 
 
 def canonical(value):
@@ -133,32 +138,41 @@ def _fact(entries, name):
         return {"status": "missing", "value": None, "evidence": []}
     values = []
     for entry in evidence:
-        value = _date(entry["text"]) if name in ("published_at", "response_deadline") else (
+        value = _date(entry["text"]) if name in DATE_FIELDS else (
             _money(entry["text"], entry["label"]) if name == "budget" else entry["text"])
         if value is not None and value not in values:
             values.append(value)
     if len(values) > 1:
         return {"status": "conflicting", "value": None, "evidence": evidence}
     # 一条可解析、另一条不可解析仍不是已确认值；不能抛掉不利证据。
-    if not values or any((_date(e["text"]) if name in ("published_at", "response_deadline") else
+    if not values or any((_date(e["text"]) if name in DATE_FIELDS else
                          _money(e["text"], e["label"]) if name == "budget" else e["text"]) is None for e in evidence):
         return {"status": "unparsed", "value": None, "evidence": evidence}
     return {"status": "known", "value": values[0], "evidence": evidence}
 
 
-def _notice_kind(title):
+def _notice_kind(title, source=None):
+    kind = "unknown"
     for pattern, kind in ((r"(更正|变更|澄清)公告", "correction"), (r"(废标|终止|中止)公告", "termination"),
                           (r"(中标|成交)(结果)?公告", "award"), (r"采购意向", "intention"),
                           (r"(招标|竞争性谈判|竞争性磋商|询价|采购)公告", "procurement")):
         if re.search(pattern + r"(?:[（(].*[）)])?$", title):
-            return kind
-    return "unknown"
+            break
+    else:
+        kind = "unknown"
+    # 固定资源本身有分类依据；来源与明确标题相互矛盾时不猜哪个正确。
+    if source == "tj_procurement_correction":
+        return "correction" if kind in ("unknown", "correction") else "unknown"
+    if kind == "unknown" and source in ("tj_procurement_negotiation", "tj_procurement_consultation"):
+        return "procurement"
+    return kind
 
 
 def normalize_bundle(bundle):
     """每次输出完整规范包；一个文档类型错误导致整包拒绝，目录写入不会半成功。"""
     if (not isinstance(bundle, dict) or type(bundle.get("schema_version")) is not int or bundle["schema_version"] != 1
-            or bundle.get("kind") != "raw_evidence_bundle" or bundle.get("source_id") not in SOURCES
+            or bundle.get("kind") != "raw_evidence_bundle" or not isinstance(bundle.get("source_id"), str)
+            or bundle.get("source_id") not in SOURCES
             or type(bundle.get("simulation")) is not bool):
         raise ValueError("invalid_bundle_header")
     if len(canonical(bundle).encode()) > MAX_JSON_BYTES:
@@ -193,7 +207,7 @@ def normalize_bundle(bundle):
         require_string(title, "title", 2000, empty=True)
         entries = _entries(content)
         facts = {name: _fact(entries, name) for name in LABELS}
-        notice_type = _notice_kind(title)
+        notice_type = _notice_kind(title, bundle["source_id"])
         if notice_type == "correction":
             # 更正正文可能同时引用旧/新日期金额；未有明确作用域契约前只保留证据。
             # 项目号/采购方仍可支持候选关联，但不让旧截止或更正前预算进入当前值。
@@ -218,12 +232,14 @@ def normalize_bundle(bundle):
             "capture_id": capture, "raw_sha256": digest, "parser_version": parser,
             "normalizer_version": VERSION, "observed_at": observed, "title": title,
             "notice_type": notice_type, "facts": facts, "references": references,
+            # 只保留引用字段原文和位置；没有请求外部地址，也没有生成“下载成功”。
+            "material_reference_evidence": [entry for entry in entries if entry["label"] in MATERIAL_LABELS],
             "material_status": content.get("material_status", "see_ingestion_evidence"),
             "attribution": content.get("attribution"), "run_id": run_id}
         # 观察绑定同一获取+解析内容；新解析不能冒用旧ID。目录会再次校验哈希。
         observation["observation_id"] = fingerprint(observation)
         observations.append(observation)
-    return {"schema_version": 1, "kind": "normalized_observations", "normalizer_version": VERSION,
+    return {"schema_version": 2, "kind": "normalized_observations", "normalizer_version": VERSION,
             "run_id": run_id, "run_status": bundle["run_status"], "source_id": bundle["source_id"],
             "simulation": bundle["simulation"], "coverage": "bounded_sample",
             "observations": observations, "failures": failures}

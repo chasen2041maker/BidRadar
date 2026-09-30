@@ -95,6 +95,7 @@ class PublicDnsTests(unittest.TestCase):
 
     def test_resume_inherits_saved_dns_and_refuses_silent_mode_change(self):
         class EmptyTransport:
+            source_id = tj.SOURCE_ID
             def fetch_page(self, page_number, page_size, *, checkpoint):
                 checkpoint()
                 url = tj.page_url(page_number, page_size)

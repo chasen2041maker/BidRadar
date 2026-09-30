@@ -18,6 +18,14 @@ from services.ingestion.transport import FetchError, FetchResult, _exchange, _re
 
 SOURCE_ID = "tj_procurement_negotiation"
 RESOURCE_ID = "addbe9f2805346c28d4b639311e6e68a"
+# 白名单来自官方公开资源定义；资源彼此独立，不能由外部响应提供任意接口地址。
+RESOURCE_KEYS = {"negotiation": SOURCE_ID, "consultation": "tj_procurement_consultation",
+                 "correction": "tj_procurement_correction"}
+SOURCE_RESOURCES = {SOURCE_ID: RESOURCE_ID,
+                    "tj_procurement_consultation": "cafe018abce346a7a34682a33fb6c4c2",
+                    "tj_procurement_correction": "67393436a7cd44f5a896b3e98153f7a7"}
+MATERIAL_FIELDS = {SOURCE_ID: (), "tj_procurement_consultation": ("其他附件文件下载链接",),
+                   "tj_procurement_correction": ("更正附件链接",)}
 HOST = "open.data.tj.gov.cn"
 ENDPOINT = f"https://{HOST}/api/invoke/{RESOURCE_ID}"
 RESOURCE_URL = f"https://{HOST}/sjjk/{RESOURCE_ID}.htm"
@@ -85,7 +93,7 @@ def resolve_public_dns(host, port, timeout, *, exchange=None):
         raise FetchError("doh_response_rejected") from None
 
 
-def request_spec(*, start_page=1, pages=1, page_size=10, dns_mode="system"):
+def request_spec(*, start_page=1, pages=1, page_size=10, dns_mode="system", source_id=SOURCE_ID):
     for name, value, maximum in (("start_page", start_page, 10000), ("pages", pages, 5),
                                   ("page_size", page_size, 20)):
         if type(value) is not int or not 1 <= value <= maximum:
@@ -94,7 +102,9 @@ def request_spec(*, start_page=1, pages=1, page_size=10, dns_mode="system"):
         raise ValueError("page_range_exceeded")
     if dns_mode not in ("system", "google-doh"):
         raise ValueError("invalid_dns_mode")
-    request = {"schema_version": 1, "source_id": SOURCE_ID, "start_page": start_page,
+    if not isinstance(source_id, str) or source_id not in SOURCE_RESOURCES:
+        raise ValueError("invalid_tianjin_source")
+    request = {"schema_version": 1, "source_id": source_id, "start_page": start_page,
             "pages": pages, "page_size": page_size, "simulation": False}
     # 缺省system保持v1旧请求的幂等内容；启用DoH才加入新选项，恢复不静默换模式。
     if dns_mode != "system":
@@ -102,9 +112,11 @@ def request_spec(*, start_page=1, pages=1, page_size=10, dns_mode="system"):
     return request
 
 
-def page_url(page_number, page_size):
+def page_url(page_number, page_size, source_id=SOURCE_ID):
     """账本只存不含令牌的定位；实际认证参数不能进入URL日志、幂等键或异常。"""
-    return ENDPOINT + "?" + urlencode({"page": page_size, "pageNum": page_number})
+    request_spec(start_page=page_number, page_size=page_size, source_id=source_id)
+    endpoint = f"https://{HOST}/api/invoke/{SOURCE_RESOURCES[source_id]}"
+    return endpoint + "?" + urlencode({"page": page_size, "pageNum": page_number})
 
 
 class TianjinTransport:
@@ -114,9 +126,11 @@ class TianjinTransport:
     用户仍须自行注册开发者。联网默认关闭；不跳转、不代理、不自动重试认证失败。
     """
     def __init__(self, *, allow_network=False, token_file=DEFAULT_TOKEN_FILE,
-                 exchange=None, resolver=None, dns_mode="system"):
+                 exchange=None, resolver=None, dns_mode="system", source_id=SOURCE_ID):
         if dns_mode not in ("system", "google-doh"):
             raise ValueError("invalid_dns_mode")
+        request_spec(source_id=source_id)
+        self.source_id = source_id
         self.allow_network = allow_network
         self.token_file = Path(token_file)
         self.exchange = exchange or _exchange
@@ -156,7 +170,7 @@ class TianjinTransport:
         request_started = time.monotonic()
         if request_started - self.started > 180:
             raise FetchError("request_budget_exceeded")
-        safe_url = page_url(page_number, page_size)
+        safe_url = page_url(page_number, page_size, self.source_id)
         self.calls += 1
         self.last_request = request_started
         try:
@@ -247,14 +261,18 @@ def execute(store, run_id, transport):
     单次取样的页顺序由来源决定，没有快照令牌时不承诺翻页期间数据不移动。
     """
     run = store.run(run_id)
-    if run["request"].get("source_id") != SOURCE_ID:
+    source_id = run["request"].get("source_id")
+    if not isinstance(source_id, str) or source_id not in SOURCE_RESOURCES:
         raise StoreError("wrong_source_executor")
     if run["status"] in ("succeeded", "partial", "failed", "blocked", "cancelled"):
         return store.report(run_id)
+    # 同站点不等于同资源；不能把谈判响应写进更正运行的证据身份。
+    if getattr(transport, "source_id", None) != source_id:
+        raise StoreError("transport_source_mismatch")
     token = store.acquire(run_id)
     req = run["request"]
     def task(page):
-        return {"kind": "api_page", "url": page_url(page, req["page_size"]), "payload": {"page": page}}
+        return {"kind": "api_page", "url": page_url(page, req["page_size"], source_id), "payload": {"page": page}}
     try:
         store.enqueue(run_id, token, [task(req["start_page"])])
         while item := store.next_task(run_id):

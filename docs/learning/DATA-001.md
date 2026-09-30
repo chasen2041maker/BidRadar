@@ -1,6 +1,6 @@
 # DATA-001｜真实来源与证据目录
 
-摘要：天津官方接口接入、证据导出、字段规范化与独立目录已实现；全250项离线通过。本人已完成开发者注册，真实API仍拒绝令牌；本次补安全DoH、明确拒绝错误及真实失败链验证，整个第一阶段未完成。
+摘要：天津三资源路由、证据导出、规范化与独立目录已实现；全263项离线通过，新增跨资源候选及日期/合同/材料引用语义。真实API仍拒绝令牌，实际附件下载和真实整链仍未完成，不能称只差令牌。
 
 ## 本次改变
 
@@ -56,6 +56,16 @@
 
 20:46:40～20:46:41 +08:00，在同一source-review工作树、Windows11/Python3.13.12/SQLite3.51.1，执行本机忽略脚本`python .bidradar-data/data-001-real-checks.py`，退出0。仅额外查询一次公开DoH，不调用采购API。七个子命令依次为ingestion verify/export、processing、catalog import两次/query、ingestion replay，均退出0；日志`.bidradar-data/data-001-real-checks.json`包含完整参数、时间、当时HEAD与未提交标记。目录total=0但recent_runs=blocked/failures=1；重放得到v2令牌拒绝，原件SHA与旧捕获完全不变。它只证明真实失败传播，不证明真实采购数据取得。最终提交后必要检查/独审另见PR。
 
-公开资源目录另核实[政府采购更正公告](https://open.data.tj.gov.cn/sjjk/67393436a7cd44f5a896b3e98153f7a7.htm)，以及有“其他附件文件下载链接”字段的[政府采购磋商公告](https://open.data.tj.gov.cn/sjjk/cafe018abce346a7a34682a33fb6c4c2.htm)。仅有字段定义，未取API数据；不能把该字段当作已取得附件或把不同资源的项目号直接当稳定公告ID。待授权状态正常后按需接入。
+公开资源目录另核实[政府采购更正公告](https://open.data.tj.gov.cn/sjjk/67393436a7cd44f5a896b3e98153f7a7.htm)，以及有“其他附件文件下载链接”字段的[政府采购磋商公告](https://open.data.tj.gov.cn/sjjk/cafe018abce346a7a34682a33fb6c4c2.htm)。当时仅有字段定义、未接入；后续多资源实现见下节。至今未取得成功API数据，不能把字段定义当作已取得附件或稳定公告ID。
 
 本次代码head 558d08da4b3b662b45880a892da12bb3efbafd42已独立审查通过：全250项及DoH/取消/期限/凭据隔离组合均通过。审查提示README仍有“待开发者凭据”的旧表述，现同步为“凭据已配置、平台拒绝”，仅文档校准，代码未变。最终文档head与CI/复核记录见PR，不以旧head成绩替代。
+
+## 多资源与证据语义增量
+
+在0b837cd2bd900f10c4f01be417527573ecd78ff9之后，先补[30](../30-r0-data-contract.md)增量契约，再增加三个固定资源选择/持久化/恢复，禁止传输资源与运行身份不一致。processing产出v2，目录保留v1兼容；旧观察不重写。更正与原公告可跨已核实的同发布方资源形成candidate/ambiguous，不跨CCGP、模拟标记或已知包号冲突；“原合同公告链接”不能被误当采购原公告，即使同项目号也返回待核实。首次公告日期单存，附件字段保留原文/定位，空白不标存在材料；没有请求这些地址。
+
+阅读入口仍为上面三个核心文件；本次重点tianjin.request_spec/execute的资源绑定、normalize_bundle的新事实角色、catalog.relationships的发布方与合同引用判断。失败例见test_tianjin_resources：私网地址即使出现在附件字段中，也只作为文本证据，不触发下载；相同项目号不能证明不同发布方是同公告。
+
+2026-09-30 21:14:46～21:14:50 +08:00，source-review/BidRadar工作树，Windows11 22621/Python3.13.12/SQLite3.51.1/标准库，父提交0b837cd加未提交增量：`python -m unittest discover -s tests -p 'test_*.py' -v`退出0，全263项；`python scripts/run_data_demo.py --root .bidradar-data/demo-resources-v2`退出0，独立新目录三CLI演示1条/重复0新增/历史1/123400.00元。日志`.bidradar-data/data-001-resource-working-checks.json`含实际时间/环境/命令/dirty状态。最终提交检查/审查另放PR，不套用父提交审查。
+
+本轮无新数据API请求。上一正式CLI请求在0b837cd上于20:56:02～20:56:03 +08:00，key=tj-real-acceptance-04-final-cli，1页×1条/google-doh，退出3；run=9ac8a68cca1d43e3b54f3f1e7dcfe0ec，仍为api_credential_rejected，与前两次同一72字节拒绝哈希，脱敏日志`.bidradar-data/tj-real-acceptance-04.json`。未完成项仍包括真实成功解析、稳定身份、天津附件下载适配、真实原公告/更正及整链验收；不是只等令牌就自动完工。

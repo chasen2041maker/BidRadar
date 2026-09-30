@@ -25,6 +25,7 @@ def response_body(*, rows=None, total=1):
 
 
 class FakeTianjin:
+    source_id = tj.SOURCE_ID
     def __init__(self, body=None):
         self.calls = []
         self.body = body if body is not None else response_body()

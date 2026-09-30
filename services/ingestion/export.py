@@ -25,7 +25,7 @@ def export_bundle(store, run_id: str) -> dict:
         common = {"capture_id": capture["id"], "source_url": capture["url"],
                   "final_url": capture["final_url"], "observed_at": capture["fetched_at"],
                   "raw_sha256": capture["sha256"]}
-        if capture["kind"] == "api_page" and source == tianjin.SOURCE_ID:
+        if capture["kind"] == "api_page" and source in tianjin.SOURCE_RESOURCES:
             parsed = tianjin.parse_page(body, run["request"]["page_size"])
             if parsed["status"] not in ("ok", "empty"):
                 if not capture["error_code"]:
@@ -34,6 +34,10 @@ def export_bundle(store, run_id: str) -> dict:
             for row in parsed["rows"]:
                 identity = "snapshot:" + row["record_sha256"]
                 fields = row["fields"]
+                material_fields = tianjin.MATERIAL_FIELDS[source]
+                # 公开定义确认了附件字段，但字段内容不是下载许可，也不是已取得文件。
+                material_status = ("reference_only" if any((fields.get(k) or "").strip() for k in material_fields)
+                                   else "attachment_reference_missing" if material_fields else "not_provided_by_api")
                 # API记录快照不是采购网站全文；无附件/原公告URL时保留明确缺口。
                 documents.append({**common, "parser_version": tianjin.PARSER_VERSION,
                     "source_record_key": identity, "identity_kind": "content_snapshot",
@@ -43,7 +47,7 @@ def export_bundle(store, run_id: str) -> dict:
                             "locator": f"$.list[{row['row_index']}][{column_index}]"}
                             for column_index, (k, v) in enumerate(fields.items()) if v],
                         "segments": [], "links": [], "attachments": [],
-                        "material_status": "not_provided_by_api", "attribution": tianjin.ATTRIBUTION}})
+                        "material_status": material_status, "attribution": tianjin.ATTRIBUTION}})
         elif capture["kind"] == "notice" and source == "cn_ccgp":
             try:
                 content = parse_capture("notice", body, capture["headers"], capture["final_url"] or capture["url"])
