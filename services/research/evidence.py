@@ -12,7 +12,7 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v8-money-roles"
+VERSION = "frozen-evidence-v9-money-assertions-citations"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -116,7 +116,7 @@ def _structured_money(value, role):
     return role, number, value["source_unit"], "CNY"
 
 
-def _money_mentions(text):
+def _money_mentions(text, *, owner=None):
     """仅识别标签紧邻金额的明确断言；未知/疑问或更复杂指代仍交给语义核验。
 
     同额不等口径；并列“预算和最高限价均为48万元”要分别取得两个角色。
@@ -130,12 +130,17 @@ def _money_mentions(text):
                r"\s*(?:[（(]?\s*(?P<suffix>" + _CURRENCY_PATTERN + r")\s*[）)]?)?")
     result = set()
     for match in re.finditer(pattern, text, re.I):
+        # 明确“企业/公司(内部/自有)预算”属于企业声明；“采购预算/项目预算”仍是采购口径。
+        company = (re.search(r"(?:本公司|本企业|公司|企业)(?:自有|内部|可用)?\s*$", text[:match.start()]) is not None
+                   and not re.search(r"采购|项目", match["labels"]))
+        if owner == "company" and not company or owner == "procurement" and company:
+            continue
         unit = match["unit"] or match["label_unit"]
         currencies = {_CURRENCIES.get(raw.upper(), raw.upper()) for raw in (match["suffix"], match["currency"]) if raw}
         currency = next(iter(currencies)) if len(currencies) == 1 else "ambiguous" if currencies else "CNY"
         # 标签只证明角色，区间/约数/单价不是一个精确总额；不能截取其左端当事实。
         tail = text[match.end():]
-        if re.match(r"(?:[-~～—至到余多.]|左右|上下|以上|以下|以内|[/／])", tail.lstrip()):
+        if re.match(r"(?:[-~～—至到余多]|\.(?=\s*\d)|左右|上下|以上|以下|以内|[/／])", tail.lstrip()):
             unit = None
         for label in re.findall(_MONEY_LABEL_PATTERN, match["labels"]):
             result.add((MONEY_LABELS[label], Decimal(match["number"]), unit, currency))
@@ -268,16 +273,21 @@ class EvidenceIndex:
             for i, item in enumerate(value):
                 self._walk(item, path + "." + str(i), observation, depth + 1, money_role)
 
+    def structured_money_support(self, ids):
+        """只返回引用组完整的结构化金额，同时供角色和原单位校验使用。"""
+        ids = set(ids)
+        return {claim for claim, required in self.money_claims if required.issubset(ids)}
+
     def money_support(self, ids):
         """金额证据必须属于当前引用集合；企业资金、其他finding和已读未引用均不能补位。"""
         ids = set(ids)
-        result = {claim for claim, required in self.money_claims if required.issubset(ids)}
+        result = self.structured_money_support(ids)
         for eid in ids:
             entry = self.by_id[eid]
             # 分包预算/单价不能靠原段中的“预算”字样变成项目总预算。
             if entry.get("money_role") not in MONEY_ROLES | {None}:
                 continue
-            result.update(claim for claim in _money_mentions(entry["text"]) if claim[2] is not None)
+            result.update(claim for claim in _money_mentions(entry["text"], owner="procurement") if claim[2] is not None)
             label = entry.get("label", "").strip().rstrip(":：")
             if label in MONEY_LABELS or re.fullmatch(r"(?:" + _MONEY_LABEL_PATTERN + r")[（(](?:万元|元)[）)]", label):
                 result.update(claim for claim in _money_mentions(label + "：" + entry["text"]) if claim[2] is not None)
@@ -388,6 +398,22 @@ def _number_units(text):
             for number, unit in re.findall(r"(?<!\d)([+-]?\d+(?:\.\d+)?)\s*(亿元|万元|元|小时|分钟|天|日|周|%|％)", without_dates)}
 
 
+def _without_cited_ids(text, cited_ids):
+    """仅在数值断言视图中去除完整已引ID；不改报告，不豁免未知ID或真实金额/时长。"""
+    unknown = False
+    def replace(match):
+        nonlocal unknown
+        if match.group() not in cited_ids:
+            unknown = True
+            return match.group()
+        # 即使恰巧是64位全数字ID，紧跟数值单位时仍按事实检查，不能借引用身份免检。
+        if re.match(r"\s*(?:亿元|万元|元|小时|分钟|天|日|周|%|％)", text[match.end():]):
+            return match.group()
+        return "[已引用证据]"
+    clean = re.sub(r"(?<![A-Za-z0-9_])[0-9a-fA-F]{64}(?![A-Za-z0-9_])", replace, text)
+    return clean, unknown
+
+
 def validate_report(report, index, read_ids):
     """机械校验不等于语义证明；错误只返回码，避免不可信文本进入修订指令。"""
     errors = []
@@ -405,9 +431,9 @@ def validate_report(report, index, read_ids):
         errors.append("report_contact_information")
     if _unsupported_completeness(canonical(report)):
         errors.append("unsupported_completeness")
-    if re.search(r"notice_id|observation_id|evidence_id|raw_sha256|\brevision\b|profile_revision|catalog_snapshot|category_available_count", report["summary"], re.I):
+    if re.search(r"notice_id|observation_id|raw_sha256|\brevision\b|profile_revision|catalog_snapshot|category_available_count", report["summary"], re.I):
         errors.append("summary_contains_metadata")
-    supported_numbers, supported_units, cited_ids = set(), set(), set()
+    supported_numbers, supported_units, supported_company_money, cited_ids = set(), set(), set(), set()
     for i, finding in enumerate(report["findings"]):
         prefix = "finding_" + str(i) + "_"
         if (not isinstance(finding, dict) or set(finding) != {"category", "requirement", "status", "reason", "evidence_ids", "profile_fields", "unknown_reason"}
@@ -440,26 +466,41 @@ def validate_report(report, index, read_ids):
                 errors.append(prefix + "qualification_not_verified")
         evidence_text = " ".join(index.by_id[x]["text"] for x in ids)
         cited_ids.update(ids)
-        # 不借公司声明或同额限价证明预算；本条每一口径须在本条引用中有据。
-        missing_roles = {claim[0] for claim in _money_mentions(finding["requirement"]) - index.money_support(ids)}
-        errors.extend(prefix + "unsupported_money_role_" + role for role in sorted(missing_roles))
         profile_text = " ".join(index.profile[x] or "" for x in finding["profile_fields"])
+        finding_text = " ".join(finding[field] or "" for field in ("requirement", "reason", "unknown_reason"))
+        # 要求、理由和unknown说明都不能借公司资金或同额限价证明采购预算。
+        missing_roles = {claim[0] for claim in _money_mentions(finding_text, owner="procurement") - index.money_support(ids)}
+        errors.extend(prefix + "unsupported_money_role_" + role for role in sorted(missing_roles))
+        company_money = _money_mentions(profile_text)
+        supported_company_money.update(company_money)
+        missing_company = {claim[0] for claim in _money_mentions(finding_text, owner="company") - company_money}
+        errors.extend(prefix + "unsupported_company_money_role_" + role for role in sorted(missing_company))
+        structured = index.structured_money_support(ids)
         number_pool = _numbers(evidence_text + " " + profile_text)
+        number_pool.update(claim[1] for claim in structured)
         supported_numbers.update(number_pool)
         unit_pool = _number_units(evidence_text + " " + profile_text)
+        # 数值在表行、单位在表头时，完整原引用组提供组合依据；缺一条便不能借用。
+        unit_pool.update((claim[1], claim[2]) for claim in structured)
         supported_units.update(unit_pool)
-        mentioned = _numbers(finding["requirement"] + " " + finding["reason"])
+        mentioned = _numbers(finding_text)
         if not mentioned.issubset(number_pool):
             errors.append(prefix + "unsupported_number")
-        if not _number_units(finding["requirement"] + " " + finding["reason"]).issubset(unit_pool):
+        if not _number_units(finding_text).issubset(unit_pool):
             errors.append(prefix + "unsupported_numeric_unit")
     # 摘要/追问回答也不能悄悄增加数字事实；含义与日期角色仍交由独立语义节点核验。
     for field in ("summary", "answer"):
-        missing_roles = {claim[0] for claim in _money_mentions(report[field] or "") - index.money_support(cited_ids)}
+        text = report[field] or ""
+        missing_roles = {claim[0] for claim in _money_mentions(text, owner="procurement") - index.money_support(cited_ids)}
         errors.extend(field + "_unsupported_money_role_" + role for role in sorted(missing_roles))
-        if not _numbers(report[field] or "").issubset(supported_numbers):
+        missing_company = {claim[0] for claim in _money_mentions(text, owner="company") - supported_company_money}
+        errors.extend(field + "_unsupported_company_money_role_" + role for role in sorted(missing_company))
+        assertions, unknown_id = _without_cited_ids(text, cited_ids)
+        if unknown_id:
+            errors.append(field + "_unsupported_citation_id")
+        if not _numbers(assertions).issubset(supported_numbers):
             errors.append(field + "_unsupported_number")
-        if not _number_units(report[field] or "").issubset(supported_units):
+        if not _number_units(assertions).issubset(supported_units):
             errors.append(field + "_unsupported_numeric_unit")
     return errors
 
