@@ -6,18 +6,24 @@ PDF 已归档不能变成全文已读；去除联系信息后的每个片段仍�
 from __future__ import annotations
 
 from copy import deepcopy
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from hashlib import sha256
 import json
 import math
 import re
 
-VERSION = "frozen-evidence-v7"
+VERSION = "frozen-evidence-v8-money-roles"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
 CATEGORIES = frozenset(("technical", "qualification", "delivery", "commercial", "budget", "deadline", "materials", "other"))
 STATUSES = frozenset(("met", "unmet", "unknown", "conflicting", "not_applicable"))
+# 与规范化money.role保持同名；这里只保护明确金额断言，不代替上下文语义核验。
+MONEY_LABELS = {"预算金额": "budget", "项目预算": "budget", "采购预算": "budget", "预算": "budget",
+                "最高投标限价": "ceiling", "最高限价": "ceiling", "限价": "ceiling",
+                "招标文件售价": "file_fee", "采购文件售价": "file_fee", "文件售价": "file_fee",
+                "售价": "file_fee", "文件费": "file_fee"}
+MONEY_ROLES = frozenset(MONEY_LABELS.values())
 CONTACT = re.compile(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
                      r"(?:联系人|联系电话|联系手机|电子邮箱|电子邮件|联系方式|项目联系人|电话|手机|邮箱)(?!已省略)(?:\s*[:：]\s*|\s+)"
                      r"(?:(?!预算|金额|截止|交付|采购|合同|期限|获取|响应)[^；;。\n]){0,100}|"
@@ -90,6 +96,52 @@ def _safe_parts(text):
         yield cursor + len(part) - len(part.lstrip()), part.strip()
 
 
+_MONEY_LABEL_PATTERN = "|".join(sorted(map(re.escape, MONEY_LABELS), key=len, reverse=True))
+_CURRENCY_PATTERN = r"人民币|美元|美金|欧元|港元|港币|日元|日圆|英镑|CNY|RMB|USD|EUR|HKD|JPY|GBP"
+_CURRENCIES = {"人民币": "CNY", "RMB": "CNY", "美元": "USD", "美金": "USD", "欧元": "EUR",
+               "港元": "HKD", "港币": "HKD", "日元": "JPY", "日圆": "JPY", "英镑": "GBP"}
+
+
+def _structured_money(value, role):
+    """规范化amount以元存储；还原其source_unit数值，不授权报告自行换算单位。"""
+    if (role not in MONEY_ROLES or not isinstance(value, dict) or value.get("currency") != "CNY"
+            or value.get("source_unit") not in ("元", "万元") or not isinstance(value.get("amount"), str)
+            or not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", value["amount"])):
+        return None
+    number = Decimal(value["amount"])
+    # scaleb移动十进制位，不做浮点近似；规范化器的金额长度本已受manifest大小限制。
+    with localcontext() as context:
+        context.prec = max(28, len(value["amount"]) + 4)
+        number = number.scaleb(-4) if value["source_unit"] == "万元" else number
+    return role, number, value["source_unit"], "CNY"
+
+
+def _money_mentions(text):
+    """仅识别标签紧邻金额的明确断言；未知/疑问或更复杂指代仍交给语义核验。
+
+    同额不等口径；并列“预算和最高限价均为48万元”要分别取得两个角色。
+    数值只消除尾零，不换单位；外币标记也不能被默认人民币吞掉。
+    """
+    labels = r"(?P<labels>(?:" + _MONEY_LABEL_PATTERN + r")(?:\s*(?:、|和|与|及|/)\s*(?:" + _MONEY_LABEL_PATTERN + r"))*)"
+    pattern = (labels + r"\s*(?:[（(]\s*(?P<label_unit>万元|元)(?:人民币)?\s*[）)])?"
+               r"\s*(?:[（(]如有[）)])?\s*(?:[:：|]\s*)?(?:(?:均)?(?:为|是)\s*)?"
+               r"(?P<currency>" + _CURRENCY_PATTERN + r")?\s*[￥¥]?\s*"
+               r"(?P<number>[+-]?\d+(?:\.\d+)?)(?![\d.])\s*(?P<unit>亿元|万元|元)?"
+               r"\s*(?:[（(]?\s*(?P<suffix>" + _CURRENCY_PATTERN + r")\s*[）)]?)?")
+    result = set()
+    for match in re.finditer(pattern, text, re.I):
+        unit = match["unit"] or match["label_unit"]
+        currencies = {_CURRENCIES.get(raw.upper(), raw.upper()) for raw in (match["suffix"], match["currency"]) if raw}
+        currency = next(iter(currencies)) if len(currencies) == 1 else "ambiguous" if currencies else "CNY"
+        # 标签只证明角色，区间/约数/单价不是一个精确总额；不能截取其左端当事实。
+        tail = text[match.end():]
+        if re.match(r"(?:[-~～—至到余多.]|左右|上下|以上|以下|以内|[/／])", tail.lstrip()):
+            unit = None
+        for label in re.findall(_MONEY_LABEL_PATTERN, match["labels"]):
+            result.add((MONEY_LABELS[label], Decimal(match["number"]), unit, currency))
+    return result
+
+
 def _category(path):
     if "qualification" in path:
         return "qualification"
@@ -150,7 +202,7 @@ class EvidenceIndex:
                 or previous["scope"].get("notice_id") != self.scope_id):
             raise EvidenceError("previous_report_scope_mismatch")
         self.profile = {key: redact(value) if value is not None else None for key, value in profile["payload"].items()}
-        self.entries, self.by_id, seen_observations = [], {}, set()
+        self.entries, self.by_id, self.money_claims, seen_observations = [], {}, [], set()
         for position, observation in enumerate(observations):
             if not isinstance(observation, dict) or any(not isinstance(observation.get(key), str)
                     or not HEX.fullmatch(observation[key]) for key in ("notice_id", "observation_id", "raw_sha256")):
@@ -166,10 +218,22 @@ class EvidenceIndex:
         self.scope = {"notice_id": self.scope_id, "observation_ids": self.observation_ids,
                       "profile_revision": profile["revision"], "catalog_snapshot": manifest["catalog_snapshot"]}
 
-    def _walk(self, value, path, observation, depth=0):
+    def _walk(self, value, path, observation, depth=0, money_role=None):
         if depth > 12:
             raise EvidenceError("evidence_too_deep")
         if isinstance(value, dict):
+            # 只读取固定契约位置，不能因路径含budget便把冲突评估/其他金额升级成预算。
+            structured = None
+            if re.fullmatch(r"evidence_fields\.money\.\d+", path):
+                raw_role = value.get("role")
+                money_role = (raw_role if isinstance(raw_role, str) and raw_role in MONEY_ROLES | {"package_budget", "unit_price", "deposit"}
+                              else "unknown" if "role" in value else None)
+                if value.get("status") == "parsed" and not value.get("package") and not value.get("unit_basis"):
+                    structured = _structured_money(value, money_role)
+            elif path == "facts.budget" and value.get("status") == "known":
+                money_role = "budget"
+                structured = _structured_money(value.get("value"), money_role)
+            first_entry = len(self.entries)
             if "text" in value and "locator" in value:
                 text, locator = value["text"], value["locator"]
                 if not _string(text, 200_000, empty=True) or not _string(locator, 512):
@@ -182,6 +246,12 @@ class EvidenceIndex:
                                  "raw_sha256": observation["raw_sha256"], "locator": locator,
                                  "field": path, "category": _category(path), "text": snippet,
                                  "offset": offset + start}
+                        # 标签是原始规范化证据的一部分；模型能辨认“48万元”所属字段。
+                        label = value.get("label")
+                        if _string(label, 512):
+                            entry["label"] = redact(label)
+                        if money_role is not None:
+                            entry["money_role"] = money_role
                         entry["evidence_id"] = digest(entry)
                         if entry["evidence_id"] not in self.by_id:
                             self.entries.append(entry)
@@ -190,10 +260,28 @@ class EvidenceIndex:
                             raise EvidenceError("evidence_limit")
                 return
             for key, item in value.items():
-                self._walk(item, path + "." + str(key), observation, depth + 1)
+                self._walk(item, path + "." + str(key), observation, depth + 1, money_role)
+            if structured is not None and len(self.entries) > first_entry:
+                # 表头与表行共同建立的结构化金额必须引用整组，不能只引一个空表头。
+                self.money_claims.append((structured, frozenset(e["evidence_id"] for e in self.entries[first_entry:])))
         elif isinstance(value, list):
             for i, item in enumerate(value):
-                self._walk(item, path + "." + str(i), observation, depth + 1)
+                self._walk(item, path + "." + str(i), observation, depth + 1, money_role)
+
+    def money_support(self, ids):
+        """金额证据必须属于当前引用集合；企业资金、其他finding和已读未引用均不能补位。"""
+        ids = set(ids)
+        result = {claim for claim, required in self.money_claims if required.issubset(ids)}
+        for eid in ids:
+            entry = self.by_id[eid]
+            # 分包预算/单价不能靠原段中的“预算”字样变成项目总预算。
+            if entry.get("money_role") not in MONEY_ROLES | {None}:
+                continue
+            result.update(claim for claim in _money_mentions(entry["text"]) if claim[2] is not None)
+            label = entry.get("label", "").strip().rstrip(":：")
+            if label in MONEY_LABELS or re.fullmatch(r"(?:" + _MONEY_LABEL_PATTERN + r")[（(](?:万元|元)[）)]", label):
+                result.update(claim for claim in _money_mentions(label + "：" + entry["text"]) if claim[2] is not None)
+        return result
 
     def search(self, query, category=None, limit=6):
         """兼容原列表接口；带匹配模式/覆盖信息的Agent工具使用search_result。"""
@@ -319,7 +407,7 @@ def validate_report(report, index, read_ids):
         errors.append("unsupported_completeness")
     if re.search(r"notice_id|observation_id|evidence_id|raw_sha256|\brevision\b|profile_revision|catalog_snapshot|category_available_count", report["summary"], re.I):
         errors.append("summary_contains_metadata")
-    supported_numbers, supported_units = set(), set()
+    supported_numbers, supported_units, cited_ids = set(), set(), set()
     for i, finding in enumerate(report["findings"]):
         prefix = "finding_" + str(i) + "_"
         if (not isinstance(finding, dict) or set(finding) != {"category", "requirement", "status", "reason", "evidence_ids", "profile_fields", "unknown_reason"}
@@ -351,6 +439,10 @@ def validate_report(report, index, read_ids):
                 # 当前档案只有管理员声明，proof_status=not_provided，不能升级为资质已证实。
                 errors.append(prefix + "qualification_not_verified")
         evidence_text = " ".join(index.by_id[x]["text"] for x in ids)
+        cited_ids.update(ids)
+        # 不借公司声明或同额限价证明预算；本条每一口径须在本条引用中有据。
+        missing_roles = {claim[0] for claim in _money_mentions(finding["requirement"]) - index.money_support(ids)}
+        errors.extend(prefix + "unsupported_money_role_" + role for role in sorted(missing_roles))
         profile_text = " ".join(index.profile[x] or "" for x in finding["profile_fields"])
         number_pool = _numbers(evidence_text + " " + profile_text)
         supported_numbers.update(number_pool)
@@ -363,6 +455,8 @@ def validate_report(report, index, read_ids):
             errors.append(prefix + "unsupported_numeric_unit")
     # 摘要/追问回答也不能悄悄增加数字事实；含义与日期角色仍交由独立语义节点核验。
     for field in ("summary", "answer"):
+        missing_roles = {claim[0] for claim in _money_mentions(report[field] or "") - index.money_support(cited_ids)}
+        errors.extend(field + "_unsupported_money_role_" + role for role in sorted(missing_roles))
         if not _numbers(report[field] or "").issubset(supported_numbers):
             errors.append(field + "_unsupported_number")
         if not _number_units(report[field] or "").issubset(supported_units):

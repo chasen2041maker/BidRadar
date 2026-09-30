@@ -40,6 +40,18 @@ def proposal(index, *, eid=None, status="unknown", category="technical"):
         "profile_fields": [], "unknown_reason": "缺少核验材料。"}], "questions": ["需补充相应证明。"], "answer": None}
 
 
+def money_manifest():
+    """合成同额不同角色，不含真实原文；结构遵循规范化money契约。"""
+    value = manifest()
+    value["observations"][0]["evidence_fields"] = {"money": [
+        {"role": role, "status": "parsed", "amount": amount, "source_unit": unit, "currency": "CNY",
+         "package": None, "unit_basis": None, "evidence": [{"text": text, "label": "正文", "locator": "p:" + role}]}
+        for role, amount, unit, text in (("budget", "480000.000000", "万元", "预算金额：48.000000万元（人民币）。"),
+            ("ceiling", "480000.000000", "万元", "最高限价（如有）：48.000000万元（人民币）。"),
+            ("file_fee", "500.0", "元", "售价：500.0元（人民币）。"))]}
+    return value
+
+
 def response(calls=None, content=None, reason=None):
     message = {"role": "assistant", "content": content}
     if calls is not None:
@@ -327,6 +339,115 @@ class AgentTests(unittest.TestCase):
             with self.subTest(statement=statement):
                 self.assertIn("unsupported_completeness", validate_report(report, self.index, {self.eid}))
 
+    def test_equal_money_needs_each_role_in_this_finding_not_other_read_citations(self):
+        index = EvidenceIndex(money_manifest())
+        ids = {entry["money_role"]: entry["evidence_id"] for entry in index.entries}
+        report = proposal(index, eid=ids["ceiling"], category="budget")
+        statement = "预算金额48万元，最高限价48万元，文件售价500元。"
+        report["findings"][0].update(requirement=statement, evidence_ids=[ids["ceiling"], ids["file_fee"]])
+        report["summary"] = statement
+        self.assertEqual(validate_report(report, index, set(ids.values())),
+                         ["finding_0_unsupported_money_role_budget", "summary_unsupported_money_role_budget"])
+        # 另一项的预算引用可支持摘要，但不能借给当前项；相同数字不足以跨口径补位。
+        report["findings"].append(proposal(index, eid=ids["budget"], category="budget")["findings"][0])
+        self.assertEqual(validate_report(report, index, set(ids.values())), ["finding_0_unsupported_money_role_budget"])
+        report["findings"][0]["evidence_ids"] = list(ids.values())
+        self.assertEqual(validate_report(report, index, set(ids.values())), [])
+        for role, eid in ids.items():
+            self.assertEqual(validate_report(proposal(index, eid=eid, category="budget"), index, {eid}), [])
+
+    def test_money_role_keeps_values_units_currency_and_exact_decimal(self):
+        data = money_manifest()
+        claim = data["observations"][0]["evidence_fields"]["money"][1]
+        claim.update(amount="600000", evidence=[{"text": "最高限价60万元。", "label": "正文", "locator": "p:ceiling"}])
+        index = EvidenceIndex(data)
+        ids = [e["evidence_id"] for e in index.entries]
+        report = proposal(index, eid=ids[0], category="budget")
+        report["findings"][0]["evidence_ids"] = ids
+        for text, role in (("预算60万元。", "budget"), ("最高限价48万元。", "ceiling"),
+                           ("预算48元。", "budget"), ("预算48.000001万元。", "budget"),
+                           ("预算-48万元。", "budget"), ("预算美元48万元。", "budget"),
+                           ("预算48万元（美元）。", "budget"), ("预算48万元USD。", "budget"),
+                           ("文件售价48元。", "file_fee")):
+            with self.subTest(text=text):
+                report["findings"][0]["requirement"] = text
+                self.assertIn("finding_0_unsupported_money_role_" + role, validate_report(report, index, set(ids)))
+        report["findings"][0]["requirement"] = "预算48万元，最高限价60.000000万元，文件售价500元。"
+        self.assertEqual(validate_report(report, index, set(ids)), [])
+
+    def test_money_metadata_and_source_labels_support_roles_but_generic_budget_path_does_not(self):
+        for structured in (True, False):
+            data = money_manifest()
+            claim = data["observations"][0]["evidence_fields"]["money"][0]
+            claim["evidence"][0].update(text="48.000000万元（人民币）", label="正文" if structured else "预算金额")
+            if not structured:
+                del claim["role"]
+            index = EvidenceIndex(data)
+            eid = index.entries[0]["evidence_id"]
+            report = proposal(index, eid=eid, category="budget")
+            report["findings"][0]["requirement"] = "预算48万元。"
+            self.assertEqual(validate_report(report, index, {eid}), [])
+        data["observations"][0]["facts"]["budget"] = {"status": "conflicting", "value": None,
+            "evidence": [{"label": "正文", "text": "最高限价48万元。", "locator": "budget-wrapper"}]}
+        index = EvidenceIndex(data)
+        eid = index.entries[0]["evidence_id"]
+        report = proposal(index, eid=eid, category="budget")
+        report["findings"][0]["requirement"] = "预算48万元。"
+        self.assertEqual(validate_report(report, index, {eid}), ["finding_0_unsupported_money_role_budget"])
+
+    def test_structured_table_money_requires_header_and_row_and_package_is_not_total(self):
+        data = money_manifest()
+        claim = data["observations"][0]["evidence_fields"]["money"][0]
+        claim["evidence"] = [{"text": "采购预算 | 采购项目", "label": "正文", "locator": "tr:head"},
+                             {"text": "48.000000万元 | 软件服务", "label": "正文", "locator": "tr:row"}]
+        index = EvidenceIndex(data)
+        head, row = [e["evidence_id"] for e in index.entries[:2]]
+        report = proposal(index, eid=row, category="budget")
+        report["findings"][0]["requirement"] = "采购预算48万元。"
+        self.assertEqual(validate_report(report, index, {head, row}), ["finding_0_unsupported_money_role_budget"])
+        report["findings"][0]["evidence_ids"] = [head, row]
+        self.assertEqual(validate_report(report, index, {head, row}), [])
+        claim.update(role="package_budget", package="A")
+        index = EvidenceIndex(data)
+        ids = [e["evidence_id"] for e in index.entries[:2]]
+        report["findings"][0]["evidence_ids"] = ids
+        self.assertIn("finding_0_unsupported_money_role_budget", validate_report(report, index, set(ids)))
+
+    def test_combined_equal_roles_and_summary_answer_require_cited_roles(self):
+        index = EvidenceIndex(money_manifest())
+        budget, ceiling, fee = [e["evidence_id"] for e in index.entries]
+        report = proposal(index, eid=ceiling, category="budget")
+        for field in ("summary", "answer"):
+            report[field] = "预算和最高限价均为48万元。"
+            self.assertIn(field + "_unsupported_money_role_budget", validate_report(report, index, {budget, ceiling}))
+            report[field] = "预算待核查，已知最高限价48万元。"
+            self.assertEqual(validate_report(report, index, {budget, ceiling}), [])
+        report["findings"][0]["evidence_ids"] = [budget, ceiling]
+        report["summary"] = "预算与最高限价均为48万元。"
+        self.assertEqual(validate_report(report, index, {budget, ceiling}), [])
+
+    def test_missing_money_role_is_repaired_by_model_with_exact_read_id_not_autofilled(self):
+        data = money_manifest()
+        index = EvidenceIndex(data)
+        ids = [e["evidence_id"] for e in index.entries]
+        bad = proposal(index, eid=ids[1], category="budget")
+        bad["findings"][0]["requirement"] = "预算48万元，最高限价48万元。"
+        fixed = deepcopy(bad)
+        fixed["findings"][0]["evidence_ids"] = ids[:2]
+        def revise(messages, tools):
+            payload = next(json.loads(m["content"]) for m in messages if m["role"] == "user" and "revision_request" in m["content"])
+            self.assertEqual(payload["validation_codes"], ["finding_0_unsupported_money_role_budget"])
+            self.assertIn("缺少预算", payload["corrections"][0]["correction"])
+            self.assertEqual({item["money_role"] for item in payload["read_citations"]}, {"budget", "ceiling", "file_fee"})
+            return response([tool("finish_report", {"report": fixed}, "fixed")])
+        script = Script([response([tool("read_evidence", {"evidence_ids": ids}, "read")]),
+                         response([tool("finish_report", {"report": bad}, "bad")]), revise, supported()])
+        result = run_agent(data, script, guard=lambda _: None, checkpoint=lambda _: None)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["report"]["findings"][0]["evidence_ids"], ids[:2])
+        self.assertEqual(bad["findings"][0]["evidence_ids"], [ids[1]])
+        self.assertEqual(len(script.calls), 4)
+
     def test_decimal_equivalent_tail_zero_keeps_units_and_cited_number_boundary(self):
         text = "预算48.000000万元；履行期限60日；提交截止2026年10月13日；偏差-2%。"
         self.input["observations"][0]["evidence_fields"]["money"][0]["evidence"][0]["text"] = text
@@ -515,6 +636,40 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(result["report"]["questions"], ["是否要求驻场？"])
 
+    def test_correct_finding_cannot_license_broader_condition_in_answer_or_question(self):
+        """模型核验器的脚本负例只验证协议闭环，不冒称机械系统已理解法律条件。"""
+        data = manifest()
+        data.update(kind="question", question="需准备哪些证明，哪些条件应先核对？")
+        source = "单位负责人为同一人或者存在直接控股、管理关系的不同供应商，不得参加同一合同项下的政府采购活动。"
+        data["observations"][0]["evidence_fields"] = {"qualification_evidence": [{"text": source, "label": "资格", "locator": "p:relations"}]}
+        index = EvidenceIndex(data)
+        eid = index.entries[0]["evidence_id"]
+        fixed = proposal(index, eid=eid, category="qualification")
+        fixed["answer"] = "企业资料尚不足以核查参与安排。请按该资格条目核对是否有具有关联关系的其他供应商同时参加同一合同，并对照原文准备适用证明。"
+        fixed["questions"] = ["是否有同一负责人或存在直接控股、管理关系的其他供应商参加本次同一合同？"]
+        for field in ("answer", "questions"):
+            with self.subTest(field=field):
+                bad = deepcopy(fixed)
+                incorrect = "本回答不是完整清单，企业应承诺单位负责人非同一人且不存在直接控股或管理关系。"
+                bad[field] = incorrect if field == "answer" else ["企业能否出具承诺，证明单位负责人非同一人且不存在直接控股或管理关系？"]
+                self.assertEqual(validate_report(bad, index, {eid}), [])
+                def review(messages, tools):
+                    context = json.loads(messages[1]["content"])
+                    self.assertEqual(context["report"]["findings"][0]["requirement"], source)
+                    self.assertEqual(context["report"][field], bad[field])
+                    self.assertEqual(context["finding_evidence"][0]["evidence_ids"], [eid])
+                    # finding原义正确；单独拒绝回答/问题中的扩大陈述，不能因finding通过而放行。
+                    return supported(**{field + "_supported": False}, report_issues=["回答或问题遗漏其他供应商这个比较对象与共同参加同一合同的条件，扩大为公司自身不得存在关联关系。"])
+                script = Script([response([tool("read_evidence", {"evidence_ids": [eid]}, "r")]),
+                                 response([tool("finish_report", {"report": bad}, "bad")]), review,
+                                 response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
+                result = run_agent(data, script, guard=lambda _: None, checkpoint=lambda _: None)
+                self.assertEqual(result["state"], "succeeded")
+                self.assertEqual(result["report"][field], fixed[field])
+                revision = next(json.loads(m["content"]) for m in script.calls[3][0] if m["role"] == "user" and "revision_request" in m["content"])
+                self.assertIn(field + "_unsupported", revision["validation_codes"])
+                self.assertEqual(len(script.calls), 5)
+
     def test_service_actions_are_not_rewritten_as_development_and_missing_profile_can_support_unknown(self):
         original = "合同签订后180日内完成服务内容、试运行和验收。"
         self.input["observations"][0]["evidence_fields"]["delivery_evidence"][0]["text"] = original
@@ -678,6 +833,7 @@ class AgentTests(unittest.TestCase):
             revision = next(json.loads(m["content"]) for m in messages if m["role"] == "user" and "revision_request" in m["content"])
             self.assertIn("finding_0_citation_scope_or_unread", revision["validation_codes"])
             self.assertEqual(revision["read_citations"], [{"evidence_id": self.eid, "category": "technical",
+                "label": "采购需求", "money_role": None,
                 "preview": self.index.by_id[self.eid]["text"][:160]}])
             fixed = proposal(self.index)
             fixed["findings"][0]["evidence_ids"] = [revision["read_citations"][0]["evidence_id"]]
