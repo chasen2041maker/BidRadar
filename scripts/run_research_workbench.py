@@ -115,7 +115,7 @@ def main(argv=None):
     parser.add_argument("--bundle", type=Path, action="append", default=[])
     parser.add_argument("--enable-model", action="store_true")
     parser.add_argument("--prepare-only", action="store_true")
-    parser.add_argument("--port", type=int, default=8865)
+    parser.add_argument("--port", type=int, default=8965)
     parser.add_argument("--serve", choices=("workspace", "catalog", "research", "tracking"))
     parser.add_argument("--config", type=Path)
     args = parser.parse_args(argv)
