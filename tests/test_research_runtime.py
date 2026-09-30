@@ -14,6 +14,7 @@ from pathlib import Path
 import secrets
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -276,6 +277,24 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.error(403, "forbidden", lambda: self.client.cancel(run["id"], self.a, self.viewer, "cancel"))
         self.add_notice(1, 2)
         self.error(409, "selection_input_stale", lambda: self.client.create_analysis(self.request(key="fresh")))
+
+    def test_created_time_pagination_is_stable_and_rejects_foreign_or_unknown_cursor(self):
+        # 故意令UUID次序与创建先后相反，防止随机ID排序把新任务藏到后页。
+        created = []
+        for i, fixed_id in enumerate(("f" * 32, "0" * 32, "7" * 32)):
+            with patch("services.research.store.uuid4", return_value=SimpleNamespace(hex=fixed_id)):
+                created.append(self.client.create_analysis(self.request(key="ordered-" + str(i))))
+        status, first = self.browser("research/runs?limit=2")
+        self.assertEqual(status, 200)
+        self.assertEqual(first["order"], "created_at_desc_id_desc")
+        self.assertEqual([item["id"] for item in first["items"]], [created[2]["id"], created[1]["id"]])
+        status, second = self.browser("research/runs?limit=2&before=" + first["next_before"])
+        self.assertEqual(status, 200)
+        self.assertEqual([item["id"] for item in second["items"]], [created[0]["id"]])
+        self.assertIsNone(second["next_before"])
+        for wid, actor, cursor in ((self.b, self.other, created[0]["id"]), (self.a, self.member, "1" * 32)):
+            self.error(400, "invalid_cursor", lambda: self.client.request("POST", "/internal/v1/runs/list", {
+                "schema_version": 1, "workspace_id": wid, "actor_id": actor, "before": cursor, "limit": 2}))
 
     def test_accepted_command_replays_with_catalog_offline_and_no_second_task(self):
         run = self.client.create_analysis(self.request())

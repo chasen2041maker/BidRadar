@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 import time
 from uuid import uuid4
@@ -139,12 +140,21 @@ class ResearchStore:
     def list_runs(self, workspace_id, *, before=None, limit=30):
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ResearchError("invalid_limit", 400)
-        if before is not None and (not isinstance(before, str) or len(before) > 128):
+        if before is not None and (not isinstance(before, str) or not re.fullmatch(r"[a-f0-9]{32}", before)):
             raise ResearchError("invalid_cursor", 400)
-        rows = self.db.execute("SELECT id FROM runs WHERE workspace_id=? AND (? IS NULL OR id<?) ORDER BY id DESC LIMIT ?",
-                               (workspace_id, before, before, limit + 1)).fetchall()
+        cursor_time = None
+        if before is not None:
+            cursor = self.db.execute("SELECT created_at FROM runs WHERE workspace_id=? AND id=?", (workspace_id, before)).fetchone()
+            if cursor is None:
+                raise ResearchError("invalid_cursor", 400)
+            cursor_time = cursor["created_at"]
+        # UUID只作为相同创建时间的稳定次序，不能拿随机UUID大小当作任务新旧。
+        # 游标须属于本公司，避免跨空间游标存在性泄露及分页跳转到任意边界。
+        rows = self.db.execute("SELECT id FROM runs WHERE workspace_id=? AND (? IS NULL OR created_at<? "
+                               "OR (created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?",
+                               (workspace_id, cursor_time, cursor_time, cursor_time, before, limit + 1)).fetchall()
         items = [self.public(workspace_id, row["id"]) for row in rows[:limit]]
-        return {"items": items, "next_before": rows[limit - 1]["id"] if len(rows) > limit else None, "order": "id_desc"}
+        return {"items": items, "next_before": rows[limit - 1]["id"] if len(rows) > limit else None, "order": "created_at_desc_id_desc"}
 
     def load(self, workspace_id, run_id):
         row = dict(self._row(workspace_id, run_id))
