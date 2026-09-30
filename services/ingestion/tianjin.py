@@ -27,6 +27,16 @@ DEFAULT_TOKEN_FILE = Path.home() / ".bidradar" / "credentials" / "tianjin-token.
 MAX_BYTES = 4 * 1024 * 1024
 
 
+def _unique_object(pairs):
+    """拒绝重复JSON键，避免解码器丢弃早值，导致早值中的转义令牌漏检。"""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_json_key")
+        result[key] = value
+    return result
+
+
 def request_spec(*, start_page=1, pages=1, page_size=10):
     for name, value, maximum in (("start_page", start_page, 10000), ("pages", pages, 5),
                                   ("page_size", page_size, 20)):
@@ -113,7 +123,7 @@ class TianjinTransport:
         if any(secret in body for secret in forbidden) or b'"authToken"' in body:
             raise FetchError("credential_echo_rejected", status, 1)
         try:
-            decoded = json.loads(body.decode("utf-8-sig"))
+            decoded = json.loads(body.decode("utf-8-sig"), object_pairs_hook=_unique_object)
         except (UnicodeError, ValueError, RecursionError):
             raise FetchError("api_invalid_json", status, 1) from None
         # JSON的\u转义在字节里看不到原token；按消费者实际解码后的字符串/键再次核查。
@@ -140,7 +150,7 @@ def parse_page(body: bytes, page_size: int) -> dict:
     待核实真实契约后升级解析版本。msg不进入日志，避免错误消息夹带私人数据。
     """
     try:
-        value = json.loads(body.decode("utf-8-sig"))
+        value = json.loads(body.decode("utf-8-sig"), object_pairs_hook=_unique_object)
     except (UnicodeError, ValueError, RecursionError):
         return {"status": "parse_error", "issues": ["invalid_json"]}
     if not isinstance(value, dict) or type(value.get("code")) is not int:

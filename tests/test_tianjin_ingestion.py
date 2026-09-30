@@ -147,6 +147,19 @@ class TianjinTransportTests(unittest.TestCase):
         finally:
             store.close()
 
+    def test_duplicate_json_key_cannot_hide_escaped_token_in_discarded_value(self):
+        encoded = "".join("\\u%04x" % ord(c) for c in self.fake_token)
+        body = b'{"ignored":"' + encoded.encode() + b'","ignored":"safe",' + response_body()[1:]
+        store = Store(Path(self.temp.name) / "duplicate-archive")
+        try:
+            run = store.create_run({**tj.request_spec(), "simulation": True}, "duplicate-test")[0]
+            result = tj.execute(store, run, self.transport(exchange=lambda *args: (200, {"content-type": "application/json"}, body)))
+            self.assertEqual(result["run"]["error_code"], "api_invalid_json")
+            self.assertEqual(list(store.blobs.iterdir()), [])
+            self.assertEqual(export_bundle(store, run)["documents"], [])
+        finally:
+            store.close()
+
 
 class TianjinParsingTests(unittest.TestCase):
     def test_zero_result_differs_from_business_error_and_preview(self):
