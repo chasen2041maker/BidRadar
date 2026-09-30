@@ -156,6 +156,26 @@ class EvidenceSemanticsTests(unittest.TestCase):
             self.assertEqual(window["status"], "unparsed")
             self.assertEqual(window["evidence"][0]["text"], text)
 
+    def test_single_segment_multiple_windows_or_reschedule_do_not_choose_first_pair(self):
+        for text in ("时间：2026年10月1日至2026年10月8日，第二批：2026年10月10日至2026年10月11日",
+                     "时间：2026年10月1日至2026年10月8日，补充说明：2026年10月10日",
+                     "时间：2026年10月1日至2026年10月8日，延期安排另行通知"):
+            with self.subTest(text=text):
+                window = observation("三、获取采购文件", text)["evidence_fields"]["acquisition_window"]
+                self.assertEqual(window["status"], "unparsed")
+                self.assertIsNone(window["value"])
+                # 所有日期/延期措辞均留在同一原文证据，不能裁成看似确定的第一批窗口。
+                self.assertEqual(window["evidence"], [{"label": "正文", "text": text, "locator": "fiction/p[2]"}])
+
+    def test_invalid_start_date_cannot_be_replaced_by_later_valid_date(self):
+        for ending in ("延期至2026年3月4日", "补充说明：2026年3月4日"):
+            text = "时间：2026年2月30日至2026年3月2日，" + ending
+            with self.subTest(text=text):
+                window = observation("三、获取采购文件", text)["evidence_fields"]["acquisition_window"]
+                self.assertEqual(window["status"], "unparsed")
+                self.assertIsNone(window["value"])
+                self.assertEqual(window["evidence"], [{"label": "正文", "text": text, "locator": "fiction/p[2]"}])
+
     def test_original_project_number_and_short_method_title_are_explicit_evidence(self):
         item = observation("原公告的采购项目编号：FICTION-001", metadata=[("采购人", "虚构采购方")], title="虚构项目更正公告")
         self.assertEqual(item["facts"]["project_number"]["value"], "FICTION-001")

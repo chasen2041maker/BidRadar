@@ -20,6 +20,7 @@ def evidence(text, locator, label="正文"):
 
 
 def _dates(text, parse_date):
+    """每个日期token保留一个结果（含None）；失败不能让后面的日期向前补位。"""
     result = []
     for match in re.finditer(DATE, text):
         raw = re.sub(r"\s+", " ", match.group()).replace("点", "时")
@@ -28,8 +29,7 @@ def _dates(text, parse_date):
         raw = re.sub(r"(日)(?=\d)", r"\1 ", raw)
         raw = re.sub(r"(\d{4}-\d{1,2}-\d{1,2})(?=\d{2}:)", r"\1 ", raw)
         value = parse_date(raw + ("（北京时间）" if "北京时间" in text else ""))
-        if value is not None:
-            result.append(value)
+        result.append(value)
     return result
 
 
@@ -143,9 +143,11 @@ def extract(content, entries, parse_date, parse_money, notice_type):
             section = None
         if (section == "acquisition" and re.search(r"时间|\d{4}", text)):
             dates = _dates(text, parse_date)
-            if len(dates) >= 2 and re.search(r"至|到|[—~～]", text):
+            # 只接受一个明确窗口；第三个日期/延期/分批都可能改变角色，不能只取前两项。
+            ambiguous = re.search(r"延期|延长|顺延|改期|调整|更正|第[一二三四五六七八九十\d]+批|分批|分期", text)
+            if len(dates) == 2 and all(date is not None for date in dates) and not ambiguous and re.search(r"至|到|[—~～]", text):
                 windows.append({"value": {"start": dates[0], "end": dates[1]}, "evidence": proof})
-            elif re.match(r"时间\s*[:：]", text):
+            elif re.match(r"时间\s*[:：]", text) or len(dates) >= 2:
                 windows.append({"value": None, "evidence": proof})
         access_context = section == "acquisition" or bool(re.search(r"(?:下载|获取|领取|报名).{0,80}(?:文件|招标)|(?:文件|招标).{0,80}(?:下载|获取|领取|报名)", text))
         for kind, pattern in (("registration", r"注册|登记"), ("login", r"登录|登陆"),
