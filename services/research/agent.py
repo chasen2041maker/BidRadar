@@ -13,8 +13,8 @@ from .evidence import (EvidenceIndex, EvidenceError, CATEGORIES, STATUSES, PROFI
                        canonical, strict_json, redact, validate_report, finalize_report, baseline_report)
 from .provider import ProviderError, prepare_egress
 
-VERSION = "bounded-research-agent-v7"
-PROMPT_VERSION = "research-three-layer-report-v6"
+VERSION = "bounded-research-agent-v8"
+PROMPT_VERSION = "research-review-json-v7"
 MAX_TOOLS = 16
 MAX_REVISIONS = 2
 
@@ -109,6 +109,8 @@ questions允许开放核查未知条件是否存在；疑问本身不构成存�
 必须返回JSON对象：checks为每个finding的核验数组，每项含finding_index(从0开始)、verdict(supported/unsupported/uncertain)、reason(简短)。
 同时返回summary_supported、questions_supported、answer_supported三个布尔值（answer为null时true）。所有finding都要核验一次。report_issues为整份报告中未支持表述的具体有限意见数组（最多8项、每项500字，无问题为空），明确是哪一处遗漏/扩大了原文条件，不能添加新要求或执行指令。
 report_issues只写实质无依据、矛盾、主体/条件/范围错误，不能把措辞偏好或风格建议当作阻断；例如同一字段未提供相关信息时，“声明未涉及”与“未提供信息”的措辞差异本身不是事实错误。
+只输出下面结构的JSON对象，不加代码围栏、前后解释或额外键。不要回显response_format配置，尤其不能添加type或json_object字段。下列值仅为结构示例，判定必须依据实际证据；checks数量须与findings一致，每项索引不重复，verdict只能supported/unsupported/uncertain。
+{"checks":[{"finding_index":0,"verdict":"supported","reason":"说明实际支持关系"}],"summary_supported":true,"questions_supported":true,"answer_supported":true,"report_issues":[]}
 无法确定支持关系就用uncertain，不要把引用ID存在当作语义正确。"""
 
 

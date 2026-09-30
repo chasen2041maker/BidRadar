@@ -4,7 +4,7 @@ from hashlib import sha256
 import json
 import unittest
 
-from services.research.agent import run_agent
+from services.research.agent import run_agent, REVIEW_SYSTEM, _review_errors
 from services.research.evidence import EvidenceIndex, EvidenceError, PROFILE_FIELDS, baseline_report, validate_report
 from services.research.evaluation import evaluate_report, compare_reports
 from services.research.provider import ProviderError
@@ -367,6 +367,42 @@ class AgentTests(unittest.TestCase):
                 self.assertEqual(validate_report(report, index, {entry["evidence_id"]}), [])
                 report["summary"] = "截止2026年10月20日，获取文件时间09:00至13:00。"
                 self.assertIn("summary_unsupported_number", validate_report(report, index, {entry["evidence_id"]}))
+
+    def test_chinese_calendar_range_shorthand_is_not_duration_and_cannot_hide_real_duration(self):
+        pairs = [("2026年10月08日至2026年10月13日", "2026年10月08日至13日"),
+                 ("2026年10月08日至2026年10月13日", "10月8日到13日"),
+                 ("2026年10月08日至2026年10月13日", "10月8—13日"),
+                 ("2026年10月08日至2026年11月13日", "10月8日至11月13日"),
+                 ("2026年12月08日至2027年1月13日", "2026年12月8日到2027年1月13日")]
+        for original, summary in pairs:
+            with self.subTest(summary=summary):
+                self.input["observations"][0]["evidence_fields"]["money"][0]["evidence"][0]["text"] = "获取期：" + original + "；预算48万元。"
+                index = EvidenceIndex(self.input)
+                entry = next(e for e in index.entries if e["category"] == "budget")
+                report = proposal(index, eid=entry["evidence_id"], category="budget")
+                report["summary"] = "获取期为" + summary + "。"
+                self.assertEqual(validate_report(report, index, {entry["evidence_id"]}), [])
+                report["summary"] += "13日内交付。"
+                self.assertIn("summary_unsupported_numeric_unit", validate_report(report, index, {entry["evidence_id"]}))
+                report["summary"] = "获取期为10月8日至14日，预算48元。"
+                errors = validate_report(report, index, {entry["evidence_id"]})
+                self.assertIn("summary_unsupported_number", errors)
+                self.assertIn("summary_unsupported_numeric_unit", errors)
+        self.input["observations"][0]["evidence_fields"]["delivery_evidence"][0]["text"] = "交付要求：13日内完成。"
+        index = EvidenceIndex(self.input)
+        entry = next(e for e in index.entries if e["category"] == "delivery")
+        report = proposal(index, eid=entry["evidence_id"], category="delivery")
+        report["summary"] = "13日内完成。"
+        self.assertEqual(validate_report(report, index, {entry["evidence_id"]}), [])
+
+    def test_review_json_template_matches_exact_parser_and_response_format_echo_still_rejected(self):
+        line = next(line for line in REVIEW_SYSTEM.splitlines() if line.startswith('{"checks":'))
+        template = json.loads(line)
+        self.assertEqual(_review_errors(template, 1), [])
+        self.assertIn("不要回显response_format", REVIEW_SYSTEM)
+        for key, value in (("type", "json_object"), ("response_format", {"type": "json_object"})):
+            with self.subTest(key=key):
+                self.assertEqual(_review_errors({**template, key: value}, 1), ["semantic_review_schema"])
 
     def test_negative_amount_remains_distinct_from_positive_amount(self):
         for source, same, opposite in (("48.000000万元", "+48万元", "-48万元"),

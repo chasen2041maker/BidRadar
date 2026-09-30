@@ -12,7 +12,7 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v6"
+VERSION = "frozen-evidence-v7"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -285,10 +285,17 @@ def _numbers(text):
 def _number_units(text):
     """等值尾零不能偷换金额/百分比/时长单位；日期角色与语义仍须模型复核。
 
-    完整中文日期不当成若干个时长。这里不做万元→元换算，只允许日/天和全角百分号
+    中文日期及有月锚点的日期范围不当成时长；省略右端年月不代表若干天。
+    这里不做万元→元换算，只允许日/天和全角百分号
     的同义写法；数值相同、单位不同仍拒绝，避免Decimal放宽成金额口径放水。
     """
-    without_dates = re.sub(r"(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日", "", text)
+    month, day = r"(?:0?[1-9]|1[0-2])", r"(?:0?[1-9]|[12]\d|3[01])"
+    start = r"(?:\d{4}\s*年\s*)?" + month + r"\s*月\s*" + day + r"\s*[日号]?"
+    end = r"(?:\d{4}\s*年\s*)?(?:" + month + r"\s*月\s*)?" + day + r"\s*[日号]"
+    # 先消除整个日期范围，避免右端“至13日”被当作13天；没有月份锚点的日数仍保留。
+    # “13日内交付”不是日期范围右端，不可借前面的日期吞掉实际时长条件。
+    without_dates = re.sub(r"(?<!\d)" + start + r"\s*(?:至|到|[-－—~～])\s*" + end + r"(?!\s*(?:内|以内|之内))", "", text)
+    without_dates = re.sub(r"(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*[日号]", "", without_dates)
     return {(Decimal(number), {"日": "天", "％": "%"}.get(unit, unit))
             for number, unit in re.findall(r"(?<!\d)([+-]?\d+(?:\.\d+)?)\s*(亿元|万元|元|小时|分钟|天|日|周|%|％)", without_dates)}
 
