@@ -32,12 +32,22 @@ def main(argv=None) -> int:
     collect.add_argument("--start-date")
     collect.add_argument("--end-date")
     collect.add_argument("--policy", type=Path)
+    tj = commands.add_parser("collect-tianjin", help="天津官方免费接口有限采样；需本人注册的本地令牌")
+    tj.add_argument("--key", required=True)
+    tj.add_argument("--start-page", type=int, default=1)
+    tj.add_argument("--pages", type=int, default=1)
+    tj.add_argument("--page-size", type=int, default=10)
+    tj.add_argument("--allow-network", action="store_true")
+    tj.add_argument("--token-file", type=Path)
     resume = commands.add_parser("resume", help="仅恢复中断的同一运行；终态不自动重试")
     resume.add_argument("run_id")
     resume.add_argument("--policy", type=Path)
+    resume.add_argument("--allow-network", action="store_true")
+    resume.add_argument("--token-file", type=Path)
     for name in ("show", "cancel"):
         commands.add_parser(name).add_argument("run_id")
     commands.add_parser("replay", help="校验原件后离线重解析，不覆盖历史").add_argument("capture_id")
+    commands.add_parser("export", help="校验原件并导出带版本的处理证据JSON").add_argument("run_id")
     commands.add_parser("verify", help="核对账本引用的全部本地原件及SHA256")
     demo = commands.add_parser("demo", help="虚构样本离线端到端演示，绝不联网")
     demo.add_argument("--key", default="offline-demo-v1")
@@ -50,7 +60,15 @@ def main(argv=None) -> int:
                                attachments=args.attachments, start_date=args.start_date, end_date=args.end_date
                                ) if args.command == "collect" else None
         store = Store(args.store)
-        if args.command in ("collect", "demo"):
+        if args.command == "collect-tianjin":
+            from services.ingestion import tianjin
+            request = tianjin.request_spec(start_page=args.start_page, pages=args.pages, page_size=args.page_size)
+            run_id, created = store.create_run(request, args.key)
+            emit({"event": "run_registered", "run_id": run_id, "created": created, "simulation": False})
+            transport = tianjin.TianjinTransport(allow_network=args.allow_network,
+                                               token_file=args.token_file or tianjin.DEFAULT_TOKEN_FILE)
+            report = tianjin.execute(store, run_id, transport)
+        elif args.command in ("collect", "demo"):
             if args.command == "demo":
                 from services.ingestion.demo import DemoTransport, demo_request
                 request = demo_request()
@@ -64,12 +82,18 @@ def main(argv=None) -> int:
                   "simulation": args.command == "demo"})
             report = execute(store, run_id, transport)
         elif args.command == "resume":
-            if store.run(args.run_id)["request"].get("simulation"):
+            from services.ingestion import tianjin
+            if store.run(args.run_id)["request"].get("source_id") == tianjin.SOURCE_ID:
+                transport = tianjin.TianjinTransport(allow_network=args.allow_network,
+                                                   token_file=args.token_file or tianjin.DEFAULT_TOKEN_FILE)
+                report = tianjin.execute(store, args.run_id, transport)
+            elif store.run(args.run_id)["request"].get("simulation"):
                 from services.ingestion.demo import DemoTransport
                 transport = DemoTransport()
+                report = execute(store, args.run_id, transport)
             else:
                 transport = Transport(SourcePolicy.from_file(args.policy) if args.policy else None)
-            report = execute(store, args.run_id, transport)
+                report = execute(store, args.run_id, transport)
         elif args.command == "show":
             report = store.report(args.run_id)
         elif args.command == "cancel":
@@ -77,6 +101,10 @@ def main(argv=None) -> int:
             report = store.report(args.run_id)
         elif args.command == "replay":
             emit({"event": "replay", **replay(store, args.capture_id)})
+            return 0
+        elif args.command == "export":
+            from services.ingestion.export import export_bundle
+            emit(export_bundle(store, args.run_id))
             return 0
         else:
             hashes = [row[0] for row in store.db.execute("SELECT DISTINCT sha256 FROM captures WHERE sha256 IS NOT NULL")]

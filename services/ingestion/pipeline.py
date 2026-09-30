@@ -17,7 +17,7 @@ from services.ingestion.sources.ccgp import (
 )
 from services.ingestion.transport import FetchError
 
-PARSER_VERSION = "ccgp-acquisition-v1"
+PARSER_VERSION = "ccgp-acquisition-v2"
 MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 BLOCKING_ERRORS = frozenset({
     "blocked", "access_blocked", "policy_required", "policy_invalid", "policy_expired_or_not_yet_valid",
@@ -231,6 +231,11 @@ def replay(store: Store, capture_id: str) -> dict:
     capture = store.capture(capture_id)
     if not capture["sha256"]:
         raise StoreError("capture_has_no_body")
+    if capture["kind"] == "api_page":
+        from services.ingestion import tianjin
+        req = store.run(capture["run_id"])["request"]
+        parsed = tianjin.parse_page(store.read_blob(capture["sha256"]), req["page_size"])
+        return store.save_replay(capture_id, tianjin.PARSER_VERSION, parsed)
     parsed = parse_capture(capture["kind"], store.read_blob(capture["sha256"]), capture["headers"],
                            capture["final_url"] or capture["url"])
     return store.save_replay(capture_id, PARSER_VERSION, parsed)

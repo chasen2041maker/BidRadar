@@ -69,6 +69,9 @@ class NoticePage:
     attachments: tuple[dict[str, str], ...]
     issues: tuple[str, ...]
     input_sha256: str
+    segments: tuple[dict[str, str], ...] = ()
+    metadata: tuple[dict[str, str], ...] = ()
+    links: tuple[dict[str, str], ...] = ()
 
 
 def build_search_params(keyword: str, page: int = 1, *, start_date: str | None = None,
@@ -304,6 +307,7 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
     if len(body) != 1 or not body[0].text():
         return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("unexpected_notice_template",), fingerprint)
     attachments: list[dict[str, str]] = []
+    links: list[dict[str, str]] = []
     issues = [] if title else ["missing_notice_title"]
     seen = set()
     for anchor in body[0].walk():
@@ -316,9 +320,56 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
         except ValueError:
             issues.append("malformed_attachment_link")
             continue
+        original = _notice_url(link)
+        if original is not None:
+            links.append({"url": original, "name": anchor.text(), "locator": "div.vF_detail_content a"})
         if re.search(r"\.(?:pdf|docx?|xlsx?|zip|rar|7z)$", parts.path, re.I) and link not in seen:
             seen.add(link)
             attachments.append({"url": link, "name": anchor.text(), "locator": "div.vF_detail_content a",
                                 "status": "not_fetched"})
+    # 保留段落/表格行边界，供processing定位字段；不能把整页拼成一句再猜日期角色。
+    segments = []
+    pending = [(body[0], "div.vF_detail_content")]
+    while pending:
+        node, locator = pending.pop()
+        if isinstance(node, str):
+            if node.strip():
+                segments.append({"text": node.strip(), "locator": locator})
+            continue
+        if node.tag in ("p", "li", "tr", "h1", "h2", "h3", "h4"):
+            cells = [child.text() for child in node.children if isinstance(child, _Node) and child.tag in ("td", "th")]
+            text = " | ".join(cells) if node.tag == "tr" else node.text()
+            if text:
+                segments.append({"text": text, "locator": locator})
+            continue
+        children, inline, element_index = [], [], 0
+        def flush_inline():
+            if inline:
+                children.append(("".join(inline), f"{locator} text-run[{len(children) + 1}]"))
+                inline.clear()
+        for child in node.children:
+            if isinstance(child, str):
+                inline.append(child)
+                continue
+            element_index += 1
+            if child.tag in ("script", "style"):
+                continue
+            if child.tag in ("span", "b", "strong", "em", "a", "i", "br"):
+                inline.append("\n" if child.tag == "br" else child.text())
+                continue
+            flush_inline()
+            children.append((child, f"{locator} > {child.tag}:nth-child({element_index})"))
+        flush_inline()
+        pending.extend(reversed(children))
+    if not segments:
+        segments.append({"text": body[0].text(), "locator": "div.vF_detail_content"})
+    # 页面摘要表只输出允许的业务标签；电话/地址等联系信息不进入字段索引。
+    labels = {"采购项目名称", "品目", "采购单位", "采购人", "行政区域", "公告时间", "公告发布时间", "预算金额", "公告类型"}
+    metadata = []
+    for index, node in enumerate((n for n in nodes if n.tag == "tr"), 1):
+        cells = [child for child in node.children if isinstance(child, _Node) and child.tag in ("td", "th")]
+        for label, value in zip(cells[::2], cells[1::2]):
+            if label.text().rstrip("：:") in labels:
+                metadata.append({"label": label.text().rstrip("：:"), "text": value.text(), "locator": f"tr[{index}]"})
     return NoticePage(ParseStatus.PARTIAL if issues else ParseStatus.OK, title, body[0].text(),
-                      tuple(attachments), tuple(issues), fingerprint)
+                      tuple(attachments), tuple(issues), fingerprint, tuple(segments), tuple(metadata), tuple(links))
