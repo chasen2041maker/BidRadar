@@ -13,12 +13,16 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v12-answer-reasons"
+VERSION = "frozen-evidence-v13-question-gaps"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
 CATEGORIES = frozenset(("technical", "qualification", "delivery", "commercial", "budget", "deadline", "materials", "other"))
 STATUSES = frozenset(("met", "unmet", "unknown", "conflicting", "not_applicable"))
+# 当前档案只有声明、没有核验资格证明；固定表达避免借其他条款点名本条未载的材料。
+# 此约束只适用于qualification+unknown，不代替其他类别的能力/交付语义比较。
+QUALIFICATION_REASON = "企业资格资料尚未核验，本条要求及适用分支需结合原文和企业证明逐项核对。"
+QUALIFICATION_UNKNOWN_REASON = "缺少已核验的企业资格资料，当前不能确认本条的适用情况。"
 # 与规范化money.role保持同名；这里只保护明确金额断言，不代替上下文语义核验。
 MONEY_LABELS = {"预算金额": "budget", "项目预算": "budget", "采购预算": "budget", "预算": "budget",
                 "最高投标限价": "ceiling", "最高限价": "ceiling", "限价": "ceiling",
@@ -442,6 +446,27 @@ def answer_reason_indices(report):
     return None
 
 
+def question_finding_indices(report):
+    """将展示缺口逐项绑定当前unknown_reason；仅比较空白，不另写问题或补候选。
+
+    字段仍叫questions，但产品含义为待核查缺口。可选任意顺序、最多12项；完整
+    文本归一后不得重复。原说明超过600字不能截取展示，输入覆盖由limitations承担。
+    """
+    questions, findings = report.get("questions"), report.get("findings")
+    if (not isinstance(questions, list) or len(questions) > 12
+            or any(not _string(q, 600) for q in questions)
+            or not isinstance(findings, list) or len(findings) > 30):
+        return None
+    gaps = {}
+    for i, finding in enumerate(findings):
+        if isinstance(finding, dict) and _string(finding.get("unknown_reason"), 800):
+            gaps.setdefault(" ".join(finding["unknown_reason"].split()), i)
+    normalized = [" ".join(q.split()) for q in questions]
+    if len(set(normalized)) != len(normalized) or any(q not in gaps for q in normalized):
+        return None
+    return [gaps[q] for q in normalized]
+
+
 def validate_report(report, index, read_ids):
     """机械校验不等于语义证明；错误只返回码，避免不可信文本进入修订指令。"""
     errors = []
@@ -460,6 +485,8 @@ def validate_report(report, index, read_ids):
             errors.append("answer_not_from_current_reasons")
     elif report["answer"] is not None:
         errors.append("unexpected_answer")
+    if question_finding_indices(report) is None:
+        errors.append("questions_not_from_current_unknown_reasons")
     if CONTACT.search(canonical(report)):
         errors.append("report_contact_information")
     if _unsupported_completeness(canonical(report)):
@@ -504,6 +531,11 @@ def validate_report(report, index, read_ids):
                     errors.append(prefix + "qualification_exact_quote_required")
         if finding["status"] == "unknown" and not finding["unknown_reason"]:
             errors.append(prefix + "missing_unknown_reason")
+        if finding["category"] == "qualification" and finding["status"] == "unknown":
+            # 仅比较固定契约，不替模型补写理由，不从别条引用借用证明材料名称。
+            if (" ".join(finding["reason"].split()) != QUALIFICATION_REASON
+                    or " ".join((finding["unknown_reason"] or "").split()) != QUALIFICATION_UNKNOWN_REASON):
+                errors.append(prefix + "qualification_unverified_text_required")
         if finding["status"] in ("met", "unmet"):
             fields = finding["profile_fields"]
             if not fields or any(not index.profile[field] for field in fields):
@@ -567,11 +599,12 @@ def baseline_report(manifest):
     index = EvidenceIndex(manifest)
     selected = index.entries[:24]
     findings = [{"category": e["category"], "requirement": e["text"] if e["category"] == "qualification" else e["text"][:1200], "status": "unknown",
-                 "reason": "规则基线仅列出可得原文，尚未完成语义匹配或证明核验。",
+                 "reason": QUALIFICATION_REASON if e["category"] == "qualification" else "规则基线仅列出可得原文，尚未完成语义匹配或证明核验。",
                  "evidence_ids": [e["evidence_id"]], "profile_fields": [],
-                 "unknown_reason": "需核对要求与企业证明，当前不判定满足或不满足。"} for e in selected]
+                 "unknown_reason": QUALIFICATION_UNKNOWN_REASON if e["category"] == "qualification" else "需核对要求与企业证明，当前不判定满足或不满足。"} for e in selected]
     proposal = {"summary": "规则基线：资料待核查，不构成参与资格结论。", "findings": findings,
-                "questions": ["需取得完整采购文件并核查企业相应证明。"],
+                # 基线同样只展示已有缺口；没有证据条目时没有可复用的缺口，不造模板。
+                "questions": list(dict.fromkeys(f["unknown_reason"] for f in findings if f["unknown_reason"]))[:12],
                 # 基线也复用自己的保守理由，不给模型校验器增加固定模板豁免。
                 "answer": findings[0]["reason"] if manifest.get("question") and findings else None}
     limitations = (["资格来源经长度或隐私处理形成片段，基线展示不代表完整资格条款。"]

@@ -91,7 +91,7 @@ class FakeProvider:
                           "findings": [{"category": entry["category"], "requirement": entry["text"],
                            "status": "unknown", "reason": "仅有公告片段，仍需核验企业声明和完整材料。",
                            "evidence_ids": [entry["evidence_id"]], "profile_fields": [], "unknown_reason": "证明尚未核验。"}],
-                          "questions": ["需要取得完整采购材料。"],
+                          "questions": ["证明尚未核验。"],
                           "answer": "仅有公告片段，仍需核验企业声明和完整材料。" if context["kind"] == "question" else None}
                 name, arguments = "finish_report", {"report": report}
             message = {"role": "assistant", "content": None, "tool_calls": [{"type": "function",

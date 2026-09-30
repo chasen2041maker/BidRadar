@@ -5,7 +5,8 @@ import json
 import unittest
 
 from services.research.agent import run_agent, REVIEW_SYSTEM, _review_errors
-from services.research.evidence import EvidenceIndex, EvidenceError, PROFILE_FIELDS, baseline_report, validate_report, answer_reason_indices
+from services.research.evidence import (EvidenceIndex, EvidenceError, PROFILE_FIELDS, baseline_report, validate_report,
+                                      answer_reason_indices, question_finding_indices, QUALIFICATION_REASON, QUALIFICATION_UNKNOWN_REASON)
 from services.research.evaluation import evaluate_report, compare_reports
 from services.research.provider import ProviderError
 
@@ -36,8 +37,8 @@ def proposal(index, *, eid=None, status="unknown", category="technical"):
     entry = index.by_id[eid] if eid else index.entries[0]
     return {"summary": "该软件项目有业务相关性，参与条件仍需核查。", "findings": [{
         "category": category, "requirement": entry["text"], "status": status,
-        "reason": "原文列明该项要求，企业证明尚未核验。", "evidence_ids": [entry["evidence_id"]],
-        "profile_fields": [], "unknown_reason": "缺少核验材料。"}], "questions": ["需补充相应证明。"], "answer": None}
+        "reason": QUALIFICATION_REASON if category == "qualification" else "原文列明该项要求，企业证明尚未核验。", "evidence_ids": [entry["evidence_id"]],
+        "profile_fields": [], "unknown_reason": QUALIFICATION_UNKNOWN_REASON if category == "qualification" else "缺少核验材料。"}], "questions": [], "answer": None}
 
 
 def money_manifest():
@@ -429,7 +430,7 @@ class AgentTests(unittest.TestCase):
         nonquestion["answer"] = nonquestion["findings"][0]["reason"]
         self.assertEqual(validate_report(nonquestion, self.index, {self.eid}), ["unexpected_answer"])
 
-    def test_copied_question_reason_can_still_be_rejected_for_rewriting_qualification_branch(self):
+    def test_copied_question_qualification_reason_is_locally_rejected_then_model_repairs(self):
         data = manifest()
         data.update(kind="question", question="企业证明缺口和适用材料分支是什么？")
         source = "供应商应提供三份登记证明；已经办理登记合一的供应商可仅提供统一登记证件。"
@@ -437,19 +438,13 @@ class AgentTests(unittest.TestCase):
         index = EvidenceIndex(data)
         eid = index.entries[0]["evidence_id"]
         fixed = proposal(index, eid=eid, category="qualification")
-        fixed["findings"][0].update(reason="企业登记及证明资料未提供，当前不能判断满足条件；适用材料分支请核对本条完整原文。", profile_fields=["qualifications"])
+        fixed["findings"][0].update(profile_fields=["qualifications"])
         fixed["answer"] = fixed["findings"][0]["reason"]
         bad = deepcopy(fixed)
         bad["answer"] = bad["findings"][0]["reason"] = "企业只需提供统一登记证件，当前资料待补。"
-        self.assertEqual(validate_report(bad, index, {eid}), [])
-        def reject(messages, tools):
-            context = json.loads(messages[1]["content"])
-            self.assertEqual(context["answer_finding_indices"], [0])
-            self.assertEqual(context["report"]["findings"][0]["requirement"], source)
-            return supported(checks=[{"finding_index": 0, "verdict": "unsupported", "reason": "理由省去已经登记合一的替代前提。"}], answer_supported=False,
-                             report_issues=["复制理由没有消除其中将条件性替代材料扩大为普遍材料的错误。"])
+        self.assertIn("finding_0_qualification_unverified_text_required", validate_report(bad, index, {eid}))
         script = Script([response([tool("read_evidence", {"evidence_ids": [eid]}, "read")]),
-            response([tool("finish_report", {"report": bad}, "bad")]), reject,
+            response([tool("finish_report", {"report": bad}, "bad")]),
             response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
         result = run_agent(data, script, guard=lambda _: None, checkpoint=lambda _: None)
         self.assertEqual(result["state"], "succeeded")
@@ -467,6 +462,103 @@ class AgentTests(unittest.TestCase):
         data["observations"][0].update(title="", evidence_fields={})
         self.assertEqual(baseline_report(data)["findings"], [])
         self.assertIsNone(baseline_report(data)["answer"])
+
+    def test_gap_questions_reuse_whole_current_unknown_reasons_without_mutation(self):
+        report = proposal(self.index)
+        first = "企业资源安排未提供。\n需核查对应证明。"
+        second = "企业商务安排尚待核查。"
+        report["findings"][0]["unknown_reason"] = first
+        report["findings"].append({**deepcopy(report["findings"][0]), "unknown_reason": second})
+        report["questions"] = ["  企业商务安排尚待核查。  ", "企业资源安排未提供。\t需核查对应证明。"]
+        before = deepcopy(report)
+        self.assertEqual(question_finding_indices(report), [1, 0])
+        self.assertEqual(validate_report(report, self.index, {self.eid}), [])
+        self.assertEqual(report, before)  # 列表允许模型选择展示顺序，完整说明及其内部换行不被改写。
+        for values in ([first.split("。")[0] + "。"], ["请确认：" + second], [second + "是否都已满足？"],
+                       [second, "\t" + second], [first + "\n\n" + second], ["上次报告中的缺口。"],
+                       ["需核查对应证明。企业资源安排未提供。"]):
+            with self.subTest(values=values):
+                report["questions"] = values
+                self.assertIn("questions_not_from_current_unknown_reasons", validate_report(report, self.index, {self.eid}))
+        report["questions"] = []
+        self.assertEqual(question_finding_indices(report), [])
+        self.assertEqual(validate_report(report, self.index, {self.eid}), [])
+
+    def test_gap_questions_limits_nulls_and_baseline_do_not_create_template_bypass(self):
+        report = proposal(self.index)
+        report["questions"] = [report["findings"][0]["unknown_reason"]]
+        report["findings"][0]["unknown_reason"] = None
+        self.assertIsNone(question_finding_indices(report))
+        for value in ("", "  "):
+            report["questions"] = [value]
+            self.assertIn("report_schema", validate_report(report, self.index, {self.eid}))
+        report["findings"][0]["unknown_reason"] = "待" * 601
+        report["questions"] = ["待" * 600]
+        self.assertIsNone(question_finding_indices(report))  # 不能用单项600上限为理由截掉完整缺口。
+        report["questions"] = ["待" * 601]
+        self.assertIn("report_schema", validate_report(report, self.index, {self.eid}))
+        report["findings"] = [{**deepcopy(report["findings"][0]), "unknown_reason": "待核查" + "甲" * i} for i in range(1, 14)]
+        report["questions"] = [f["unknown_reason"] for f in report["findings"][:12]]
+        self.assertEqual(question_finding_indices(report), list(range(12)))
+        report["questions"].append(report["findings"][12]["unknown_reason"])
+        self.assertIsNone(question_finding_indices(report))
+        baseline = baseline_report(self.input)
+        self.assertEqual(baseline["questions"], list(dict.fromkeys(f["unknown_reason"] for f in baseline["findings"])))
+        self.assertEqual(len(baseline["questions"]), 2)  # 多项普通缺口去重；资格保守缺口单列。
+        candidate = proposal(self.index)
+        candidate["questions"] = baseline["questions"]
+        self.assertIn("questions_not_from_current_unknown_reasons", validate_report(candidate, self.index, {self.eid}))
+        empty = manifest()
+        empty["observations"][0].update(title="", evidence_fields={})
+        self.assertEqual(baseline_report(empty)["questions"], [])
+
+    def test_qualification_unknown_uses_fixed_proof_boundary_without_borrowing_other_clause(self):
+        data = manifest()
+        data["observations"][0]["evidence_fields"] = {"qualification_evidence": [
+            {"text": "本项目不接受联合体。", "label": "资格", "locator": "p:participation"},
+            {"text": "应提交联合体投标承诺函。", "label": "资格", "locator": "p:other"}]}
+        index = EvidenceIndex(data)
+        first, other = [e["evidence_id"] for e in index.entries]
+        good = proposal(index, eid=first, category="qualification")
+        good["questions"] = [QUALIFICATION_UNKNOWN_REASON]
+        self.assertEqual(validate_report(good, index, {first, other}), [])
+        for field in ("reason", "unknown_reason"):
+            for bad_text in ("企业缺少联合体投标承诺函。", QUALIFICATION_REASON + "请提供上述承诺函。"):
+                bad = deepcopy(good)
+                bad["findings"][0][field] = bad_text
+                bad["questions"] = []
+                self.assertIn("finding_0_qualification_unverified_text_required", validate_report(bad, index, {first, other}))
+                self.assertEqual(bad["findings"][0][field], bad_text)
+        quoted = deepcopy(good)
+        quoted["findings"][0].update(reason="\n" + QUALIFICATION_REASON + "\t", unknown_reason="  " + QUALIFICATION_UNKNOWN_REASON)
+        self.assertEqual(validate_report(quoted, index, {first, other}), [])
+        base = baseline_report(data)
+        self.assertTrue(all(f["reason"] == QUALIFICATION_REASON and f["unknown_reason"] == QUALIFICATION_UNKNOWN_REASON for f in base["findings"]))
+        self.assertEqual(base["questions"], [QUALIFICATION_UNKNOWN_REASON])
+
+    def test_qualification_wrong_status_and_copied_gap_still_need_semantic_review(self):
+        """固定unknown边界不能让模型换成conflicting后绕过语义核验；脚本仅验证拒绝闭环。"""
+        index = self.index
+        entry = next(e for e in index.entries if e["category"] == "qualification")
+        eid = entry["evidence_id"]
+        bad = proposal(index, eid=eid, category="qualification", status="conflicting")
+        bad["findings"][0].update(reason="原文存在矛盾，企业不允许提供登记证明。", unknown_reason="需企业确认无法提供登记证明。")
+        bad["questions"] = [bad["findings"][0]["unknown_reason"]]
+        self.assertEqual(validate_report(bad, index, {eid}), [])
+        fixed = proposal(index, eid=eid, category="qualification")
+        fixed["questions"] = [QUALIFICATION_UNKNOWN_REASON]
+        def reject(messages, tools):
+            context = json.loads(messages[1]["content"])
+            self.assertEqual(context["questions_finding_indices"], [0])
+            self.assertEqual(context["finding_evidence"][0]["evidence_ids"], [eid])
+            return supported(checks=[{"finding_index": 0, "verdict": "unsupported", "reason": "原文没有矛盾或禁止企业提供证明的依据。"}], questions_supported=False)
+        script = Script([response([tool("read_evidence", {"evidence_ids": [eid]}, "read")]),
+            response([tool("finish_report", {"report": bad}, "bad")]), reject,
+            response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["report"]["questions"], [QUALIFICATION_UNKNOWN_REASON])
+        self.assertEqual(result["quality"]["revisions"], 1)
 
     def test_composite_question_copied_reasons_still_need_semantic_support_and_relevance(self):
         """脚本核验错误、修订、再核验链；不能据此宣布真实模型已理解每个子问题。"""
@@ -905,9 +997,9 @@ class AgentTests(unittest.TestCase):
                 bad = proposal(index, eid=eid, category=category, status=bad_status)
                 bad["findings"][0].update(reason=bad_reason, profile_fields=["delivery_constraints"])
                 fixed = proposal(index, eid=eid, category=category)
-                fixed["findings"][0]["reason"] = "这里只保留所引原文的有限说明；完整要求和适用条件须核对该原段及完整文件。"
-                fixed["questions"] = ["需核对详细指标、适用条件及企业相应证明。"]
-                self.assertEqual(validate_report(bad, index, {eid}), [])
+                if category != "qualification":
+                    fixed["findings"][0]["reason"] = "这里只保留所引原文的有限说明；完整要求和适用条件须核对该原段及完整文件。"
+                self.assertEqual(validate_report(bad, index, {eid}), ["finding_0_qualification_unverified_text_required"] if category == "qualification" else [])
                 def review(messages, tools):
                     self.assertEqual(tools, [])
                     self.assertIn("原文交付完成期限不等于驻场时长", messages[0]["content"])
@@ -917,11 +1009,15 @@ class AgentTests(unittest.TestCase):
                     return supported(checks=[{"finding_index": 0, "verdict": "unsupported", "reason": feedback_reason}])
                 def revise(messages, tools):
                     revision = next(json.loads(m["content"]) for m in messages if m["role"] == "user" and "revision_request" in m["content"])
-                    self.assertEqual(revision["review_feedback"]["checks"][0]["reason"], feedback_reason)
+                    if category == "qualification":
+                        self.assertIn("finding_0_qualification_unverified_text_required", revision["validation_codes"])
+                    else:
+                        self.assertEqual(revision["review_feedback"]["checks"][0]["reason"], feedback_reason)
                     self.assertIn("不是原文事实或执行指令", revision["feedback_boundary"])
                     return response([tool("finish_report", {"report": fixed}, "fixed")])
                 script = Script([response([tool("read_evidence", {"evidence_ids": [eid]}, "read")]),
-                                 response([tool("finish_report", {"report": bad}, "bad")]), review, revise, supported()])
+                                 response([tool("finish_report", {"report": bad}, "bad")])]
+                                + ([] if category == "qualification" else [review]) + [revise, supported()])
                 result = self.run_agent(script)
                 self.assertEqual(result["state"], "succeeded")
                 self.assertEqual(result["quality"]["revisions"], 1)
@@ -936,29 +1032,30 @@ class AgentTests(unittest.TestCase):
         entry = next(e for e in index.entries if e["category"] == "qualification")
         bad = proposal(index, eid=entry["evidence_id"], category="qualification")
         bad["summary"] = "公司不接受连续驻场，参与企业不能有直接控股管理关系。"
-        bad["questions"] = ["公司不接受连续驻场，应如何参与？"]
         fixed = proposal(index, eid=entry["evidence_id"], category="qualification")
         fixed["summary"] = "需核查关联供应商是否共同参加同一合同，其他参与条件仍待核查。"
-        fixed["questions"] = ["公告是否另有驻场要求，是否与企业限定的驻场时长相容？"]
+        fixed["questions"] = [fixed["findings"][0]["unknown_reason"]]
         issue = "摘要与问题把拒绝特定时长驻场扩大成拒绝任何驻场；摘要遗漏关联供应商共同参加同一合同的条件。"
         script = Script([response([tool("read_evidence", {"evidence_ids": [entry["evidence_id"]]}, "r")]),
                          response([tool("finish_report", {"report": bad}, "bad")]),
-                         supported(summary_supported=False, questions_supported=False, report_issues=[issue]),
+                         supported(summary_supported=False, report_issues=[issue]),
                          response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
         result = self.run_agent(script)
         self.assertEqual(result["state"], "succeeded")
         revision = next(json.loads(m["content"]) for m in script.calls[3][0] if m["role"] == "user" and "revision_request" in m["content"])
-        self.assertIn("questions_unsupported", revision["validation_codes"])
+        self.assertIn("summary_unsupported", revision["validation_codes"])
         self.assertEqual(revision["review_feedback"]["report_issues"], [issue])
         self.assertEqual(result["report"]["questions"], fixed["questions"])
 
     def test_open_question_is_allowed_but_question_with_unsupported_premise_is_revised(self):
         bad = proposal(self.index)
         bad["questions"] = ["既然采购必须要求驻场，应如何安排？"]
+        bad["findings"][0]["unknown_reason"] = bad["questions"][0]
         fixed = proposal(self.index)
         fixed["questions"] = ["是否要求驻场？"]
+        fixed["findings"][0]["unknown_reason"] = fixed["questions"][0]
         def review(messages, tools):
-            self.assertIn("疑问本身不构成存在断言", messages[0]["content"])
+            self.assertEqual(json.loads(messages[1]["content"])["questions_finding_indices"], [0])
             self.assertIn("不得仅因可能误读而拒绝", messages[0]["content"])
             # 本次只引用技术原文；问题不能把未读交付片段提升为已知前提。
             self.assertEqual(json.loads(messages[1]["content"])["evidence"][0]["category"], "technical")
@@ -979,33 +1076,25 @@ class AgentTests(unittest.TestCase):
         index = EvidenceIndex(data)
         eid = index.entries[0]["evidence_id"]
         fixed = proposal(index, eid=eid, category="qualification")
-        fixed["answer"] = fixed["findings"][0]["reason"] = "企业参与安排资料尚未提供，当前不能确认相应参与条件。请核对资格原文条目的供应商关系适用分支。"
-        fixed["questions"] = ["是否有同一负责人或存在直接控股、管理关系的其他供应商参加本次同一合同？"]
+        fixed["answer"] = fixed["findings"][0]["reason"]
+        fixed["questions"] = [fixed["findings"][0]["unknown_reason"]]
         for field in ("answer", "questions"):
             with self.subTest(field=field):
                 bad = deepcopy(fixed)
                 incorrect = "本回答不是完整清单，企业应承诺单位负责人非同一人且不存在直接控股或管理关系。"
                 bad[field] = incorrect if field == "answer" else ["企业能否出具承诺，证明单位负责人非同一人且不存在直接控股或管理关系？"]
-                self.assertEqual(validate_report(bad, index, {eid}), ["answer_not_from_current_reasons"] if field == "answer" else [])
-                def review(messages, tools):
-                    context = json.loads(messages[1]["content"])
-                    self.assertEqual(context["report"]["findings"][0]["requirement"], source)
-                    self.assertEqual(context["report"][field], bad[field])
-                    self.assertEqual(context["finding_evidence"][0]["evidence_ids"], [eid])
-                    # finding原义正确；单独拒绝回答/问题中的扩大陈述，不能因finding通过而放行。
-                    return supported(**{field + "_supported": False}, report_issues=["回答或问题遗漏其他供应商这个比较对象与共同参加同一合同的条件，扩大为公司自身不得存在关联关系。"])
+                expected = "answer_not_from_current_reasons" if field == "answer" else "questions_not_from_current_unknown_reasons"
+                self.assertEqual(validate_report(bad, index, {eid}), [expected])
                 steps = [response([tool("read_evidence", {"evidence_ids": [eid]}, "r")]),
                          response([tool("finish_report", {"report": bad}, "bad")])]
-                if field == "questions":
-                    steps.append(review)
                 script = Script(steps + [response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
                 result = run_agent(data, script, guard=lambda _: None, checkpoint=lambda _: None)
                 self.assertEqual(result["state"], "succeeded")
                 self.assertEqual(result["report"][field], fixed[field])
                 revision = next(json.loads(m["content"]) for m in script.calls[-2][0] if m["role"] == "user" and "revision_request" in m["content"])
-                self.assertIn("answer_not_from_current_reasons" if field == "answer" else "questions_unsupported", revision["validation_codes"])
+                self.assertIn(expected, revision["validation_codes"])
                 self.assertEqual(revision["current_reasons"], [{"finding_index": 0, "reason": fixed["findings"][0]["reason"]}])
-                self.assertEqual(len(script.calls), 4 if field == "answer" else 5)
+                self.assertEqual(len(script.calls), 4)
 
     def test_summary_status_and_explicit_capability_absence_are_semantically_revised(self):
         """通用组合脚本负例：语义意见触发修订，不把脚本结果计为真实模型质量。"""
@@ -1163,18 +1252,18 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(next(e["text"] for e in result["report"]["references"] if e["evidence_id"] == eid), text)
         self.assertEqual(json.loads(script.calls[0][0][1]["content"])["category_available_count"]["delivery"], 1)
 
-    def test_missing_requirement_evidence_has_chinese_revision_guidance_and_moves_to_questions(self):
+    def test_missing_requirement_evidence_is_removed_without_fabricating_gap_questions(self):
         bad = proposal(self.index)
         bad["findings"][0].update(evidence_ids=[], category="delivery", requirement="交付期限尚未取得原文。")
         fixed = proposal(self.index)
-        fixed["questions"].append("交付期限仍需补充原文核查。")
         script = Script([response([tool("search_evidence", {"query": "软件开发", "category": "technical", "limit": 6}, "s")]),
                          response([tool("finish_report", {"report": bad}, "bad")]),
                          response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
         result = self.run_agent(script)
         self.assertEqual(result["state"], "succeeded")
         revision = next(json.loads(m["content"]) for m in script.calls[2][0] if m["role"] == "user" and "revision_request" in m["content"])
-        self.assertIn("开放questions", revision["corrections"][0]["correction"])
+        self.assertIn("完整unknown_reason", revision["corrections"][0]["correction"])
+        self.assertEqual(result["report"]["questions"], [])
         for category in ("technical", "delivery", "commercial", "other"):
             bad["findings"][0]["category"] = category
             self.assertIn("finding_0_missing_evidence", validate_report(bad, self.index, set()))
@@ -1191,7 +1280,6 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(index.category_available_count["materials"], 0)
         self.assertEqual(index.category_available_count["other"], 1)
         report = proposal(index)
-        report["questions"] = ["是否另有需要核查的参与条件？"]
         def review(messages, tools):
             context = json.loads(messages[1]["content"])
             self.assertEqual(context["input_coverage"]["material_status"], ["see_ingestion_evidence"])
