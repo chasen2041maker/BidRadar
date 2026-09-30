@@ -29,10 +29,10 @@ catalog、workspace、research、tracking各自拥有数据库，仅通过有界
 | catalog | GET /v1/bundles/{notice_id}?snapshot=N | 截至接收序号的主观察和有依据的incoming更正/结果，候选/歧义单独保留；不按标题合并 |
 | catalog | GET /v1/changes?after=N&limit=M | 按提交接收序号分页的观察引用、高水位与next_after；seq不是来源业务版本 |
 | research | POST analyses | 先保存任务/输入/幂等再202+run_id；后台Worker执行 |
-| research | GET runs、runs/{id}；POST runs/{id}/cancel；POST questions | 当前授权、明确取消、同项目问答固定父报告/输入版本，刷新不建新任务 |
+| research | 内部POST runs/list、runs/get、runs/cancel；analyses的kind=question | 当前授权、明确取消、同项目问答固定父报告/输入版本，刷新不建新任务 |
 | tracking | decisions、watches、notifications、delegations/check | 决定与watch分开，所有私有接口当前授权；只有有效明确auto_reassess委托才能发起自动模型任务 |
 
-请求和响应为schema_version=1，未知字段/类型拒绝，时间为服务端UTC ISO8601；预算整数micro-CNY（1元=1,000,000），未知实际费用为null并保留预留额。分页limit1–100，稳定顺序+游标，错误`{error:{code,message}}`，400输入/401服务身份/403权限/404无权对象或不存在/409版本幂等冲突/429额度/503依赖故障。旧浏览器/目录v1接口保持兼容，新功能未配置时明确不可用。
+内部请求携带schema_version=1，未知字段/类型拒绝；各响应按所属资源契约返回，不承诺每个响应都有schema_version。浏览器入口是`/api/workspaces/{wid}/research|tracking/...`：研究列表/详情用GET，analyses、questions和runs/{id}/cancel用POST；网关映射为内部POST并注入身份。任务时间为服务端UTC ISO8601；预算整数micro-CNY（1元=1,000,000），未知实际费用为null并保留预留额。分页limit1–100；研究按created_at降序、id降序，以before任务ID为游标，事件按seq升序以after为游标。错误`{error:{code,message}}`，400输入/401服务身份/403权限/404无权对象或不存在/409版本幂等冲突/429额度/503依赖故障；网关把依赖服务401转503，避免误注销有效浏览器会话。旧浏览器/目录v1接口保持兼容，新功能未配置时明确不可用。
 
 ## 研究输入、任务与费用
 
@@ -50,7 +50,7 @@ catalog、workspace、research、tracking各自拥有数据库，仅通过有界
 
 模型通过chat messages和函数工具协议真实决定检索/读取/完成。工具仅为冻结输入的`search_evidence`、`read_evidence`、`get_profile_snapshot`、`finish_report`（仅提案）；参数本地schema验证，不允许URL/SQL/Shell/文件路径。工具结果按tool_call_id返回，缺材料是结果不是下一条网页指令。
 
-Agent纯入口拟为`run_agent(manifest, complete, *, guard, checkpoint, resume=None, max_steps=8)`；complete接收messages/tools并返回供应商适配后的message/usage/model，费用由调用包装器持久化；guard在每动作前重验权限/取消/lease；checkpoint保存有限执行状态和工具轨迹。返回report、trace、state和quality，进程/HTTP由服务层负责。测试注入脚本provider与真实provider严格标识。
+Agent纯入口为`run_agent(manifest, complete, *, guard, checkpoint, resume=None, max_steps=8)`；complete接收messages/tools并返回供应商适配后的message/usage/model，费用由调用包装器持久化；guard在每动作前重验权限/取消/lease；checkpoint保存有限执行状态和工具轨迹。返回report、trace、state和quality，进程/HTTP由服务层负责。测试注入脚本provider与真实provider严格标识。
 
 证据ID由来源观察/字段位置/片段计算，带notice_id/observation_id/raw_sha256/locator/text；不从别的项目或新版本补足。现有规范数据只有选定证据片段，不是完整标书；报告须写实际覆盖与未获取材料。检索基线用结构分类/中文关键词与字符片段匹配，记录检索版本；是否引入向量依实际效果评测，不先堆组件。
 

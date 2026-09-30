@@ -32,7 +32,11 @@
 
 中途整合d775b4d后全量`python -m unittest discover -s tests -p test_*.py -q` 466项、13.827秒、退出0；此时新运行脚本尚未纳入。独审发现的脱敏键/电话格式P1在8786118关闭，provider11项复验通过。恢复断点、真实事件名称和待人工终态的P2正在修复，未称最终通过。
 
+工程复验（2026-10-01 01:40+08，完整`bb5458357983c15a679169861cfa61c124b22dd0`，Python3.13.12）由未参与实现的review_source_001独立执行runtime15、tracking35、workbench HTTP14、agent21、budget6，共91项退出0；JS语法和增量差异检查通过。原五项P2关闭：已入账响应恢复、ProfileConfirmed事件名、waiting_input终态、报告当前性、内部401不误注销。另核对同时间分页、档案变化+目录离线、撤权与真实注销。此结论只覆盖该SHA工程边界，不代替后续AI质量与最终审查。
+
 真实样本首轮（b7c6a22，2026-10-01，8965–8968本机四独立进程，Python3.13.12）：`python scripts/evaluate_research_case.py --notice-id b8b2c90fb20e1302c4bfc0d065f21fb8b29b9a90602a0a11610eba4f08908ac0 --case-key gansu-ai-a-v1 --execute --wait-seconds 45`退出0。5次供应商调用，任务7.847秒，费用峰价估算0.028956元，无未知费用；Agent结果partial/not_verified，工具16次未形成已核验分析。完整证据位于本工作树忽略目录`.bidradar-data/r12-workbench/evaluations/gansu-ai-a-v1.json`，不发布凭据/账号文件。命令成功不是质量成功。
+
+第二轮同命令仅case-key改`gansu-ai-a-v2`（运行代码cd30a45/8f6f70e），5次模型调用、13次工具、0.088042元；仍partial：否定免责声明被关键词规则误伤、无引用缺口误列要求、交付检索漏掉已存在原句。第三轮`gansu-ai-a-v3`（`eac79de18f80eb11de425d982b28f61db89b97bc`），5次模型/11次工具、0.115375元；分类回退已找回交付片段，但摘要添加机器标识等数字被拒，未通过AI验收。被拒候选另暴露“可能冲突”误用conflicting、把采购分类暗变为行业资质门槛，正在修复。两轮命令退出0，完整失败文件仍在同一evaluations目录，未改写成通过。至第三轮累计15次调用/0.232373元峰价估算/0次费用未知，单次和累计均读取持久账本。
 
 ## 我的参与
 
