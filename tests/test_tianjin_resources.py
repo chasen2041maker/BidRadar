@@ -25,6 +25,19 @@ def row_fields(title="虚构项目", **overrides):
     return {"公告标题": title, "项目编号": "DEMO-RESOURCE-001", "采购人名称": "虚构采购方", **overrides}
 
 
+def legacy_bundle(v2):
+    """按旧契约重建同一证据的v1包；旧解释没有日期/合同/材料新增字段。"""
+    old = deepcopy(v2)
+    old.update(schema_version=1, normalizer_version="procurement-facts-v1")
+    for item in old["observations"]:
+        item["normalizer_version"] = old["normalizer_version"]
+        item.pop("material_reference_evidence")
+        item["facts"].pop("original_published_at")
+        item["facts"].pop("original_contract_reference")
+        item["observation_id"] = fingerprint({k: v for k, v in item.items() if k != "observation_id"})
+    return old
+
+
 class ResourceTransport:
     def __init__(self, source_id, fields, *, total=1, interrupt_page=None):
         self.source_id, self.fields, self.total = source_id, fields, total
@@ -215,16 +228,11 @@ class ResourceTests(unittest.TestCase):
 
     def test_v1_compatibility_does_not_rewrite_old_observation_or_accept_version_mix(self):
         _, v2 = self.collect(tj.SOURCE_ID, row_fields("虚构项目采购公告"))
-        old = deepcopy(v2)
-        old.update(schema_version=1, normalizer_version="procurement-facts-v1")
+        old = legacy_bundle(v2)
         item = old["observations"][0]
-        item["normalizer_version"] = old["normalizer_version"]
-        item.pop("material_reference_evidence")
-        item["facts"].pop("original_published_at")
-        item["facts"].pop("original_contract_reference")
-        item["observation_id"] = fingerprint({k: v for k, v in item.items() if k != "observation_id"})
         self.catalog.import_bundle(old)
         self.assertIn(item, self.catalog.detail(item["notice_id"])["history"])
+        self.assertEqual(self.catalog.detail(item["notice_id"])["current"], v2["observations"][0])
         for invalid in ({**v2, "schema_version": 1}, {**old, "schema_version": 2},
                         {**old, "source_id": CORRECTION}, {**v2, "source_id": []}):
             with self.assertRaises(ValueError):
@@ -235,6 +243,47 @@ class ResourceTests(unittest.TestCase):
         bad["observation_id"] = fingerprint({k: v for k, v in bad.items() if k != "observation_id"})
         with self.assertRaises(ValueError):
             self.catalog.import_bundle(malformed)
+
+    def test_late_v1_cannot_restore_contract_as_procurement_candidate(self):
+        self.collect(tj.SOURCE_ID, row_fields("虚构项目采购公告"))
+        _, v2 = self.collect(tj.SOURCE_ID, row_fields("虚构事项更正公告",
+            **{"原合同公告链接": "https://example.test/contract"}))
+        current = v2["observations"][0]
+        old = legacy_bundle(v2)
+        self.catalog.import_bundle(old)
+        # 迟到旧解释应进入历史，不能成为当前并丢失原合同语义；重开后规则相同。
+        self.catalog.close()
+        self.catalog = Catalog(self.root / "catalog")
+        detail = self.catalog.detail(current["notice_id"])
+        self.assertEqual(detail["current"], current)
+        self.assertIn(old["observations"][0], detail["history"])
+        self.assertEqual(detail["relationships"][0]["basis"], "original_contract_outside_scope")
+        rows = self.catalog.query(simulation=True, kind="correction")["items"]
+        self.assertEqual(rows[0]["observation_id"], current["observation_id"])
+
+    def test_version_preference_preserves_snapshot_and_newer_acquisition(self):
+        _, first = self.collect(tj.SOURCE_ID, row_fields("虚构一号采购公告"))
+        _, second = self.collect(tj.SOURCE_ID, row_fields("虚构二号采购公告"))
+        with_catalog = Catalog(self.root / "migration")
+        try:
+            with_catalog.import_bundle(legacy_bundle(first))
+            with_catalog.import_bundle(legacy_bundle(second))
+            page = with_catalog.query(simulation=True, page_size=1)
+            with_catalog.import_bundle(first)
+            with_catalog.import_bundle(second)
+            next_page = with_catalog.query(simulation=True, page_size=1, cursor=page["next_cursor"])
+            self.assertEqual(next_page["items"][0]["normalizer_version"], "procurement-facts-v1")
+            self.assertEqual({r["normalizer_version"] for r in with_catalog.query(simulation=True)["items"]},
+                             {"procurement-facts-v2"})
+            # 规范版本只在获取时间相同时排序；不能让旧获取的v2压过新获取的v1。
+            newer = legacy_bundle(first)
+            item = newer["observations"][0]
+            item.update(observed_at="2026-10-01T12:00:00+00:00", capture_id="fixture-newer-capture")
+            item["observation_id"] = fingerprint({k: v for k, v in item.items() if k != "observation_id"})
+            with_catalog.import_bundle(newer)
+            self.assertEqual(with_catalog.detail(item["notice_id"])["current"], item)
+        finally:
+            with_catalog.close()
 
 
 if __name__ == "__main__":

@@ -26,6 +26,10 @@ SOURCE_FAMILIES = {"cn_ccgp": "cn_ccgp", "tj_procurement_negotiation": "tj_finan
                    "tj_procurement_correction": "tj_finance_procurement"}
 SCHEMAS = {1: ("procurement-facts-v1", {"cn_ccgp", "tj_procurement_negotiation"}),
            2: (VERSION, set(SOURCE_FAMILIES))}
+# 只比较明确支持的解释版本，不按字符串猜版本先后。获取时间仍优先；同一时刻
+# 优先采用较新的规范语义，最后才比较接收序号，防迟到v1把v2当前事实降级。
+NORMALIZER_RANK = {"procurement-facts-v1": 1, "procurement-facts-v2": 2}
+OBSERVATION_ORDER = "observed_at DESC, normalizer_rank(payload) DESC, seq DESC"
 
 
 def _json(value):
@@ -168,6 +172,9 @@ class Catalog:
             raise ValueError("store_symlink")
         self.db = sqlite3.connect(root / "catalog.sqlite3", timeout=5)
         self.db.row_factory = sqlite3.Row
+        # 每次打开都注册同一纯函数；不改写旧payload，也不依赖SQLite的可选JSON扩展。
+        self.db.create_function("normalizer_rank", 1,
+            lambda payload: NORMALIZER_RANK[json.loads(payload)["normalizer_version"]], deterministic=True)
         self.db.execute("PRAGMA journal_mode=WAL")
         # seq只表示目录接收顺序；当前版本仍先按实际获取时间选，防晚到旧数据回退。
         self.db.executescript("""
@@ -236,8 +243,8 @@ class Catalog:
             raise ValueError("invalid_cursor") from None
 
     def _current(self, snapshot):
-        return self.db.execute("""SELECT * FROM (
-            SELECT *,row_number() OVER(PARTITION BY notice_id ORDER BY observed_at DESC,seq DESC) AS rank
+        return self.db.execute(f"""SELECT * FROM (
+            SELECT *,row_number() OVER(PARTITION BY notice_id ORDER BY {OBSERVATION_ORDER}) AS rank
             FROM observations WHERE seq<=?) WHERE rank=1 ORDER BY observed_at DESC,notice_id ASC""", (snapshot,)).fetchall()
 
     def query(self, *, keyword="", kind=None, page_size=20, simulation=False, as_of=None, cursor=None):
@@ -286,7 +293,7 @@ class Catalog:
         try:
             snapshot = self.db.execute("SELECT coalesce(max(seq),0) FROM observations").fetchone()[0]
             history = [json.loads(r[0]) for r in self.db.execute(
-                "SELECT payload FROM observations WHERE notice_id=? ORDER BY observed_at DESC,seq DESC", (notice_id,))]
+                f"SELECT payload FROM observations WHERE notice_id=? ORDER BY {OBSERVATION_ORDER}", (notice_id,))]
             if not history:
                 raise ValueError("notice_not_found")
             current = history[0]
