@@ -8,7 +8,7 @@
 </div>
 <div id="workspace-screen" class="shell" hidden>
   <aside><div class="brand">◈ <strong>BidRadar</strong></div><p class="sidebar-label">公司空间</p><label class="sr-only" for="workspace-select">选择公司空间</label><select id="workspace-select"></select><span id="role-badge" class="role-badge"></span>
-    <nav aria-label="工作台导航"><button data-view="discover" class="nav active">▦ 商机目录</button><button data-view="profile" class="nav">▤ 企业档案</button><button data-view="selections" class="nav">✓ 已保存选择</button><button data-view="members" class="nav">♙ 公司成员</button></nav>
+    <nav aria-label="工作台导航"><button data-view="discover" class="nav active">▦ 商机目录</button><button data-view="profile" class="nav">▤ 企业档案</button><button data-view="selections" class="nav">✓ 已保存选择</button><button data-view="research" class="nav">◎ AI 研究与追问</button><button data-view="tracking" class="nav">◷ 决定与持续跟踪</button><button data-view="members" class="nav">♙ 公司成员</button></nav>
     <div class="sidebar-bottom"><span class="environment">● 本地核查工作台</span><p>企业信息：虚构测试资料<br>采购公告：按来源分别标识</p><div id="account-name"></div><button id="logout" class="link-button">退出登录</button></div>
   </aside>
   <main><header><div><span class="eyebrow">从发现到核查</span><h1 id="page-title">商机目录</h1></div><div id="header-context" class="muted">查看与筛选不会启动模型分析</div></header>
@@ -20,7 +20,16 @@
       <div class="page-actions"><button id="next-page" hidden>下一页</button><span id="cart-label">尚未选择项目</span><button id="prepare-selection" class="primary" disabled>保存待确认选择</button></div>
     </section>
     <section id="profile-view" hidden><div class="panel"><div class="section-heading"><h2>企业档案</h2><span id="profile-version" class="badge">尚未确认</span></div><p class="muted">先填写名称、希望承接的项目、能力和交付限制。其余可以留空，留空表示尚未确认。</p><p class="note">这里记录企业自己的声明。管理员确认档案，不代表资质或证明已核验。</p><form id="profile-form" class="profile-grid"></form></div><div class="panel"><h2>待确认建议</h2><div id="proposals"></div></div><div class="panel"><h2>正式版本记录</h2><div id="profile-history"></div></div></section>
-    <section id="selections-view" hidden><div class="panel"><h2>公司的候选选择</h2><p class="muted">保存当时的公告和企业档案版本。确认选择后仍需进一步研究，当前不会启动分析或产生模型费用。</p><div id="selection-list"></div></div></section>
+    <section id="selections-view" hidden><div class="panel"><h2>公司的候选选择</h2><p class="muted">保存当时的公告和企业档案版本。确认选择不会启动分析；选定后，逐个项目明确发起 AI 研究或查看规则基线。</p><p class="note">AI 研究、追问和自动复核共享本轮费用额度；规则基线不调用模型。现有材料是规范证据片段，未取得完整标书的部分仍需补证。</p><div id="selection-list"></div></div></section>
+    <section id="research-view" hidden>
+      <div class="panel"><div class="section-heading"><h2>研究与用量</h2><button id="refresh-research" type="button">刷新记录</button></div><p class="muted">AI 在固定资料内选择工具、检索证据并核查条件。浏览记录和刷新不会新建分析；从「已保存选择」逐个项目发起。</p><div id="research-budget" class="budget-grid"></div><p class="footnote">费用未知时保留预留额。取消会阻止后续动作，已经发出的调用及费用不保证撤回。</p></div>
+      <div class="research-layout"><div class="panel"><h2>持久研究记录</h2><div id="research-list"></div><button id="more-research" type="button" hidden>读取更早记录</button></div><div class="panel research-detail"><div id="research-detail"><p class="muted">选择一条研究记录，查看固定输入、报告和工具轨迹。</p></div></div></div>
+    </section>
+    <section id="tracking-view" hidden>
+      <div class="panel"><div class="section-heading"><h2>人工决定与关注设置</h2><button id="refresh-tracking" type="button">刷新跟踪</button></div><p class="muted">人工跟进或放弃与关注开关分别保存。从公告、已选项目或报告进入，可以设置对应公告。</p><div id="tracking-context"></div></div>
+      <div class="tracking-layout"><div class="panel"><h2>公司站内提醒</h2><p class="muted">按发生顺序显示；已读状态仅属于当前用户。</p><div id="tracking-notifications"></div><button id="more-notifications" type="button" hidden>读取后续提醒</button></div><div class="panel"><h2>资料与档案变化</h2><p class="muted">保留新旧版本与原文缺口，不自动改变人工决定。</p><div id="tracking-changes"></div><button id="more-changes" type="button" hidden>读取后续变化</button></div></div>
+      <div class="panel"><h2>自动复核记录</h2><p class="muted">只有明确且有效的委托才可发起复核。停止关注不会删除历史；新结果不覆盖旧报告。</p><div id="tracking-reassessments"></div></div>
+    </section>
     <section id="members-view" hidden><div class="panel"><h2>当前公司成员</h2><p class="muted">管理员管理已有测试成员的角色和访问权限；撤权保留公司历史记录。</p><div id="member-list"></div></div></section>
   </main>
 </div>
