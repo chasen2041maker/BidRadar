@@ -140,6 +140,56 @@ class ProjectMemoryTests(unittest.TestCase):
         self.write(".agents/skills/bidradar-handoff/SKILL.md", "# no metadata\n")
         self.assertTrue(any("front matter" in e for e in check(self.root)))
 
+    def test_skill_metadata_accepts_lf_and_crlf(self):
+        # 明确写入字节，让 Linux CI 也覆盖 Windows 行尾，不依赖运行平台。
+        path = self.root / ".agents/skills/bidradar-handoff/SKILL.md"
+        for newline in (b"\n", b"\r\n"):
+            with self.subTest(newline=newline):
+                path.write_bytes(newline.join((b"---", b"name: bidradar-handoff",
+                                              b"description: Test handoff", b"---", b"")))
+                self.assertEqual(check(self.root), [])
+
+    def test_skill_metadata_rejects_invalid_description(self):
+        # 接受 CRLF 不应让空描述、裸 CR 或额外换行冒充非空单行元数据。
+        path = self.root / ".agents/skills/bidradar-handoff/SKILL.md"
+        for description in (b"", b"Test\rinjected", b"Test\r", b"Test\r\ninjected"):
+            with self.subTest(description=description):
+                path.write_bytes(b"---\r\nname: bidradar-handoff\r\ndescription: "
+                                 + description + b"\r\n---\r\n")
+                self.assertTrue(any("front matter" in e for e in check(self.root)))
+
+    def test_crlf_safety_checks_remain_active(self):
+        cases = (
+            (b"# Title\r\n\x00\r\n", "NUL character"),
+            (b"<<<<<<< HEAD\r\nconflict\r\n", "merge conflict"),
+            (b"[outside](../outside.md)\r\n", "escapes repository"),
+            (b"```text\r\nunclosed\r\n", "unclosed code fence"),
+        )
+        for content, expected in cases:
+            with self.subTest(expected=expected):
+                (self.root / "README.md").write_bytes(content)
+                self.assertTrue(any(expected in e for e in check(self.root)))
+
+    def test_byte_limit_includes_crlf_bytes(self):
+        # 按实际 UTF-8 字节计数：边界处通过，多一个字节也必须拒绝。
+        path = self.root / "AGENTS.md"
+        limit = LIMITS["AGENTS.md"]
+        for newline in (b"\n", b"\r\n"):
+            with self.subTest(newline=newline):
+                content = "中".encode("utf-8") + b"x" * (limit - 3 - len(newline)) + newline
+                path.write_bytes(content)
+                self.assertEqual(check(self.root), [])
+                path.write_bytes(b"x" + content)
+                self.assertIn(f"oversize: AGENTS.md: {limit + 1} > {limit} bytes", check(self.root))
+
+    def test_crlf_invalid_utf8_remains_rejected(self):
+        (self.root / "README.md").write_bytes(b"# Title\r\n\xff\r\n")
+        self.assertTrue(any("unreadable UTF-8" in e for e in check(self.root)))
+
+    def test_crlf_missing_final_newline_remains_rejected(self):
+        (self.root / "README.md").write_bytes(b"# Title\r\nno final newline")
+        self.assertTrue(any("missing final newline" in e for e in check(self.root)))
+
     def test_conflict_marker(self):
         self.write("README.md", "<<<<<<< HEAD\nconflict\n")
         self.assertTrue(any("merge conflict" in e for e in check(self.root)))
