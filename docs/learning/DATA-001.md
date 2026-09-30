@@ -83,3 +83,13 @@
 独立wire审计在内存mock socket/TLS/凭据读取，3资源×普通/特殊字符虚构令牌共6例：路径、page/pageNum、authToken大小写与解码还原、Host/TLS SNI/443、BOM/CRLF处理均符合调用契约；不读真实凭据、不联网、不改代码。已登录官网在线测试仍弹null；公开页面代码仅在测试地址生成接口返回status=0后才调用数据API，null弹窗来自该生成步骤的错误分支。平台登记与接口鉴权状态不一致是当前诊断方向，具体根因仍未知；没有为使测试通过而换字段、放宽鉴权或重复注册。本轮无需新增实现，阅读/实践状态不变。
 
 负责人明确授权“允许提交脱敏反馈”后，通过当前天津账号在谈判资源页提交一次“其他”类别纠错，正文仅含资源、参数名、错误及排查请求，不含令牌值或联系人信息。2026-09-30 21:46:44 +08:00回读“我的纠错”及“查看”：唯一匹配记录为待处理，三段正文与获准草稿一致，平台反馈为“--”。平台列表显示创建时间21:36:27，与本地观察时间分开记录，不据此推断实际发送时刻；未重复提交。脱敏观察记录`.bidradar-data/tj-platform-feedback-result.json`，草稿`.bidradar-data/tj-platform-feedback-draft.txt`；UI操作无进程退出码。平台尚未答复，未恢复接口，目标仍未完成；无代码/测试变化，不重复执行未变的265项，本轮执行记忆一致性与差异检查。
+
+## 免登录官方来源的有限测试
+
+负责人追加要求同时寻找其他免登录来源测试。首个实际成功候选为湖北省广播电视局[政府采购公告开放接口说明](https://gdj.hubei.gov.cn/sjkf/sjkf/api/202011/t20201119_3039346.shtml)，标为无条件开放、无需条件直接开放，页面公开链接[采购JSON](https://gdj.hubei.gov.cn/zfxxgk/fdzdgknr/zfcg/list.json)。模板另写POST及“请登录后查看接口信息”，本轮只验证该公开静态链接的匿名GET，不声称POST契约或完整开放接口已经核实。未改页面状态、构造账号或绕过登录。仅本机有限样本研究，不扩大为全站抓取、原文再分发或模型处理；[隐私政策](https://gdj.hubei.gov.cn/qtmb/yszc/202209/t20220927_4324162.shtml)另有限制个人信息的收集传播，样本含联系人，原字节仅存忽略目录，公共记录不含该正文。
+
+2026-09-30 21:50:48～21:50:49 +08:00，head debdc6b63a1f64c79ae3aa94251f9df9f0a21a35，source-review/BidRadar根目录，Windows11/Python3.13.12/标准库，`python .bidradar-data/research_anon_probe.py`（PYTHONPATH=工作树）退出0。固定官方域名、公开DNS查询并校验公网IP、原域名TLS、无Cookie/Token/代理/跳转，每URL一次、20秒/1MiB上限。robots返回404，不视为明确规则或持续采集许可；公开JSON匿名GET为HTTP200/application/json、134886字节、10条，SHA256=`27acbf77aab1c88db64ddf491569f40937e2934e6c4fab92bb77074757fe4371`。实际字段DocId/URL/TITLE/DOCHTMLCON/DOCRELTIME；其中正文为HTML字符串。完整脱敏诊断`.bidradar-data/research/hubei-probe-result.json`，真实字节`.bidradar-data/research/hubei-procurement-list.json`。这是一次性研究脚本，不修改正式传输器的准入规则。
+
+21:52:08同目录/版本离线结构检查（`python -`标准库断言，退出0）：10行五字段均非空字符串、DocId唯一且与URL尾部对应、发布时间均可解析、正文非空；输入时间没有时区，不自行补+08。6条标题为成交公告，10条正文均无a链接。结果`.bidradar-data/research/hubei-sample-checks.json`。抽查[6019515采购公告](https://gdj.hubei.gov.cn/zfxxgk/fdzdgknr/zfcg/202609/t20260921_6019515.shtml)明确文件线下领取，无可下载附件；列表未显示分页/总数，不猜接口参数，不声称覆盖全量、持续更新或现行软件商机。可作为真实列表/正文/身份和状态负例候选，尚无正式适配器、原件账本导出、目录导入及真实更正整链验收。
+
+两项独立只读候选核查未产生更完整路线：[浙江税务局意向详情](https://zhejiang.chinatax.gov.cn/art/2026/2/10/art_11895_649206.html)匿名正文可读，但栏目为动态列表、样本是采购意向而非招标、未取得材料/持续采集依据；[全国公共资源查询](https://www.ggzy.gov.cn/deal/dealList.html?HEADER_DEAL_TYPE=02)模板含验证码，当前公告单页虽可请求，全文/附件及再利用条件未核实。[全国网站声明](https://www.ggzy.gov.cn/home/webStated.html)仅指向原发布平台优先，不能充当采集许可。广东robots403，福建robots返回HTML，均停止该入口探测。这些是候选排除证据，不写成正式来源联调通过；不绕过访问限制、不登录新站、不启用轮询，优先保留湖北明确开放的样本路线。
