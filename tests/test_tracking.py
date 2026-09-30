@@ -1,8 +1,10 @@
 """虚构输入验证R2事务、授权、固定版本和恢复；不调用供应商或读取生产数据。"""
 from copy import deepcopy
+from contextlib import closing
 from hashlib import sha256
 from pathlib import Path
 from datetime import datetime
+import json
 import sqlite3
 import subprocess
 import sys
@@ -12,11 +14,15 @@ import unittest
 from unittest.mock import patch
 
 from services.common.local_http import LocalClient, LocalHTTPError
+from services.common.owner_clients import WorkspaceAccessClient
+from services.research.store import ResearchStore
 from services.tracking.diff import compare_bundles, fingerprint, input_fingerprint
 from services.tracking.http_api import create_server
 from services.tracking.service import TrackingService
 from services.tracking.store import TrackingStore, TrackingError
 from services.tracking.worker import tick
+from services.workspace.http_api import create_server as create_workspace_server
+from services.workspace.store import PROFILE_LIMITS, WorkspaceStore
 
 NOTICE = sha256(b"fictional-notice").hexdigest()
 OTHER = sha256(b"other-notice").hexdigest()
@@ -122,6 +128,8 @@ class TrackingTests(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
+        if hasattr(self, "research_owner"):
+            self.research_owner.close()
         self.temp.cleanup()
 
     def watch(self, auto=False):
@@ -280,7 +288,7 @@ class TrackingTests(unittest.TestCase):
     def test_profile_change_freezes_new_revision_and_marks_stale(self):
         self.watch(True)
         self.access.profiles[WID] = 2
-        self.access.emit("ProfileRevisionConfirmed", profile=2)
+        self.access.emit("ProfileConfirmed", profile=2)
         self.service.poll("workspace")
         change = self.service.changes(ACTOR, WID)["items"][0]
         self.assertEqual((change["profile_revision"], change["diff"]["kind"], change["stale"]), (2, "profile_change", True))
@@ -311,6 +319,61 @@ class TrackingTests(unittest.TestCase):
         self.reopen(); self.ready()
         self.assertEqual(self.service.dispatch_one()["state"], "accepted")
         self.assertEqual(self.research.creates, 1)
+
+    def test_real_research_waiting_input_is_terminal_and_keeps_billing_reason(self):
+        self.changed()
+        owner = ResearchStore(Path(self.temp.name) / "research")
+        self.research_owner = owner
+
+        def create(request):
+            bundle = self.catalog.bundle(NOTICE, snapshot=request["catalog_snapshot"])
+            return owner.create(request, fingerprint(request), {"profile": {"revision": 1},
+                                "observations": bundle["observations"], "catalog_snapshot": bundle["snapshot"]}, 1)
+
+        def lookup(wid, actor, key):
+            result = owner.command(wid, actor, key)
+            if result is None:
+                raise TrackingError("not_found", 404)
+            return result
+
+        # 使用真实research持久层的stop/public响应，避免测试夹具再造错终态契约。
+        with patch.object(self.research, "create_analysis", side_effect=create) as created, patch.object(self.research, "command", side_effect=lookup) as queried:
+            self.assertEqual(self.service.dispatch_one()["state"], "accepted")
+            owner.stop(owner.claim("research-worker"), "waiting_input", "billing_unknown")
+            self.ready()
+            stopped = self.service.dispatch_one()
+            self.assertEqual((stopped["state"], stopped["reason"]), ("waiting_input", "billing_unknown"))
+            self.assertIsNone(owner.claim("research-worker"))
+            query_count = queried.call_count
+            self.reopen(); self.ready()
+            self.service.consume_event("catalog", self.catalog.feed[-1])
+            self.assertIsNone(self.service.dispatch_one())
+            self.error("reassessment_version_conflict", lambda: self.service.retry_reassessment(ACTOR, WID, stopped["id"], stopped["version"], "no-new-charge"))
+            self.error("reassessment_version_conflict", lambda: self.service.cancel_reassessment(ACTOR, WID, stopped["id"], stopped["version"], "already-stopped"))
+            # 后续失权/关闭watch不能抹去计费未知的历史终态，也不会把它变成可派送命令。
+            self.access.members[(ACTOR, WID)] = ["member", 3]
+            self.access.emit("AccessChanged", membership=3)
+            self.service.poll("workspace")
+            self.service.set_watch(ACTOR, WID, NOTICE, False, 1, "stop")
+            self.assertEqual(self.command(), stopped)
+            self.assertEqual(self.service.reconcile_cancelled()["reconciled"], 0)
+            self.assertEqual(queried.call_count, query_count)
+            self.assertEqual(created.call_count, 1)
+            self.assertEqual(owner.db.execute("SELECT count(*) FROM runs").fetchone()[0], 1)
+            raw = self.store.db.execute("SELECT result FROM reassessments WHERE id=?", (stopped["id"],)).fetchone()[0]
+            history = self.store.db.execute("SELECT payload FROM reassessment_history WHERE reassessment_id=? ORDER BY seq DESC LIMIT 1", (stopped["id"],)).fetchone()[0]
+            self.assertEqual(json.loads(raw)["reason"], "billing_unknown")
+            self.assertEqual(json.loads(history)["reason"], "billing_unknown")
+            self.assertEqual([x["kind"] for x in self.service.notifications(ACTOR, WID)["items"]], ["change_detected"])
+
+    def test_cancelled_reconciliation_does_not_cancel_remote_waiting_input(self):
+        self.changed(); self.service.dispatch_one()
+        for run in self.research.runs.values():
+            run.update(state="waiting_input", reason="billing_unknown")
+        self.service.set_watch(ACTOR, WID, NOTICE, False, 1, "stop")
+        self.assertEqual(self.service.reconcile_cancelled()["reconciled"], 1)
+        self.assertEqual(self.research.cancels, 0)
+        self.assertEqual(self.command()["state"], "cancelled")
 
     def test_demotion_and_restore_does_not_reactivate_old_delegation(self):
         self.changed()
@@ -479,6 +542,76 @@ service.poll('catalog')
                 self.assertEqual(raised.exception.status, status)
         finally:
             server.shutdown(); server.server_close(); thread.join(2)
+
+
+class WorkspaceTrackingContractTests(unittest.TestCase):
+    """真实owner建档/迁移经回环HTTP消费；两个服务各写自己的虚构开发库。"""
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.workspace_root = Path(self.temp.name) / "workspace"
+        self.tracking_root = Path(self.temp.name) / "tracking"
+        self.owner = WorkspaceStore(self.workspace_root)
+        self.actor = self.owner.bootstrap_user("fixture-admin", "fictional-password", "虚构管理员")
+        self.wid = self.owner.bootstrap_workspace("虚构契约测试公司", self.actor)
+        self.payload = {field: None for field in PROFILE_LIMITS}
+        self.payload["company_name"] = "虚构契约测试公司"
+        self.confirm(0)
+
+    def tearDown(self):
+        self.owner.close()
+        self.temp.cleanup()
+
+    def confirm(self, base):
+        proposal = self.owner.propose_profile(self.actor, self.wid, self.payload, base, "propose-" + str(base))
+        return self.owner.confirm_profile(self.actor, self.wid, proposal["id"], base, "confirm-" + str(base))
+
+    def exercise_owner_feed(self):
+        server = create_workspace_server(self.workspace_root, "http://127.0.0.1:1", "c" * 32,
+                                         internal_tokens={"tracking": "t" * 32})
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        store = TrackingStore(self.tracking_root)
+        try:
+            client = WorkspaceAccessClient("http://127.0.0.1:" + str(server.server_port), "t" * 32)
+            catalog, research = Catalog(), Research()
+            service = TrackingService(store, client, catalog, research)
+            initial = client.events()
+            self.assertEqual([x["event_type"] for x in initial["items"]], ["AccessChanged", "ProfileConfirmed"])
+            profile = initial["items"][1]
+            self.assertEqual(set(profile), {"seq", "event_id", "event_type", "workspace_id", "actor_id", "target_user_id", "profile_revision", "membership_version", "occurred_at"})
+            self.assertEqual((profile["profile_revision"], profile["target_user_id"], profile["membership_version"]), (1, None, None))
+            self.assertTrue(profile["occurred_at"].endswith("Z"))
+            service.set_watch(self.actor, self.wid, NOTICE, True, 0, "watch")
+            self.confirm(1)
+            catalog.add(title="虚构公告新版本")
+            # 实际Worker先消费workspace再catalog；建档事件错误时此处会阻断目录游标。
+            result = tick(self.tracking_root, client, catalog, research)
+            self.assertEqual(result["workspace"]["next_after"], 3)
+            self.assertEqual(result["catalog"]["next_after"], 2)
+            changes = service.changes(self.actor, self.wid)["items"]
+            self.assertEqual([x["diff"]["kind"] for x in changes], ["profile_change", "material_change"])
+            self.assertEqual(changes[0]["profile_revision"], 2)
+            tick(self.tracking_root, client, catalog, research)
+            self.assertEqual(len(service.notifications(self.actor, self.wid)["items"]), 2)
+            self.assertEqual(research.creates, 0)
+        finally:
+            store.close(); server.shutdown(); server.server_close(); thread.join(2)
+
+    def test_new_owner_profile_event_flows_through_http_and_worker(self):
+        self.exercise_owner_feed()
+
+    def test_v1_owner_backfill_uses_same_contract_without_restart_duplicates(self):
+        self.owner.close()
+        # v1已有成员和正式档案，尚无owner_events；在独立临时库复现这个升级起点。
+        with closing(sqlite3.connect(self.workspace_root / "workspace.sqlite3")) as old:
+            old.execute("DROP TABLE owner_events")
+            old.execute("PRAGMA user_version=1")
+        self.owner = WorkspaceStore(self.workspace_root)
+        first = self.owner.events()
+        self.assertEqual(self.owner.db.execute("PRAGMA user_version").fetchone()[0], 2)
+        self.assertEqual([x["event_id"] for x in first["items"]], [f"access:{self.wid}:{self.actor}:1", f"profile:{self.wid}:1"])
+        self.owner.close(); self.owner = WorkspaceStore(self.workspace_root)
+        self.assertEqual(self.owner.events(), first)
+        self.exercise_owner_feed()
 
 
 if __name__ == "__main__":

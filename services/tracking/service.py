@@ -7,11 +7,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import re
 
 from .diff import RULE_VERSION, SCOPES, canonical, compare_bundles, fingerprint, input_fingerprint
 from .store import TrackingError, identifier, integer, new_id, now, text, utc
 
-TERMINAL = frozenset(("succeeded", "partial", "failed", "cancelled", "rejected"))
+TERMINAL = frozenset(("succeeded", "partial", "failed", "cancelled", "rejected", "waiting_input"))
 RUN_STATES = frozenset(("queued", "running", "waiting_input", "retry_wait", "succeeded", "partial", "failed", "cancelled"))
 DELEGATION_FIELDS = {"watch_id", "watch_version", "rule_version", "change_id", "change_fingerprint", "command_key", "input_fingerprint", "membership_version"}
 
@@ -175,7 +176,7 @@ class TrackingService:
                             (watch_id, workspace_id, notice_id, value["version"], int(active), canonical(value), canonical(bundle), catalog_seq, profile_revision))
             self.db.execute("INSERT INTO watch_history VALUES(?,?,?)", (watch_id, value["version"], canonical(value)))
             # 修改规则/关闭会使全部旧委托失效；保留run引用供后续取消对账。
-            rows = self.db.execute("SELECT id,run_id FROM reassessments WHERE watch_id=? AND state NOT IN ('succeeded','partial','failed','cancelled','rejected')", (watch_id,)).fetchall()
+            rows = self.db.execute("SELECT id,run_id FROM reassessments WHERE watch_id=? AND state NOT IN ('succeeded','partial','failed','cancelled','rejected','waiting_input')", (watch_id,)).fetchall()
             for row in rows:
                 self.db.execute("UPDATE reassessments SET state='cancelled',reason='watch_changed',version=version+1,lease_epoch=lease_epoch+1,lease_until=0,next_attempt=0 WHERE id=?", (row["id"],))
                 self.store.reassessment_event(row["id"], "cancelled", "watch_changed", row["run_id"])
@@ -219,9 +220,9 @@ class TrackingService:
             identifier(event["notice_id"]); identifier(event["observation_id"])
         else:
             text(event["workspace_id"])
-            if event["event_type"] not in ("ProfileRevisionConfirmed", "AccessChanged"):
+            if event["event_type"] not in ("ProfileConfirmed", "AccessChanged"):
                 raise TrackingError("unsupported_event", 503)
-            if event["event_type"] == "ProfileRevisionConfirmed":
+            if event["event_type"] == "ProfileConfirmed":
                 integer(event["profile_revision"], 1)
             else:
                 integer(event["membership_version"], 1); text(event["target_user_id"])
@@ -317,7 +318,7 @@ class TrackingService:
         return {"schema_version": 1, "owner": owner, "after": self.store.cursor(owner)}
 
     def _invalidate_commands(self, watch_id, reason):
-        rows = self.db.execute("SELECT id,run_id FROM reassessments WHERE watch_id=? AND state NOT IN ('succeeded','partial','failed','cancelled','rejected')", (watch_id,)).fetchall()
+        rows = self.db.execute("SELECT id,run_id FROM reassessments WHERE watch_id=? AND state NOT IN ('succeeded','partial','failed','cancelled','rejected','waiting_input')", (watch_id,)).fetchall()
         for row in rows:
             self.db.execute("UPDATE reassessments SET state='cancelled',reason=?,version=version+1,lease_epoch=lease_epoch+1,lease_until=0,next_attempt=0 WHERE id=?", (reason, row["id"]))
             self.store.reassessment_event(row["id"], "cancelled", reason, row["run_id"])
@@ -430,6 +431,10 @@ class TrackingService:
     def finish(self, claim, remote):
         if (not isinstance(remote, dict) or remote.get("state") not in RUN_STATES or not isinstance(remote.get("id"), str)):
             raise TrackingError("invalid_research_response", 503)
+        reason = remote.get("reason")
+        # owner只返回机器原因码；保留计费未知等停止依据，不转存上游任意错误正文。
+        if reason is not None and (not isinstance(reason, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason) is None):
+            raise TrackingError("invalid_research_response", 503)
         request = claim["request"]
         # 接受/发布前再检查当前委托；远程结果到达不能复活取消或已失权流程。
         self.check_delegation(request["actor_id"], request["workspace_id"], request["delegation"])
@@ -439,9 +444,11 @@ class TrackingService:
                     or remote.get("workspace_id", request["workspace_id"]) != request["workspace_id"]):
                 raise TrackingError("research_result_mismatch", 409)
             state = remote["state"] if remote["state"] in TERMINAL else "accepted"
-            self.db.execute("UPDATE reassessments SET state=?,run_id=?,version=version+1,lease_until=0,next_attempt=?,result=?,reason=NULL WHERE id=?",
-                            (state, remote["id"], now() + 5, canonical({"id": remote["id"], "state": remote["state"]}), row["id"]))
-            self.store.reassessment_event(row["id"], state, run_id=remote["id"])
+            # waiting_input在research中已经终止自动执行；不能继续轮询，更不能换键收费重试。
+            self.db.execute("UPDATE reassessments SET state=?,run_id=?,version=version+1,lease_until=0,next_attempt=?,result=?,reason=? WHERE id=?",
+                            (state, remote["id"], 0 if state in TERMINAL else now() + 5,
+                             canonical({"id": remote["id"], "state": remote["state"], "reason": reason}), reason, row["id"]))
+            self.store.reassessment_event(row["id"], state, reason=reason, run_id=remote["id"])
             if state in ("succeeded", "partial"):
                 watch = json.loads(self.store.watch_row(row["workspace_id"], row["watch_id"])["payload"])
                 change = json.loads(self.db.execute("SELECT payload FROM changes WHERE id=?", (row["change_id"],)).fetchone()[0])

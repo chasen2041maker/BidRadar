@@ -3,18 +3,26 @@
 // 所有来源与企业文字用textContent展示，禁止把采购原文当可执行HTML。
 const $ = (id) => document.getElementById(id);
 const state = {session: null, workspace: null, profile: null, view: "discover", cart: new Map(), cursor: null, query: null, epoch: 0, searchVersion: 0,
-  runId: null, runVersion: 0, runListVersion: 0, runBefore: null, pollTimer: null, trackedNotice: null, trackingVersion: 0, notificationAfter: 0, changeAfter: 0, changeTargets: new Map()};
+  runId: null, runVersion: 0, runListVersion: 0, runBefore: null, runStatuses: new Map(), pollTimer: null, trackedNotice: null, trackingVersion: 0, notificationAfter: 0, changeAfter: 0, changeTargets: new Map()};
 const roleNames = {admin: "公司管理员", member: "协作成员", viewer: "只读成员"};
 const kindNames = {procurement: "采购公告", correction: "更正公告", award: "中标 / 成交", termination: "终止公告", intention: "采购意向", unknown: "类型待核实"};
 const statusNames = {known: "已提取", missing: "尚未取得依据", unparsed: "待核对原文", conflicting: "存在冲突", context_required: "需结合金额口径", unknown: "尚未确认", deadline_passed: "原截止时间已过", deadline_not_reached: "原截止时间未到", not_opening_notice: "非采购报名公告"};
 const errors = {unauthenticated: "登录已失效，请重新登录。", invalid_credentials: "账号或密码不正确。", login_limited: "登录尝试过多，请稍后重试。", forbidden: "你目前没有执行此操作的权限，请刷新公司空间。", invalid_csrf: "登录状态已变化，请刷新页面后重试。", profile_version_conflict: "企业档案已有新版本，请重新读取后提交。", profile_revision_conflict: "企业档案已有新版本，请重新读取后提交。", stale_profile: "企业档案已有新版本，请重新准备选择。", catalog_version_changed: "公告已有新版本，请刷新目录，查看新内容后重新选择。", catalog_unavailable: "目录服务暂时不可用，已保存的档案和选择仍保留。", idempotency_conflict: "相同操作标识对应了不同内容，请刷新后重新操作。", version_conflict: "记录已变化，请刷新后重新确认。", last_admin: "公司需要保留至少一位管理员。", last_admin_required: "公司需要保留至少一位管理员。", profile_required: "请先由管理员确认一版企业档案。", not_found: "记录不存在或当前无权访问。"};
 const profileFields = [["company_name", "公司名称 / 简称", "例如：山岚软件（虚构）"], ["city", "所在城市", "城市不限定可承接的地区"], ["project_types", "希望承接的项目", "软件定制、业务系统、AI应用；也可注明不接的类型"], ["capabilities", "技术与交付能力", "能负责哪些工作，有哪些技术与交付经验"], ["delivery_constraints", "交付与地域限制", "区分优先远程、可出差与明确不接受的驻场要求"], ["cases", "相关案例", "工作范围、团队角色、时间；尚不接收证明文件"], ["qualifications", "资质与证明声明", "确认有 / 没有 / 尚未确认；文字声明不是核验结果"], ["staffing", "人力与排期", "可投入角色、人数、最早时间与已知冲突"], ["commercial_constraints", "商务偏好与硬限制", "请分别写清偏好和明确不能接受的条件"]];
+Object.assign(errors, {
+  billing_unknown: "本次调用计费结果未知，已停止自动执行。请先人工核对供应商账单与用量，不能盲目重试。",
+  configuration_changed: "研究配置已升级，这个旧任务已停止。核对固定输入后，可明确新建任务。",
+  selection_input_stale: "这次选择的公告或档案输入已有变化。请重新查看并确认选择，再明确发起新任务。",
+  profile_revision_changed: "企业正式档案已有新版本，旧任务已停止。请按新档案重新确认选择与分析。",
+  workspace_queue_limit: "公司正在处理的研究任务已达上限。请等待已有任务结束，或明确取消不再需要的任务后重试。"
+});
 
 function el(tag, text, cls) {const node = document.createElement(tag); if (text !== undefined && text !== null) node.textContent = String(text); if (cls) node.className = cls; return node;}
 function badge(text, type = "") {return el("span", text, "badge " + type);}
 function notice(message, failure = false) {$("notice").textContent = message; $("notice").className = "notice" + (failure ? " failure" : ""); $("notice").hidden = false;}
 function clearPrivateView() {
   stopRunPolling(); state.runId = null; state.runVersion += 1; state.runListVersion += 1; state.trackedNotice = null; state.trackingVersion += 1; state.changeTargets.clear();
+  state.runStatuses.clear();
   state.runBefore = null; state.notificationAfter = 0; state.changeAfter = 0;
   for (const id of ["more-research", "more-notifications", "more-changes"]) $(id).hidden = true;
   for (const id of ["profile-form", "proposals", "profile-history", "selection-list", "member-list", "notice-list", "detail-content", "research-list", "research-detail", "research-budget", "tracking-context", "tracking-notifications", "tracking-changes", "tracking-reassessments"]) $(id).replaceChildren();
@@ -178,7 +186,7 @@ async function loadMembers() {
 }
 
 // R1/R2只通过当前公司的网关路径读取；来源文字、模型输出和diff都当作数据展示。
-const runStates = {queued: "已保存 · 等待执行", running: "正在研究", waiting_input: "等待补充输入", retry_wait: "等待受控恢复", succeeded: "研究已完成", partial: "部分完成 · 仍有缺口", failed: "研究失败", cancelled: "已取消", pending: "等待派送", accepted: "研究服务已接受", deferred: "依赖失败 · 等待人工重试", rejected: "复核未获接受"};
+const runStates = {queued: "已保存 · 等待执行", running: "正在研究", waiting_input: "等待人工处理 · 自动执行已停止", retry_wait: "等待受控恢复", succeeded: "研究已完成", partial: "部分完成 · 仍有缺口", failed: "研究失败", cancelled: "已取消", pending: "等待派送", accepted: "研究服务已接受", deferred: "依赖失败 · 等待人工重试", rejected: "复核未获接受"};
 const findingStates = {met: "证据支持满足", unmet: "证据支持不满足", unknown: "尚未确认", conflicting: "依据存在冲突", not_applicable: "不适用"};
 const decisionStates = {needs_review: "需要进一步核查", follow_up: "人工决定跟进", dismissed: "人工决定放弃"};
 Object.assign(errors, {dependency_unavailable: "依赖服务暂时不可用，已保存记录仍保留，请稍后重试。", research_unavailable: "研究服务尚不可用，未确认任务结果，请保留当前请求重试。", tracking_unavailable: "跟踪服务尚不可用，请稍后重试。", quota_exceeded: "可用额度不足，未继续调用模型；已有报告仍可查看。", budget_exceeded: "达到当前费用保护值，未继续调用模型。", delegation_invalid: "自动复核委托已失效，请核对公司权限和关注设置后重新授权。", watch_version_conflict: "关注设置已被修改，请刷新后重新确认。", decision_version_conflict: "人工决定已被修改，请刷新后重新确认。", reassessment_version_conflict: "复核状态已变化，请刷新后再操作。"});
@@ -208,6 +216,22 @@ async function loadBudget() {
     container.append(el("p", "费用口径：" + valueText(result.cost_basis) + "。这里包含必要预留，不代表供应商已结算账单。", "muted budget-basis"));
   } catch (error) {if (error.discarded) return; container.replaceChildren(el("p", "费用信息暂时不可用；不能把未知费用视为零。" + error.message, "error"));}
 }
+function latestRunStatus(run) {
+  // 同公司内只记状态/版本；详情先完成时，晚到的旧列表不能把终态降回queued。
+  const previous = state.runStatuses.get(run.id), version = Number.isInteger(run.version) ? run.version : 0;
+  if (!previous || version >= previous.version) state.runStatuses.set(run.id, {state: run.state, version});
+  return state.runStatuses.get(run.id).state;
+}
+function runStatusBadge(status) {return badge(runStates[status] || status, "run-state " + (["failed", "partial", "waiting_input"].includes(status) ? "warning" : "neutral"));}
+function syncRunListStatus(run) {
+  const status = latestRunStatus(run);
+  for (const card of $("research-list").querySelectorAll("[data-run-id]")) {
+    if (card.dataset.runId === run.id) card.querySelector(".run-state")?.replaceWith(runStatusBadge(status));
+  }
+}
+function waitingInputMessage(run) {
+  return run.reason === "billing_unknown" ? "本次调用是否计费尚未核清，已停止自动执行。请先人工核对供应商账单与用量；系统不会为此换键重试收费调用。" : "此任务已停止自动执行，需要人工确认原因与下一步；刷新不会恢复或新建调用。";
+}
 async function loadRunList(more = false) {
   const version = ++state.runListVersion, list = $("research-list");
   const params = new URLSearchParams({limit: "30"}); if (more && state.runBefore !== null) params.set("before", state.runBefore);
@@ -217,7 +241,8 @@ async function loadRunList(more = false) {
   state.runBefore = result.next_before ?? null; $("more-research").hidden = state.runBefore === null;
   if (!result.items?.length && !more) empty(list, "尚无研究任务", "先确认候选选择，再逐个项目明确发起研究。");
   for (const item of result.items || []) {
-    const card = el("article", null, "run-card"); card.append(modeBadge(item.mode), sampleBadge(item.simulation), el("h3", item.title || item.notice_id || item.id), badge(runStates[item.state] || item.state, ["failed", "partial", "waiting_input"].includes(item.state) ? "warning" : "neutral"));
+    const card = el("article", null, "run-card"); card.dataset.runId = item.id;
+    card.append(modeBadge(item.mode), sampleBadge(item.simulation), el("h3", item.title || item.notice_id || item.id), runStatusBadge(latestRunStatus(item)));
     card.append(el("p", `${item.kind === "question" ? "同项目追问" : item.kind === "reassessment" ? "变化复核" : "项目研究"} · 档案第 ${item.profile_revision ?? "待核对"} 版`, "muted"), el("p", "任务 " + item.id, "identifier"));
     card.append(actionButton("查看报告与进度", () => viewRun(item.id))); list.append(card);
   }
@@ -234,6 +259,7 @@ async function viewRun(id, remaining = 20) {
   const run = await api(path("research/runs/" + encodeURIComponent(id)));
   if (version !== state.runVersion || state.view !== "research") return;
   renderRun(run, remaining);
+  syncRunListStatus(run);
   // 只轮询已存在的任务；最多20次、每次完成后隔3秒，绝不通过POST重新创建。
   if (["queued", "running", "retry_wait"].includes(run.state) && remaining > 0) {
     state.pollTimer = setTimeout(async () => {
@@ -281,11 +307,18 @@ function renderRun(run, remaining) {
   const tags = el("div", null, "tags"); tags.append(modeBadge(run.mode), sampleBadge(run.simulation), badge(runStates[run.state] || run.state, ["failed", "partial", "waiting_input"].includes(run.state) ? "warning" : "neutral"));
   container.append(tags, el("h2", run.title || run.notice_id || "研究任务"), el("p", "任务编号：" + run.id, "identifier"));
   container.append(el("p", `档案第 ${run.profile_revision ?? "待核对"} 版 · ${run.kind === "question" ? "同项目追问" : run.kind === "reassessment" ? "变化复核" : "固定输入研究"}`, "muted"));
-  if (run.reason) container.append(el("p", "当前原因：" + valueText(run.reason), "note"));
+  if (run.reason) container.append(el("p", "当前原因：" + (errors[run.reason] || valueText(run.reason)), "note"));
+  if (run.state === "waiting_input") container.append(el("p", waitingInputMessage(run), "note"));
+  // 当前性单独核对；冻结报告正文永远不随新档案或新公告静默改变。
+  const freshnessNames = {current: "与当前输入一致", changed: "输入已有变化", unavailable: "暂无法核对", not_checked: "尚未核对"};
+  const freshness = run.freshness || {};
+  container.append(el("p", `报告当前性：企业档案 ${freshnessNames[freshness.profile] || "尚未核对"}；公告 ${freshnessNames[freshness.catalog] || "尚未核对"}。`, "muted"));
+  if (Object.values(freshness).includes("changed")) container.append(el("p", "这份报告固定使用旧输入。请明确发起新分析或查看变化复核，旧报告内容保持原样。", "note"));
+  if (Object.values(freshness).includes("unavailable")) container.append(el("p", "当前依赖暂不可用，无法确认输入是否仍是当前版本。", "note"));
   if (run.parent_run_id) container.append(actionButton("查看父报告", () => viewRun(run.parent_run_id)));
   const actions = el("div", null, "record-actions"); actions.append(actionButton("刷新此任务", () => viewRun(run.id)));
   if (run.notice_id) actions.append(actionButton("人工决定 / 关注", () => openTracking(run.notice_id, run.title, run.simulation)));
-  if (canWrite() && !["succeeded", "partial", "failed", "cancelled"].includes(run.state)) actions.append(actionButton("明确取消任务", async () => {await command(`research/runs/${run.id}/cancel`, {}); notice("取消已登记，将阻止后续动作；在途调用及费用不保证撤回。"); await viewRun(run.id); }));
+  if (canWrite() && !["succeeded", "partial", "failed", "cancelled", "waiting_input"].includes(run.state)) actions.append(actionButton("明确取消任务", async () => {await command(`research/runs/${run.id}/cancel`, {}); notice("取消已登记，将阻止后续动作；在途调用及费用不保证撤回。"); await viewRun(run.id); }));
   container.append(actions, el("p", ["queued", "running", "retry_wait"].includes(run.state) ? (remaining > 0 ? `只读刷新中，剩余最多 ${remaining} 次；退出页面不会取消任务。` : "本轮自动刷新已停止，可手动继续刷新。后台任务仍按已保存状态执行。") : "此页只读取已保存结果；重新加载不会新建分析。", "muted"));
   renderReport(run, container);
   if (run.scope) container.append(jsonDetails("输入版本与公告范围", run.scope));
@@ -373,7 +406,8 @@ async function loadReassessments(version = state.trackingVersion) {
   if (!result.items?.length) empty(container, "暂无自动复核任务", "开启关注不等于授权调用模型；需要单独明确授权自动复核。");
   for (const item of result.items || []) {
     const row = el("article", null, "record"); row.append(badge(runStates[item.state] || item.state, "neutral"), el("p", "复核编号 " + item.id, "identifier"));
-    if (item.reason) row.append(el("p", "原因：" + item.reason, "muted"));
+    if (item.reason) row.append(el("p", "原因：" + (errors[item.reason] || item.reason), "muted"));
+    if (item.state === "waiting_input") row.append(el("p", waitingInputMessage(item), "note"));
     if (item.run_id) row.append(actionButton("查看研究任务", async () => {state.runId = item.run_id; await showView("research");}));
     if (canWrite() && item.state === "deferred") row.append(actionButton("用原命令重新对账", async () => {await command(`tracking/reassessments/${item.id}/retry`, {expected_version: item.version}); notice("已用原命令恢复对账，未换键重复创建研究。"); await loadReassessments();}));
     if (canWrite() && ["pending", "accepted", "deferred"].includes(item.state)) row.append(actionButton("取消这次复核", async () => {await command(`tracking/reassessments/${item.id}/cancel`, {expected_version: item.version}); notice("复核取消已保存；在途调用及费用不保证撤回。"); await loadReassessments();}));
