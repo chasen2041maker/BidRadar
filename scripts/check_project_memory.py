@@ -97,7 +97,12 @@ def check(root: Path) -> list[str]:
     if "CLAUDE.md" in texts and "@AGENTS.md" not in texts["CLAUDE.md"].splitlines():
         errors.append("CLAUDE.md must import @AGENTS.md rather than duplicate rules")
     skill = texts.get(".agents/skills/bidradar-handoff/SKILL.md")
-    if skill is not None and not re.match(r"\A---\nname: bidradar-handoff\ndescription: [^\n]+\n---\n", skill):
+    # Windows 原生写入会产生 CRLF；只放宽行尾形式，仍要求完整的单行元数据。
+    # 不归一化原始字节，UTF-8 校验、文件字节上限和正文安全检查保持原义。
+    if skill is not None and not re.match(
+        r"\A---\r?\nname: bidradar-handoff\r?\ndescription: [^\r\n]+\r?\n---\r?\n",
+        skill,
+    ):
         errors.append("handoff skill needs name and description front matter")
     return errors
 
