@@ -416,6 +416,47 @@ class AgentTests(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertIn("finding_0_unsupported_money_role_budget", validate_report(report, index, {eid}))
 
+    def test_quote_comparison_checks_referenced_roles_without_making_source_ranges_exact(self):
+        index = EvidenceIndex(money_manifest())
+        budget, ceiling, fee = [e["evidence_id"] for e in index.entries]
+        original = proposal(index, eid=ceiling, category="budget")
+        original["findings"][0]["evidence_ids"] = [budget, ceiling, fee]
+        # 单边比较只引用阈值，本地检查不能把是否符合报价条件当成已证明的结论。
+        comparisons = ("无法判断其报价是否在预算与最高限价48.000000万元以内，也无法核验是否已考虑500.0元文件售价。",
+                       "尚需核对报价是否位于最高限价48万元以下。",
+                       "尚未确认报价是否在最高限价48万元以上。")
+        for field in ("reason", "unknown_reason", "summary", "answer"):
+            for comparison in comparisons:
+                with self.subTest(field=field, comparison=comparison):
+                    report = deepcopy(original)
+                    target = report if field in ("summary", "answer") else report["findings"][0]
+                    target[field] = comparison
+                    self.assertEqual(validate_report(report, index, {budget, ceiling, fee}), [])
+            # 疑问/比较不是角色豁免：已读但本条没引的预算仍不支持预算阈值。
+            report = deepcopy(original)
+            report["findings"][0]["evidence_ids"] = [ceiling, fee]
+            target = report if field in ("summary", "answer") else report["findings"][0]
+            target[field] = comparisons[0]
+            prefix = field if field in ("summary", "answer") else "finding_0"
+            self.assertIn(prefix + "_unsupported_money_role_budget", validate_report(report, index, {budget, ceiling, fee}))
+        for comparison, suffix in (("报价是否在最高限价49万元以内？", "unsupported_number"),
+                                    ("报价是否在最高限价48元以内？", "unsupported_numeric_unit")):
+            report = deepcopy(original)
+            report["findings"][0]["reason"] = comparison
+            errors = validate_report(report, index, {budget, ceiling, fee})
+            self.assertIn("finding_0_unsupported_money_role_ceiling", errors)
+            self.assertIn("finding_0_" + suffix, errors)
+        for source in ("预算48万元以内。", "预算48万元左右。", "预算48至50万元。"):
+            data = money_manifest()
+            data["observations"][0]["evidence_fields"]["money"] = [{"role": "budget", "status": "unparsed",
+                "evidence": [{"text": source, "label": "正文", "locator": "p:range"}]}]
+            ranged = EvidenceIndex(data)
+            eid = ranged.entries[0]["evidence_id"]
+            report = proposal(ranged, eid=eid, category="budget")
+            report["findings"][0]["requirement"] = "预算金额48万元。"
+            with self.subTest(source=source):
+                self.assertIn("finding_0_unsupported_money_role_budget", validate_report(report, ranged, {eid}))
+
     def test_only_full_cited_ids_are_metadata_in_summary_and_answer_numeric_checks(self):
         index = EvidenceIndex(money_manifest())
         budget, ceiling = [e["evidence_id"] for e in index.entries[:2]]

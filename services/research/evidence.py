@@ -12,7 +12,7 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v9-money-assertions-citations"
+VERSION = "frozen-evidence-v10-money-comparison-references"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -116,11 +116,13 @@ def _structured_money(value, role):
     return role, number, value["source_unit"], "CNY"
 
 
-def _money_mentions(text, *, owner=None):
+def _money_mentions(text, *, owner=None, report=False):
     """仅识别标签紧邻金额的明确断言；未知/疑问或更复杂指代仍交给语义核验。
 
     同额不等口径；并列“预算和最高限价均为48万元”要分别取得两个角色。
     数值只消除尾零，不换单位；外币标记也不能被默认人民币吞掉。
+    report中“在限价X以内”等只检查被比较金额的角色/数值，不证明比较关系成立；
+    来源的上下界仍不是精确金额，不能用来源“预算X以内”支持报告“预算X”。
     """
     labels = r"(?P<labels>(?:" + _MONEY_LABEL_PATTERN + r")(?:\s*(?:、|和|与|及|/)\s*(?:" + _MONEY_LABEL_PATTERN + r"))*)"
     pattern = (labels + r"\s*(?:[（(]\s*(?P<label_unit>万元|元)(?:人民币)?\s*[）)])?"
@@ -138,9 +140,11 @@ def _money_mentions(text, *, owner=None):
         unit = match["unit"] or match["label_unit"]
         currencies = {_CURRENCIES.get(raw.upper(), raw.upper()) for raw in (match["suffix"], match["currency"]) if raw}
         currency = next(iter(currencies)) if len(currencies) == 1 else "ambiguous" if currencies else "CNY"
-        # 标签只证明角色，区间/约数/单价不是一个精确总额；不能截取其左端当事实。
+        # 来源区间/约数/单价不升级为精确总额。报告的单边比较可引用已知阈值，
+        # 是否满足/是否只是待核查留给语义核验；角色和数值仍必须有本条引用支持。
         tail = text[match.end():]
-        if re.match(r"(?:[-~～—至到余多]|\.(?=\s*\d)|左右|上下|以上|以下|以内|[/／])", tail.lstrip()):
+        if (re.match(r"(?:[-~～—至到余多]|\.(?=\s*\d)|左右|上下|[/／])", tail.lstrip())
+                or not report and re.match(r"以上|以下|以内", tail.lstrip())):
             unit = None
         for label in re.findall(_MONEY_LABEL_PATTERN, match["labels"]):
             result.add((MONEY_LABELS[label], Decimal(match["number"]), unit, currency))
@@ -469,11 +473,11 @@ def validate_report(report, index, read_ids):
         profile_text = " ".join(index.profile[x] or "" for x in finding["profile_fields"])
         finding_text = " ".join(finding[field] or "" for field in ("requirement", "reason", "unknown_reason"))
         # 要求、理由和unknown说明都不能借公司资金或同额限价证明采购预算。
-        missing_roles = {claim[0] for claim in _money_mentions(finding_text, owner="procurement") - index.money_support(ids)}
+        missing_roles = {claim[0] for claim in _money_mentions(finding_text, owner="procurement", report=True) - index.money_support(ids)}
         errors.extend(prefix + "unsupported_money_role_" + role for role in sorted(missing_roles))
         company_money = _money_mentions(profile_text)
         supported_company_money.update(company_money)
-        missing_company = {claim[0] for claim in _money_mentions(finding_text, owner="company") - company_money}
+        missing_company = {claim[0] for claim in _money_mentions(finding_text, owner="company", report=True) - company_money}
         errors.extend(prefix + "unsupported_company_money_role_" + role for role in sorted(missing_company))
         structured = index.structured_money_support(ids)
         number_pool = _numbers(evidence_text + " " + profile_text)
@@ -491,9 +495,9 @@ def validate_report(report, index, read_ids):
     # 摘要/追问回答也不能悄悄增加数字事实；含义与日期角色仍交由独立语义节点核验。
     for field in ("summary", "answer"):
         text = report[field] or ""
-        missing_roles = {claim[0] for claim in _money_mentions(text, owner="procurement") - index.money_support(cited_ids)}
+        missing_roles = {claim[0] for claim in _money_mentions(text, owner="procurement", report=True) - index.money_support(cited_ids)}
         errors.extend(field + "_unsupported_money_role_" + role for role in sorted(missing_roles))
-        missing_company = {claim[0] for claim in _money_mentions(text, owner="company") - supported_company_money}
+        missing_company = {claim[0] for claim in _money_mentions(text, owner="company", report=True) - supported_company_money}
         errors.extend(field + "_unsupported_company_money_role_" + role for role in sorted(missing_company))
         assertions, unknown_id = _without_cited_ids(text, cited_ids)
         if unknown_id:
