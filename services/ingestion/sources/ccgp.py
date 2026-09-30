@@ -169,9 +169,10 @@ def _notice_url(href: str | None) -> str | None:
     """只接受CCGP公告链接；此校验不代替未来联网时的DNS/重定向/SSRF检查。"""
     if not href or any(ord(char) <= 32 for char in href) or "\\" in href:
         return None
-    # 相对链接依据列表页面解析；不擅自改域名修补不明确的链接。
-    url = urljoin(SEARCH_URL, href)
     try:
+        # 合并相对链接也会拒绝畸形主机（如未闭合IPv6括号）；与后续拆分一起隔离坏行。
+        # 不擅自改域名修补不明确的链接，也不让单个坏链接中断整页解析。
+        url = urljoin(SEARCH_URL, href)
         parts = urlsplit(url)
         if (parts.scheme not in ("http", "https") or parts.hostname not in ("www.ccgp.gov.cn", "ccgp.gov.cn")
                 or parts.username is not None or parts.password is not None or parts.port is not None):

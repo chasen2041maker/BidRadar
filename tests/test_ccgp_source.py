@@ -120,6 +120,29 @@ class CCGPSourceTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertEqual(parse_search_page(page(row(url=url))).status, ParseStatus.PARSE_ERROR)
 
+    def test_malformed_url_is_a_diagnosed_invalid_row(self):
+        # URL合并阶段本身可能抛异常；只有坏行时应给出诊断，不能冒充零结果。
+        for url in ("http://[bad", "https://[127.0.0.1]/a.htm"):
+            with self.subTest(url=url):
+                html = page(row(url=url))
+                result = parse_search_page(html)
+                self.assertEqual(result.status, ParseStatus.PARSE_ERROR)
+                self.assertEqual(result.items, ())
+                self.assertEqual(result.issues, ("row_1:invalid_title_url_or_metadata",))
+                self.assertEqual(result.input_sha256, sha256(html.encode()).hexdigest())
+
+    def test_malformed_url_does_not_discard_valid_rows(self):
+        # 坏链接位于首行时仍须处理后续正常行，并明确报告部分失败与原位置。
+        for url in ("http://[bad", "https://[127.0.0.1]/a.htm"):
+            with self.subTest(url=url):
+                result = parse_search_page(page(row(url=url) + row()))
+                self.assertEqual(result.status, ParseStatus.PARTIAL)
+                self.assertEqual(len(result.items), 1)
+                self.assertEqual(result.items[0].url, URL)
+                self.assertEqual(result.items[0].locator,
+                                 "ul.vT-srch-result-list-bid > li:nth-of-type(2)")
+                self.assertEqual(result.issues, ("row_1:invalid_title_url_or_metadata",))
+
     def test_https_and_protocol_relative_official_links(self):
         for url in (URL.replace("http:", "https:"), URL.removeprefix("http:")):
             self.assertEqual(parse_search_page(page(row(url=url))).status, ParseStatus.OK)

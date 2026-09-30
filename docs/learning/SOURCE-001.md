@@ -1,8 +1,10 @@
 # SOURCE-001｜两阶段流程、来源台账与CCGP离线复用
 
-摘要：确认目录筛选后等待用户选择再深度分析；更新01/17/25及来源台账，改编一个MIT许可的CCGP离线参数/列表解析模块，31项虚构样本测试通过，补齐HTML资源防护，不冒充采集或持久任务已接通。
+摘要：确认目录筛选后等待用户选择再深度分析；更新01/17/25及来源台账，改编一个MIT许可的CCGP离线参数/列表解析模块，33项虚构样本测试通过，补齐HTML资源防护与畸形URL坏行隔离，不冒充采集或持久任务已接通。
 
 ## 本次改变
+
+2026-09-30收尾：用户再次要求合并现有成果并拉取最新代码，确认每完成一小片就参与阅读中文注释。独立审核者复现urljoin位于异常处理外导致畸形URL中断整页的问题；将URL合并纳入已有ValueError边界，新增单坏行parse_error和坏行加正常行partial两项回归。不增加网络采集或第二个模块。
 
 2026-09-18收尾：负责人明确要求符合条件的现有PR合并main。本轮修复审查4012568880的嵌套结束标签反复扫描风险，并统一当前测试计数；不扩展数据源、运行服务或网络权限。合并仍核对最终CI和独立复审。
 
@@ -25,6 +27,12 @@
 目标流程为公共目录→公司私有选择会话awaiting_decision→明确稳定ID/版本选择→当前授权/输入许可/额度→research持久任务。空选择不分析全部，重复命令不重复建任务，列表刷新不调用模型；这些业务链尚未实现。自动跟踪复核需要独立有效委托，不能借后台任务绕过选择授权。
 
 ## 验证与未验证
+
+2026-09-30T17:58:53+08:00，Windows/Python3.13.12，完整隔离工作树source-review/BidRadar根目录；基于16ccd4c96cd9c49f52b077fa91acf889d79e747d的修订工作树执行 `python -B -m unittest discover -s tests -p 'test_ccgp_source.py' -v`：退出0，33 tests / OK。受测实现blob da07ac50d99ef53034038c6febd26c22ba0ed75a，测试blob 0c6b952db7c2006f9a6437de55994b48ad22b6c7。最终提交及详细命令/日志证据留PR #9，提交后须再次核对，不把工作树结果当已提交CI。
+
+同日17:59:13+08:00运行 `python -B scripts/check_project_memory.py`，退出1：既有CRLF令AGENTS多100字节并令Skill头部正则失败；`python -B -m unittest discover -s tests -p 'test_*.py' -v` 退出1，97项中32条失败记录（含子测试）均为同一Skill头部错误。旧main也复现，未改治理脚本、限额或测试夹具；本机不能标全通过。Linux最终提交CI与独立复审另存PR。Codex负责后续单独修复Windows兼容，再补本机全套验证。
+
+以下为带日期的历史环境记录，不覆盖09-30实际结果。
 
 2026-09-18T06:12:19Z：工作目录`/mnt/data/bidradar-merge-review`，Python3.13.5；`python3 -m unittest discover -s tests -p 'test_ccgp_source.py' -v`退出0，31 tests / OK（0.024s）。实现blob `e67070597726068c0c011221d76f1e482f11de8a`；测试blob `b81c430bbde20184b8a82cd64967f4e76469601a`。本轮原始源码、原始测试及索引输入按远端Git blob核对；git ls-remote仍因DNS失败，局部副本不冒充完整clone。日志`/mnt/data/bidradar-merge-source-tests.log`仅在工作容器，结果摘要及最终版本证据另存PR #9。
 
@@ -53,6 +61,8 @@ git/raw/codeload访问尝试因DNS失败；连接器负责真实仓库读写。�
 留一个阅读问题：若网站返回验证码页，为什么必须区别于“本次查询确实共0条”？可在自己的隔离练习分支把一个正常测试HTML换成验证码文本，先预测状态再运行；本轮不替负责人做该练习。
 
 ## 值得保留的决定与坑
+
+URL异常不只来自urlsplit；urljoin会先解析来源提供的主机。整条URL规范化都应处于同一坏行异常边界，避免一条坏链接使其他正常候选也丢失。对应新增测试说明parse_error与partial的区别。
 
 只限制HTML字节数不能限制树深和对象数量；迭代遍历也不能消除handle_endtag的栈扫描风险。先在节点创建时检查深度/节点预算，超限整页失败，不能用正常前缀掩盖不完整解析。
 
