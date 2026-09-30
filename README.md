@@ -4,7 +4,9 @@
 >
 > An evidence-based tender research and tracking agent for software and AI service teams.
 
-**当前：DATA-001 第一层已接通中国政府采购网和海南公开公告，完成有限发现、归档、证据清洗与独立目录的真实本地整链验证：12条独立公告、1份公开PDF，含采购/更正/成交。最终提交检查和独立审查以PR #11为准；不代表生产上线、全国全量或完整标书齐备。天津接口仍被平台拒绝令牌，独立保留该阻塞；CMS/模型/部署和Redis/K8s后置。**
+**已实现 R1-A 本地商机核查工作台：公司权限、渐进档案、商机证据和固定版本选择。中文运行入口为 `python scripts/run_workbench.py`，用两家虚构公司核查已有公共样本；395项提交前测试及浏览器流程已过，最终SHA验收见当前任务/PR。DATA-001第一层已验证12条真实公告与1份公开PDF，PR #11尚未合并。工作台不代表完整R1深度研究或生产上线；模型/报告/追问、PostgreSQL/RLS、Redis/K8s及云部署留后续验收。**
+
+工作台默认地址 `http://127.0.0.1:8765`，随机测试账号保存在本机忽略目录；运行方法、接口、安全与恢复边界见[32](docs/32-r1-workbench.md)，中文核心导读见[R1A-001](docs/learning/R1A-001.md)。
 
 离线整链演示：`python scripts/run_data_demo.py`，依次运行获取、清洗、导入/查询CLI；虚构原件与各服务独立SQLite在忽略目录`.bidradar-data/demo-chain/`。当前公开来源运行/边界见[31](docs/31-public-source-layer.md)，历史契约/天津接入见[30](docs/30-r0-data-contract.md)，中文核心阅读入口见[DATA-001](docs/learning/DATA-001.md)。已合并获取工具的历史用法见[29](docs/29-acquisition-stage.md)。
 
@@ -22,7 +24,7 @@
 
 ## 首批业务、企业档案与数据源
 
-已确认首批中国公开项目、中文优先、不限城市，产品给软件公司/AI服务团队使用；首轮产品闭环目标是“确认档案→真实项目→实际材料→引用与未知项分析→同项目追问→人工决定”，分阶段实施，当前只做其中数据获取/证据目录。[23](docs/23-first-market-rag.md)区分RAG、目录检索与业务后端。
+已确认首批中国公开项目、中文优先、不限城市，产品给软件公司/AI服务团队使用；首轮产品闭环目标是“确认档案→真实项目→实际材料→引用与未知项分析→同项目追问→人工决定”，分阶段实施，当前推进档案、目录核查与明确选择。[23](docs/23-first-market-rag.md)区分RAG、目录检索与业务后端。
 
 企业档案按八类组织，首用先问主体、想接什么、能做什么、交付限制，再按项目补案例/资质/排期/商务信息。[24](docs/24-company-profile-minimum.md)说明事实、证明、偏好和硬限制如何分开。
 
@@ -97,6 +99,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 | [29 获取阶段](docs/29-acquisition-stage.md) | SOURCE-002本地CLI、接口、运行与真实准入阻塞 |
 | [30 数据链契约](docs/30-r0-data-contract.md) | 三服务JSON边界、天津与旧版本兼容 |
 | [31 公开来源第一层](docs/31-public-source-layer.md) | 两站栏目、门槛、真实验收与运行命令 |
+| [32 本地商机核查工作台](docs/32-r1-workbench.md) | R1-A接口、公司档案/选择、双服务运行与恢复边界 |
 | [学习索引](docs/learning/INDEX.md) | 按任务恢复有用记录，不等于用户已经掌握 |
 
 main、任务分支与 PR 的实际 SHA 以 GitHub 为准。文档合并不等于业务开发、采购或上线获批；当前没有真实用户规模、业务测试成绩或生产 SLA。

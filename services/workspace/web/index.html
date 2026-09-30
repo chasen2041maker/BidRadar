@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BidRadar · 商机核查工作台</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+<div id="login-screen" class="login-screen">
+  <div class="login-intro"><span class="eyebrow">BIDRADAR / RESEARCH WORKSPACE</span><h1>先看清证据，<br>再决定下一步。</h1><p>从真实采购公告出发，整理公司的能力与限制，找到值得进一步核查的项目。</p><div class="intro-rule"></div><span>来源可追溯 · 资料缺口可见 · 选择由人确认</span></div>
+  <form id="login-form" class="login-card"><div class="brand">◈ <strong>BidRadar</strong></div><h2>进入工作台</h2><p class="muted">使用本机预置的测试账号</p><label>账号<input id="username" name="username" autocomplete="username" required maxlength="64"></label><label>密码<input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"></label><button type="submit" class="primary">登录</button><p id="login-error" role="alert" class="error"></p><p class="footnote">本地开发环境 · 企业信息使用虚构样例</p></form>
+</div>
+<div id="workspace-screen" class="shell" hidden>
+  <aside><div class="brand">◈ <strong>BidRadar</strong></div><p class="sidebar-label">公司空间</p><label class="sr-only" for="workspace-select">选择公司空间</label><select id="workspace-select"></select><span id="role-badge" class="role-badge"></span>
+    <nav aria-label="工作台导航"><button data-view="discover" class="nav active">▦ 商机目录</button><button data-view="profile" class="nav">▤ 企业档案</button><button data-view="selections" class="nav">✓ 已保存选择</button><button data-view="members" class="nav">♙ 公司成员</button></nav>
+    <div class="sidebar-bottom"><span class="environment">● 本地核查工作台</span><p>企业信息：虚构测试资料<br>采购公告：按来源分别标识</p><div id="account-name"></div><button id="logout" class="link-button">退出登录</button></div>
+  </aside>
+  <main><header><div><span class="eyebrow">从发现到核查</span><h1 id="page-title">商机目录</h1></div><div id="header-context" class="muted">查看与筛选不会启动模型分析</div></header>
+    <div id="notice" role="status" class="notice" hidden></div>
+    <section id="discover-view">
+      <div class="summary-row"><div><span>当前筛选结果</span><strong id="total-count">—</strong></div><div><span>查看范围</span><strong id="data-label">已归档公开公告</strong></div><div><span>企业档案</span><strong id="profile-label">尚未确认</strong></div></div>
+      <form id="search-form" class="searchbar"><label class="sr-only" for="keyword">搜索项目</label><input id="keyword" placeholder="搜索项目名称、采购人或技术需求" maxlength="200"><label class="sr-only" for="kind">公告类型</label><select id="kind"><option value="">全部公告类型</option><option value="procurement">采购公告</option><option value="correction">更正公告</option><option value="award">中标 / 成交</option><option value="termination">终止公告</option><option value="intention">采购意向</option><option value="unknown">类型待核实</option></select><label class="sr-only" for="data-mode">数据范围</label><select id="data-mode"><option value="false">真实公开样本</option><option value="true">虚构演示样本</option></select><button class="primary">搜索</button></form>
+      <div id="source-status" class="source-status"></div><div class="section-heading"><h2>候选项目</h2><span id="as-of" class="muted"></span></div><div id="notice-list" class="notice-list"></div>
+      <div class="page-actions"><button id="next-page" hidden>下一页</button><span id="cart-label">尚未选择项目</span><button id="prepare-selection" class="primary" disabled>保存待确认选择</button></div>
+    </section>
+    <section id="profile-view" hidden><div class="panel"><div class="section-heading"><h2>企业档案</h2><span id="profile-version" class="badge">尚未确认</span></div><p class="muted">先填写名称、希望承接的项目、能力和交付限制。其余可以留空，留空表示尚未确认。</p><p class="note">这里记录企业自己的声明。管理员确认档案，不代表资质或证明已核验。</p><form id="profile-form" class="profile-grid"></form></div><div class="panel"><h2>待确认建议</h2><div id="proposals"></div></div><div class="panel"><h2>正式版本记录</h2><div id="profile-history"></div></div></section>
+    <section id="selections-view" hidden><div class="panel"><h2>公司的候选选择</h2><p class="muted">保存当时的公告和企业档案版本。确认选择后仍需进一步研究，当前不会启动分析或产生模型费用。</p><div id="selection-list"></div></div></section>
+    <section id="members-view" hidden><div class="panel"><h2>当前公司成员</h2><p class="muted">管理员管理已有测试成员的角色和访问权限；撤权保留公司历史记录。</p><div id="member-list"></div></div></section>
+  </main>
+</div>
+<dialog id="detail-dialog"><div class="dialog-head"><span class="eyebrow">公告与证据</span><button id="close-detail" aria-label="关闭详情">关闭</button></div><div id="detail-content"></div></dialog>
+</body></html>
