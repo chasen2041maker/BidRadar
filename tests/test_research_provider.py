@@ -140,6 +140,28 @@ class ProviderTests(unittest.TestCase):
         self.assertFalse(error.exception.usage_unknown)
         self.assertEqual(len(seen), 1)
 
+    def test_contact_json_keys_and_common_phone_formats_are_removed_before_egress(self):
+        eid = "a" * 64
+        source = {"contact@example.test": "采购要求", "13800138000": "采购要求",
+                  "notes": ["电话：(010)12345678", "手机：138 0013 8000", "(021)87654321", "138 0013 8000"],
+                  "amount": "预算13800138000.00元，金额100万元", "deadline": "2026-10-10 09:30",
+                  "evidence_id": eid}
+        # 两个联系方式键归一后冲突，必须拒绝而不是丢弃任一字段继续发送。
+        with self.assertRaisesRegex(ProviderError, "invalid_model_request"):
+            prepare_egress([{"role": "user", "content": canonical(source)}], [])
+        del source["13800138000"]
+        clean, tools = prepare_egress([{"role": "user", "content": canonical(source)}], [])
+        value = json.loads(clean[0]["content"])
+        self.assertEqual(value["[联系方式已省略]"], "采购要求")
+        self.assertNotIn("contact@example.test", canonical(clean))
+        self.assertEqual(value["notes"], ["[联系方式已省略]"] * 4)
+        self.assertEqual(value["amount"], source["amount"])
+        self.assertEqual(value["deadline"], source["deadline"])
+        self.assertEqual(value["evidence_id"], eid)
+        self.assertEqual(prepare_egress(clean, tools), (clean, tools))
+        direct, _ = prepare_egress([{"role": "user", "content": '{"13800138000":"采购要求"}'}], [])
+        self.assertEqual(json.loads(direct[0]["content"]), {"[联系方式已省略]": "采购要求"})
+
     def test_redirect_is_never_followed_and_no_retry(self):
         with local_exchange(lambda h: send(h, 307, b'{}', {"Location": "http://127.0.0.1:1/secret"})) as requests:
             with self.assertRaises(ProviderError) as error:

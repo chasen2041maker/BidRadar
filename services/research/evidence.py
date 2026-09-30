@@ -18,10 +18,10 @@ PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabiliti
 CATEGORIES = frozenset(("technical", "qualification", "delivery", "commercial", "budget", "deadline", "materials", "other"))
 STATUSES = frozenset(("met", "unmet", "unknown", "conflicting", "not_applicable"))
 CONTACT = re.compile(r"[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}|"
-                     r"(?:联系人|联系电话|联系手机|电子邮箱|电子邮件|联系方式|项目联系人)(?!已省略)(?:\s*[:：]\s*|\s+)"
+                     r"(?:联系人|联系电话|联系手机|电子邮箱|电子邮件|联系方式|项目联系人|电话|手机|邮箱)(?!已省略)(?:\s*[:：]\s*|\s+)"
                      r"(?:(?!预算|金额|截止|交付|采购|合同|期限|获取|响应)[^；;。\n]){0,100}|"
-                     r"(?<![A-Za-z0-9.])(?:\+?86[- ]?)?1[3-9]\d{9}(?![A-Za-z0-9]|\s*(?:元|万元|亿元))|"
-                     r"(?<!\d)0\d{2,3}[-－ ]\d{7,8}(?!\d)")
+                     r"(?<![A-Za-z0-9.])(?:\+?86[- ]?)?1[3-9]\d[- ]?\d{4}[- ]?\d{4}(?![A-Za-z0-9.]|\s*(?:元|万元|亿元|人民币|CNY))|"
+                     r"(?<![A-Za-z0-9.])(?:[（(]0\d{2,3}[)）]|0\d{2,3}[-－ ])[-－ ]?\d{7,8}(?![A-Za-z0-9.]|\s*(?:元|万元|亿元|人民币|CNY))")
 
 
 class EvidenceError(ValueError):

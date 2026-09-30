@@ -44,7 +44,15 @@ def prepare_egress(messages, tools):
 
         def clean(item, key=None):
             if isinstance(item, dict):
-                return {name: clean(child, name) for name, child in item.items()}
+                result = {}
+                for name, child in item.items():
+                    # 用户/工具的嵌入JSON也可能把联系方式放在属性名里；值脱敏不够。
+                    # 两个键清理后重名则拒绝请求，不能静默覆盖采购字段或改变工具语义。
+                    clean_name = redact(name)
+                    if clean_name in result:
+                        raise ValueError()
+                    result[clean_name] = clean(child, name)
+                return result
             if isinstance(item, list):
                 return [clean(child) for child in item]
             if isinstance(item, str):
