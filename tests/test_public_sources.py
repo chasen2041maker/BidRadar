@@ -37,6 +37,25 @@ def ccgp_notice(body, extra=""):
 
 
 class PublicUrlTests(unittest.TestCase):
+    def test_ccgp_negotiation_uses_official_column_slug_not_guessed_abbreviation(self):
+        # 官方中央和地方谈判栏目都以 jzxtpgg 命名；错误简称会让 builder 生成无依据地址。
+        for area in ("zygg", "dfgg"):
+            category = f"{area}/jzxtpgg"
+            column = f"https://www.ccgp.gov.cn/cggg/{area}/jzxtpgg/"
+            self.assertEqual(build_listing_url(CCGP, category), column)
+            self.assertEqual(build_listing_url(CCGP, category, 2), column + "index_1.htm")
+            self.assertEqual(listing_identity(CCGP, column + "index_1.htm"), (category, 2))
+            self.assertIsNone(listing_identity(CCGP, column.replace("jzxtpgg", "jzxtp")))
+            with self.assertRaises(ValueError):
+                build_listing_url(CCGP, f"{area}/jzxtp")
+            listing = '<ul class="c_list_bid">' + ccgp_row() + '</ul>'
+            result = parse_listing(listing, column, CCGP)
+            self.assertEqual(result.status, ParseStatus.OK)
+            self.assertEqual(result.items[0].url, column + "202609/t20260930_100001.htm")
+        # 已有搜索发现的官方公告身份仍兼容；不是用新栏目枚举收窄 v1 公告 URL。
+        known = "https://www.ccgp.gov.cn/cggg/dfgg/jzxtpgg/202604/t20260420_26427757.htm"
+        self.assertEqual(canonical_notice_url(CCGP, known), known)
+
     def test_verified_page_conventions_round_trip(self):
         for source, category in ((CCGP, "zygg/jzxcs"), (CCGP, "dfgg/gkzb"),
                                  (HAINAN, "cggg"), (HAINAN, "zfcgqtgg"), (HAINAN, "cgzbgg")):

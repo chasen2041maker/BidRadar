@@ -15,9 +15,11 @@ from .ccgp import (
     _Document, _HTMLResourceLimit, _Node, _notice_url, parse_notice_page,
 )
 
+# 2026-09-30 按官方中央/地方栏目 URL 核对；谈判栏目实际是 jzxtpgg，不能由简称猜路径。
+# 此枚举核对不代表每个栏目都完成本机实时模板或持续可采集验证。
 _CCGP_CATEGORIES = frozenset(
     f"{area}/{kind}" for area in ("zygg", "dfgg")
-    for kind in ("gkzb", "jzxcs", "jzxtp", "gzgg", "zbgg", "cjgg")
+    for kind in ("gkzb", "jzxcs", "jzxtpgg", "gzgg", "zbgg", "cjgg")
 )
 _HAINAN_CATEGORIES = frozenset(("cggg", "zfcgqtgg", "cgzbgg"))
 _HOSTS = {"cn_ccgp": ("www.ccgp.gov.cn", "ccgp.gov.cn"),
