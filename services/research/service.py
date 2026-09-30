@@ -20,12 +20,13 @@ class ResearchService:
         self.identity = identity
         from .agent import VERSION as agent_version, PROMPT_VERSION
         from .evidence import VERSION as evidence_version
-        from .provider import EGRESS_VERSION, REQUESTED_MODEL, OFFICIAL_RESOLUTION, PRICE_VERSION
+        from .provider import EGRESS_VERSION, REQUESTED_MODEL, OFFICIAL_RESOLUTION, PRICE_VERSION, VERSION as provider_version, TEMPERATURE
         # 冻结的是实际运行代码/提示词/出口版本；可信部署配置也不得伪报另一个实现版本。
-        actual = {"version": "research-v2", "agent_version": agent_version, "prompt_version": PROMPT_VERSION,
+        actual = {"version": "research-v3", "agent_version": agent_version, "prompt_version": PROMPT_VERSION,
                   "evidence_version": evidence_version, "egress_version": EGRESS_VERSION,
                   "requested_model": REQUESTED_MODEL, "official_resolution": OFFICIAL_RESOLUTION,
                   "price_version": PRICE_VERSION, "thinking": "disabled", "max_output_tokens": 4096,
+                  "provider_version": provider_version, "temperature": TEMPERATURE,
                   "max_model_calls": 8, "max_tools": 16}
         if config is not None and (not isinstance(config, dict) or any(key in actual and actual[key] != value for key, value in config.items())):
             raise ResearchError("configuration_changed")

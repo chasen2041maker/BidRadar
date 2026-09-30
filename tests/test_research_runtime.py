@@ -364,7 +364,7 @@ class ResearchRuntimeTests(unittest.TestCase):
     def test_frozen_implementation_config_does_not_silently_upgrade_queued_task(self):
         from services.research.agent import VERSION, PROMPT_VERSION
         from services.research.evidence import VERSION as evidence_version
-        from services.research.provider import EGRESS_VERSION
+        from services.research.provider import EGRESS_VERSION, VERSION as provider_version, TEMPERATURE
         run = self.client.create_analysis(self.request())
         with closing(ResearchStore(self.research)) as store:
             frozen = store.load(self.a, run["id"])["manifest"]
@@ -372,12 +372,40 @@ class ResearchRuntimeTests(unittest.TestCase):
             self.assertEqual(frozen["config"]["prompt_version"], PROMPT_VERSION)
             self.assertEqual(frozen["config"]["evidence_version"], evidence_version)
             self.assertEqual(frozen["config"]["egress_version"], EGRESS_VERSION)
+            self.assertEqual(frozen["config"]["provider_version"], provider_version)
+            self.assertEqual(frozen["config"]["temperature"], TEMPERATURE)
             frozen["config"]["agent_version"] = "historical-agent-version"
             store.db.execute("UPDATE runs SET manifest=? WHERE id=?", (json.dumps(frozen), run["id"]))
         provider = FakeProvider()
         result = self.tick(provider)
         self.assertEqual((result["state"], result["reason"]), ("waiting_input", "configuration_changed"))
         self.assertEqual(provider.calls, [])
+
+    def test_temperature_changes_or_legacy_configuration_block_before_next_dispatch(self):
+        from services.research.provider import DeepSeekProvider
+        metadata = DeepSeekProvider("synthetic-key-only").metadata
+        for variant in ("old_temperature", "old_version", "missing_frozen_temperature", "changes_between_calls"):
+            with self.subTest(variant=variant):
+                run = self.client.create_analysis(self.request(key=variant))
+                provider = FakeProvider()
+                provider.metadata = deepcopy(metadata)
+                provider.max_output_tokens = 4096
+                if variant == "old_temperature":
+                    provider.metadata["temperature"] = 1
+                elif variant == "old_version":
+                    provider.metadata["provider_version"] = "historical-provider"
+                elif variant == "missing_frozen_temperature":
+                    with closing(ResearchStore(self.research)) as store:
+                        frozen = store.load(self.a, run["id"])["manifest"]
+                        del frozen["config"]["temperature"]
+                        store.db.execute("UPDATE runs SET manifest=? WHERE id=?", (json.dumps(frozen), run["id"]))
+                else:
+                    provider.hook = lambda: provider.metadata.update(temperature=1)
+                result = self.tick(provider)
+                self.assertEqual((result["state"], result["reason"]), ("waiting_input", "configuration_changed"))
+                self.assertEqual(len(provider.calls), 1 if variant == "changes_between_calls" else 0)
+                with closing(BudgetLedger(self.budget)) as ledger:
+                    self.assertEqual(ledger.summary(self.a, run["id"])["attempts"], len(provider.calls))
 
     def test_provider_unknown_keeps_budget_after_restart_and_new_business_store(self):
         run = self.client.create_analysis(self.request())

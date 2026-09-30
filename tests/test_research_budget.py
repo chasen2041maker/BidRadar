@@ -91,3 +91,19 @@ class BudgetTests(unittest.TestCase):
             self.ledger.replay(provider, "a", "run", messages, tools)
         self.assertEqual(calls, [1])
         self.assertEqual(self.ledger.summary()["attempts"], 1)
+
+    def test_temperature_and_provider_version_are_part_of_exact_request_identity(self):
+        calls = []
+        provider = SimpleNamespace(metadata={"provider": "synthetic", "temperature": 0, "provider_version": "v2"},
+            max_output_tokens=10, complete=lambda *args: calls.append(1) or {"usage": {}, "message": {"content": "known"}})
+        messages = [{"role": "user", "content": "synthetic request"}]
+        answer = self.ledger.complete(provider, "a", "run-temp", messages, [], guard=lambda _: None,
+                                      estimate=lambda *_: 30, cost=lambda _: 12)
+        self.assertEqual(self.ledger.replay(provider, "a", "run-temp", messages, []), answer)
+        for metadata in ({"provider": "synthetic", "temperature": 1, "provider_version": "v2"},
+                         {"provider": "synthetic", "temperature": 0, "provider_version": "v1"}):
+            provider.metadata = metadata
+            with self.subTest(metadata=metadata), self.assertRaisesRegex(BudgetError, "checkpoint_request_mismatch"):
+                self.ledger.replay(provider, "a", "run-temp", messages, [])
+        self.assertEqual(calls, [1])
+        self.assertEqual(self.ledger.summary()["attempts"], 1)

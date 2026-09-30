@@ -16,6 +16,8 @@ REQUESTED_MODEL = "deepseek-v4-flash"
 OFFICIAL_RESOLUTION = "DeepSeek-V4.1-Flash"
 PRICE_VERSION = "deepseek-flash-cny-2026-10-01-peak-estimate"
 EGRESS_VERSION = "contact-keys-formatted-phones-v2"
+VERSION = "deepseek-chat-v2-temperature-zero"
+TEMPERATURE = 0
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_REQUEST_BYTES = 256 * 1024
 
@@ -143,6 +145,7 @@ class DeepSeekProvider:
     def metadata(self):
         return {"provider": "deepseek", "requested_model": self.requested_model,
                 "official_resolution": OFFICIAL_RESOLUTION, "price_version": PRICE_VERSION,
+                "provider_version": VERSION, "temperature": TEMPERATURE,
                 "thinking": "disabled", "max_output_tokens": self.max_output_tokens}
 
     def _https_exchange(self, payload, timeout):
@@ -202,7 +205,9 @@ class DeepSeekProvider:
         messages, tools = prepare_egress(messages, tools)
         estimate_tokens(messages, tools)
         payload = {"model": self.requested_model, "messages": messages, "stream": False,
-                   "thinking": {"type": "disabled"}, "max_tokens": self.max_output_tokens}
+                   "thinking": {"type": "disabled"}, "max_tokens": self.max_output_tokens,
+                   "temperature": TEMPERATURE}
+        # 温度只降低非思考模式的采样随机性，不保证确定性或事实正确；metadata同值参与计费身份。
         if tools:
             payload.update(tools=tools, tool_choice="auto")
         else:

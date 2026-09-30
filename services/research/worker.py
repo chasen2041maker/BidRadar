@@ -33,18 +33,24 @@ def tick(root, access, catalog, tracking, provider, budget_path, *, worker_id="r
             else:
                 if provider is None:
                     raise ResearchError("model_not_configured")
-                if provider.metadata.get("provider") == "deepseek" and any(
-                        provider.metadata.get(key) != run["manifest"]["config"][key]
-                        for key in ("requested_model", "official_resolution", "price_version", "thinking", "max_output_tokens")):
-                    raise ResearchError("configuration_changed")
+                def check_provider_config():
+                    # 每个外发/恢复边界都核对实际参数，不能用新温度生成另一个hash重发旧任务。
+                    if provider.metadata.get("provider") == "deepseek" and any(
+                            provider.metadata.get(key) != run["manifest"]["config"][key]
+                            for key in ("requested_model", "official_resolution", "price_version", "thinking",
+                                        "max_output_tokens", "provider_version", "temperature")):
+                        raise ResearchError("configuration_changed")
+                check_provider_config()
                 ledger = BudgetLedger(budget_path)
                 def complete(messages, tools):
+                    check_provider_config()
                     # 全量消息统一最小化后才估算/生成计费身份；provider内再兜底脱敏。
                     clean_messages, clean_tools = prepare_egress(messages, tools)
                     return ledger.complete(provider, run["workspace_id"], run["id"], clean_messages, clean_tools,
                                            guard=guard, estimate=estimate_reservation, cost=usage_cost)
                 def replay(messages, tools):
                     guard("before_model_replay")
+                    check_provider_config()
                     clean_messages, clean_tools = prepare_egress(messages, tools)
                     return ledger.replay(provider, run["workspace_id"], run["id"], clean_messages, clean_tools)
                 complete.replay = replay  # 可信恢复能力，不来自模型/JSON；没有新增外发或预留路径。

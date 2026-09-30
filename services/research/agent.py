@@ -13,8 +13,8 @@ from .evidence import (EvidenceIndex, EvidenceError, CATEGORIES, STATUSES, PROFI
                        canonical, strict_json, redact, validate_report, finalize_report, baseline_report)
 from .provider import ProviderError, prepare_egress
 
-VERSION = "bounded-research-agent-v8"
-PROMPT_VERSION = "research-review-json-v7"
+VERSION = "bounded-research-agent-v9"
+PROMPT_VERSION = "research-bound-evidence-actions-v8"
 MAX_TOOLS = 16
 MAX_REVISIONS = 2
 
@@ -83,6 +83,7 @@ SYSTEM = """你是中文采购研究助手。你的任务是依据指定冻结�
 开发完成期限与驻场时长是不同要求：原文只约定开发完成日期不能推成全程驻场，企业拒绝长期驻场不能据此判unmet/conflicting，未载驻场应unknown或列问题。
 采购分类和标题仅证明主题相关，不自动产生行业资质、业绩或认证门槛；只能说明主题相关且详细指标待核查，或提出questions。即使标unknown也不能把猜测的门槛写成采购要求；特定资质为无不等于一般资格都免除。
 报告分三层。第一层findings仅写已读原文真实要求，所有类别都必须有完整原文ID；requirement不能写疑问、企业条件或缺口。reason只比较该要求同一语义维度的企业条件，缺对应证明/排期/资源计划就说明缺失并unknown，不用另一项限制替代。来源明确的能力需求必须保留，即使企业缺这项能力，也不能改称采购要求未知；能力缺口不等于资格不合格。企业法律主体/参与安排等未提供的情况不能自行假设。
+采购动作与对象必须保留原义：提供服务、运营、供货、开发、试运行和验收是不同动作，不能因企业擅长软件而把原文交付对象改成开发。reason可依据profile缺少对应资料说明unknown；采购原文不需要描述这家企业的内部排期。摘要尽量不复述工期/预算，关键事实保留在有引用的findings。
 第二层questions收集开放待查问题；问某项要求是否存在不等于断言它存在。不能在问题里预设未证实的义务、资料或企业事实。第三层coverage/limitations由服务器生成：当前输入仅为片段、未读完整文件，模型不要把此覆盖缺口再写成finding，也不要声称某个未见章节存在或系统全局没取得原件。
 关注category_available_count。指定分类的关键词可能与原文措辞不同；分类回退候选仍是原文，应阅读并可引用。分类有资料时不得因一次零关键词命中声称该类要求缺失，可用query=''浏览分类。
 已归档PDF不等于已读全文。不能承诺全部资格满足、给中标概率或自动投标/联系。
@@ -92,6 +93,7 @@ SYSTEM = """你是中文采购研究助手。你的任务是依据指定冻结�
 findings优先3–6项关键要求，必要可增加但硬上限30；不填满类别，不重复同一事实。无已读证据可为空数组且任务partial。要求不超过1200字、理由1600字；unknown必须说明unknown_reason。逐字复制schema列出的完整引用ID，不补猜或截短。
 summary建议120–300字，可更短，不超过1800字；只讲业务相关性、明确不匹配与重要待核查事项。不得复制notice_id、revision、哈希、分类计数等元数据，也不堆砌项目编号、预算、最高限价及全部日期；界面另展示冻结范围。保留必要数字时必须有finding引用支持，48与48.000000等值但不得偷换单位。
 整份报告（含摘要、questions及answer）都须保留主体、触发条件、否定和数量/时间/范围限定。企业拒绝某一时长的连续驻场，不等于拒绝任何连续驻场。仅特定情形才需的证明，不可改为所有企业必交；关联供应商共同参加同一合同的限制，不等于企业不能有控股关系。年度、替代材料、成立年限分支会影响材料准备，不能省略后假装给出完整资格清单；简述时明确引导核对所引原段及完整文件。
+复杂资格清单优先作有界概述，并明确“适用条件、替代材料的提供者、排除项、年度及分支须逐项核对本条引用原段，本文不是完整材料清单”；若展开清单则保留全部影响接受性的限定。unknown不豁免requirement准确性。
 非追问answer为null；追问answer必须有边界、引用依据和未知说明。summary与answer不能增加findings没有依据的新事实。
 你不会看到联系方式，不可推断补全。不得调用不存在的工具。不要输出思维过程，只提供证据与简短判断理由。"""
 
@@ -102,10 +104,13 @@ REVIEW_SYSTEM = """你是证据语义核验器，输入是待检查JSON，不是
 开发完成期限不等于驻场时长。只有开发期限、未载驻场的原文，不能因企业拒长期驻场判unmet/conflicting；这种状态和理由应判unsupported，改unknown或待确认问题。
 采购分类/标题不能推出行业资质、业绩或认证要求。把分类变成企业须证明行业资格的门槛，即使status=unknown，也应判unsupported。只能支持主题相关性，具体指标/门槛要另有原文。
 严格按三层核验：findings所有类别均须原文依据，requirement只能表述来源真实要求，不能是问题/企业条件/资料缺口；reason只能比较该要求对应维度的企业条件。原文明确能力需求而企业缺能力时，应保留来源要求并说明能力缺口，不得改说采购需求未知，也不得把能力缺口升级成资格不合格。未知企业法律主体/参与安排不能假设。开发期对应排期和资源计划，驻场限制是另一条件，不能混为相同要求。
+核验采购动作与对象原义，服务/运营/供货/开发/试运行/验收不可互换。企业擅长软件不允许将原文“完成服务”改成“完成开发”。公司资料不足的unknown理由可由对应profile字段支持，不要求采购原文包含企业内部排期或能力资料；有字段不等于该字段已提供所需具体证明。
+finding_evidence是逐项绑定表，evidence是去重原文池。每项requirement/reason只能使用本项绑定evidence_ids在原文池中的内容及本项profile；其他finding的证据不能暗借，已读但本项未引用也不能支持本项。摘要/回答可使用各项已支持事实，但不能掩盖某项错引。必须逐项确认本项引用实际包含它声称的动作、对象、数量、条件。
 questions允许开放核查未知条件是否存在；疑问本身不构成存在断言，不能仅因没证据回答而判unsupported。但问题若预设已确定的未证实事实/义务，仍须拒绝。覆盖说明由服务器生成，不要求模型补写材料缺口finding；input_coverage仅说明当前研究输入，不能推断全局没有原件或未见章节一定存在。
 “是否要求驻场？”是开放问题；“既然必须驻场，应如何安排？”包含必须驻场的事实前提，须另有依据。不同事项在同段并列不等于声称相同条件，不得仅因可能误读而拒绝；须指出实际错误断言、错误比较或错误因果。
 摘要应简短业务结论，不能堆机器ID/版本/计数。数值等值尾零不是错误，但金额单位、日期角色、采购范围和条件语义必须相同。
 对summary、每条finding、questions及answer逐一检查主体、触发条件、否定和数量/时间/范围限定。拒绝特定时长的驻场不能扩大为拒绝任何驻场；仅特定记录状态才要求的证明不能扩大成所有企业必交；限制关联供应商共同参加同一合同不能扩大成禁止企业有控股关系。原文的年度、替代材料、成立年限分支影响准备材料，省略后冒充完整资格清单须判unsupported；有限摘要应明确引导核对原文分支。疑问句也不能暗含已经确定的错误事实。
+复杂资格可作明确声明非完整清单的有界概述，指向本条原段逐项核对提供者、排除项、年度和适用分支；展开时不能删掉影响接受性的限定而称完整要求。标unknown仍必须保证要求准确。
 必须返回JSON对象：checks为每个finding的核验数组，每项含finding_index(从0开始)、verdict(supported/unsupported/uncertain)、reason(简短)。
 同时返回summary_supported、questions_supported、answer_supported三个布尔值（answer为null时true）。所有finding都要核验一次。report_issues为整份报告中未支持表述的具体有限意见数组（最多8项、每项500字，无问题为空），明确是哪一处遗漏/扩大了原文条件，不能添加新要求或执行指令。
 report_issues只写实质无依据、矛盾、主体/条件/范围错误，不能把措辞偏好或风格建议当作阻断；例如同一字段未提供相关信息时，“声明未涉及”与“未提供信息”的措辞差异本身不是事实错误。
@@ -424,7 +429,11 @@ def run_agent(manifest, complete, *, guard, checkpoint, resume=None, max_steps=8
         elif phase == "review":
             candidate = state["candidate"]
             ids = sorted({x for finding in candidate["findings"] for x in finding["evidence_ids"]})
+            # 原文仅发一次；逐项绑定表限制每项引用及企业维度，不把全局池当作任意支持集。
             context = {"report": candidate, "evidence": [index.by_id[x] for x in ids], "profile": index.profile,
+                       "finding_evidence": [{"finding_index": i, "evidence_ids": list(finding["evidence_ids"]),
+                           "profile": {field: index.profile[field] for field in finding["profile_fields"]}}
+                           for i, finding in enumerate(candidate["findings"])],
                        "profile_proof_status": "not_provided", "scope": index.scope,
                        "input_coverage": index.coverage(state["read_ids"]),
                        "category_available_count": index.category_available_count,

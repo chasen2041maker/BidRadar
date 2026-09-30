@@ -515,6 +515,60 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(result["report"]["questions"], ["是否要求驻场？"])
 
+    def test_service_actions_are_not_rewritten_as_development_and_missing_profile_can_support_unknown(self):
+        original = "合同签订后180日内完成服务内容、试运行和验收。"
+        self.input["observations"][0]["evidence_fields"]["delivery_evidence"][0]["text"] = original
+        index = EvidenceIndex(self.input)
+        entry = next(e for e in index.entries if e["category"] == "delivery")
+        bad = proposal(index, eid=entry["evidence_id"], category="delivery")
+        bad["summary"] = "项目要求完成开发，企业交付计划待核查。"
+        bad["findings"][0].update(requirement="合同签订后180日内完成开发。", profile_fields=["staffing"])
+        fixed = proposal(index, eid=entry["evidence_id"], category="delivery")
+        fixed["findings"][0].update(reason="企业档案未提供对应的服务交付资源计划，履约能力待核查。", profile_fields=["staffing"])
+        self.assertEqual(validate_report(bad, index, {entry["evidence_id"]}), [])
+        def review(messages, tools):
+            context = json.loads(messages[1]["content"])
+            self.assertIn("服务/运营/供货/开发/试运行/验收不可互换", messages[0]["content"])
+            self.assertIn("不要求采购原文包含企业内部排期", messages[0]["content"])
+            self.assertEqual(context["finding_evidence"][0]["profile"], {"staffing": None})
+            return supported(checks=[{"finding_index": 0, "verdict": "unsupported", "reason": "来源要求完成服务、试运行和验收，不支持改称开发。"}], summary_supported=False,
+                             report_issues=["摘要将服务对象改为开发。"])
+        script = Script([response([tool("read_evidence", {"evidence_ids": [entry["evidence_id"]]}, "r")]),
+            response([tool("finish_report", {"report": bad}, "bad")]), review,
+            response([tool("finish_report", {"report": fixed}, "fixed")]), supported()])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["report"]["findings"][0]["requirement"], original)
+        self.assertEqual(result["report"]["findings"][0]["status"], "unknown")
+
+    def test_finding_binding_cannot_borrow_another_findings_evidence_or_profile(self):
+        self.input["observations"][0]["evidence_fields"]["technical_evidence"] = [
+            {"text": "采购算力运营服务。", "locator": "t1"},
+            {"text": "采购服务一项，中小企业划分行业为软件和信息技术服务业。", "locator": "t2"}]
+        index = EvidenceIndex(self.input)
+        first, second = [e for e in index.entries if e["category"] == "technical"]
+        bad = proposal(index, eid=first["evidence_id"])
+        bad["findings"][0].update(requirement=second["text"], profile_fields=["capabilities"])
+        bad["findings"].append(proposal(index, eid=second["evidence_id"])["findings"][0])
+        fixed = deepcopy(bad)
+        fixed["findings"][0]["requirement"] = first["text"]
+        self.assertEqual(validate_report(bad, index, {first["evidence_id"], second["evidence_id"]}), [])
+        def review(messages, tools):
+            context = json.loads(messages[1]["content"])
+            self.assertEqual(len(context["evidence"]), 2)
+            self.assertEqual(context["finding_evidence"], [
+                {"finding_index": 0, "evidence_ids": [first["evidence_id"]], "profile": {"capabilities": index.profile["capabilities"]}},
+                {"finding_index": 1, "evidence_ids": [second["evidence_id"]], "profile": {}}])
+            self.assertIn("其他finding的证据不能暗借", messages[0]["content"])
+            return supported(2, checks=[{"finding_index": 0, "verdict": "unsupported", "reason": "本项引用只有主题，数量和行业只在别项引用中。"},
+                                       {"finding_index": 1, "verdict": "supported", "reason": "本项引用包含所列事实。"}])
+        script = Script([response([tool("read_evidence", {"evidence_ids": [first["evidence_id"], second["evidence_id"]]}, "r")]),
+            response([tool("finish_report", {"report": bad}, "bad")]), review,
+            response([tool("finish_report", {"report": fixed}, "fixed")]), supported(2)])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["report"]["findings"][0]["requirement"], first["text"])
+
     def test_known_explicit_delivery_mismatch_is_unmet(self):
         entry = next(e for e in self.index.entries if e["category"] == "delivery")
         report = proposal(self.index, eid=entry["evidence_id"], category="delivery", status="unmet")
