@@ -166,6 +166,25 @@ class TransportTests(unittest.TestCase):
         error = self.assert_error("dns_not_public", transport)
         self.assertEqual(1, error.attempts)
 
+    def test_non_unicast_dns_is_rejected_even_if_is_global_is_true(self):
+        # 224.0.0.1/ff0e::1的is_global为True，仍不允许把采购HTTP请求发向多播组。
+        blocked = ["224.0.0.1", "239.255.255.250", "ff0e::1", "0.0.0.0", "::",
+                   "127.0.0.1", "::1", "169.254.169.254", "fe80::1", "240.0.0.1",
+                   "100.64.0.1", "192.0.2.1", "fec0::1", "2001:db8::1",
+                   "::ffff:8.8.8.8", "2002:0808:0808::1", "2606:4700:4700::1111%eth0"]
+        for address in blocked:
+            with self.subTest(address=address):
+                answers = iter([["8.8.8.8"], ["8.8.8.8", address]])
+                transport = self.transport([ALLOW], resolver=lambda h, p: next(answers))
+                error = self.assert_error("dns_not_public", transport)
+                self.assertEqual(1, error.attempts)
+                self.assertEqual([ROBOTS], [call[0] for call in self.exchange.calls])
+
+    def test_public_ipv6_unicast_can_be_pinned(self):
+        transport = self.transport([ALLOW, PAGE], resolver=lambda h, p: ["2606:4700:4700::1111"])
+        self.assertEqual(PAGE[2], self.fetch(transport).body)
+        self.assertEqual(["2606:4700:4700::1111"] * 2, [call[1] for call in self.exchange.calls])
+
     def test_robots_unavailable_does_not_send_notice(self):
         for response in ((404, {}, b""), (200, {}, b""), (200, {}, b"<html>challenge</html>"),
                          (200, {}, b"invalid rules"), (200, {}, b"User-agent: *\nCrawl-delay: -1")):

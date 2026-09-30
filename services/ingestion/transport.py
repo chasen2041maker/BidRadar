@@ -295,6 +295,20 @@ def _resolve(host, port, timeout):
     return [record[4][0] for record in records]
 
 
+def _public_unicast(address):
+    """is_global单独不足以表示公网服务器：多播/旧IPv6站点本地也可能返回True。"""
+    if (not address.is_global or address.is_multicast or address.is_unspecified
+            or address.is_loopback or address.is_link_local or address.is_reserved
+            or address.is_private):
+        return False
+    if isinstance(address, ipaddress.IPv6Address):
+        # 不将带接口作用域或隧道/映射地址交给OS另作路由解释；首源只需普通公网单播。
+        return not (address.is_site_local or address.scope_id is not None
+                    or address.ipv4_mapped is not None or address.sixtofour is not None
+                    or address.teredo is not None)
+    return True
+
+
 class _PinnedConnection(http.client.HTTPConnection):
     """连接核验后的数字IP；HTTPS证书仍针对原域名验证，杜绝第二次DNS解析。"""
 
@@ -427,7 +441,7 @@ class Transport:
                      _resolve(parts.hostname, port, min(self.timeout, self._remaining())))
         try:
             addresses = tuple(ipaddress.ip_address(value) for value in addresses)
-            if not addresses or any(not address.is_global for address in addresses):
+            if not addresses or any(not _public_unicast(address) for address in addresses):
                 raise ValueError()
         except ValueError:
             raise FetchError("dns_not_public") from None
