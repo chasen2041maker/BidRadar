@@ -15,6 +15,7 @@ from .evidence import canonical, strict_json, redact, EvidenceError
 REQUESTED_MODEL = "deepseek-v4-flash"
 OFFICIAL_RESOLUTION = "DeepSeek-V4.1-Flash"
 PRICE_VERSION = "deepseek-flash-cny-2026-10-01-peak-estimate"
+EGRESS_VERSION = "contact-keys-formatted-phones-v2"
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_REQUEST_BYTES = 256 * 1024
 

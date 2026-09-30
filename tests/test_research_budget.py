@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from services.research.budget import BudgetLedger, BudgetError
+from types import SimpleNamespace
 
 
 class BudgetTests(unittest.TestCase):
@@ -72,3 +73,21 @@ class BudgetTests(unittest.TestCase):
         self.path.unlink()
         with self.assertRaisesRegex(BudgetError, "budget_ledger_missing"):
             self.open()
+
+    def test_replay_only_reads_exact_settled_request_and_never_creates_attempt(self):
+        calls = []
+        provider = SimpleNamespace(metadata={"provider": "synthetic"}, max_output_tokens=10,
+                                   complete=lambda *args: calls.append(1) or {"usage": {}, "message": {"content": "known"}})
+        messages, tools = [{"role": "user", "content": "fictional"}], []
+        answer = self.ledger.complete(provider, "a", "run", messages, tools, guard=lambda _: None,
+                                      estimate=lambda *_: 30, cost=lambda _: 12)
+        self.ledger.close()
+        self.ledger = self.open()
+        self.assertEqual(self.ledger.replay(provider, "a", "run", messages, tools), answer)
+        self.assertEqual(calls, [1])
+        self.assertEqual(self.ledger.summary()["attempts"], 1)
+        provider.metadata = {"provider": "other-config"}
+        with self.assertRaisesRegex(BudgetError, "checkpoint_request_mismatch"):
+            self.ledger.replay(provider, "a", "run", messages, tools)
+        self.assertEqual(calls, [1])
+        self.assertEqual(self.ledger.summary()["attempts"], 1)

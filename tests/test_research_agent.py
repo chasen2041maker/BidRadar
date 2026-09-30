@@ -90,8 +90,9 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(result["quality"]["model_calls"], 3)
         self.assertEqual([x["name"] for x in result["trace"] if x["kind"] == "tool"], ["search_evidence", "finish_report"])
-        self.assertEqual(script.calls[1][0][-1]["tool_call_id"], "search-1")
-        self.assertIn(self.eid, script.calls[1][0][-1]["content"])
+        result_message = next(m for m in script.calls[1][0] if m["role"] == "tool")
+        self.assertEqual(result_message["tool_call_id"], "search-1")
+        self.assertIn(self.eid, result_message["content"])
         self.assertEqual(script.calls[-1][1], [])
         self.assertFalse(result["report"]["coverage"]["full_tender_read"])
         self.assertIn("未阅读完整", result["report"]["limitations"][0])
@@ -104,7 +105,7 @@ class AgentTests(unittest.TestCase):
         result = self.run_agent(script)
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(result["trace"][1]["error"], "unknown_tool_or_arguments")
-        self.assertIn("unknown_tool_or_arguments", script.calls[1][0][-1]["content"])
+        self.assertIn("unknown_tool_or_arguments", json.dumps(script.calls[1][0]))
 
     def test_wrong_project_or_unread_citation_rejected_and_only_one_revision(self):
         bad = proposal(self.index)
@@ -133,7 +134,27 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result["state"], "succeeded")
         self.assertEqual(result["quality"]["revisions"], 1)
         self.assertEqual(result["quality"]["model_calls"], 5)
-        self.assertIn("summary_unsupported", script.calls[3][0][-1]["content"])
+        self.assertIn("summary_unsupported", json.dumps(script.calls[3][0]))
+
+    def test_repeated_empty_searches_converge_with_semantic_review_and_one_revision_reserved(self):
+        def searches(round_number):
+            return response([tool("search_evidence", {"query": "软件开发" if round_number == 0 and i == 0 else "不存在的材料关键词",
+                              "category": None, "limit": 6}, f"search-{round_number}-{i}") for i in range(4)])
+        def finish(messages, tools):
+            self.assertEqual([t["function"]["name"] for t in tools], ["finish_report"])
+            limits = json.loads(messages[-1]["content"])["execution_limits"]
+            self.assertTrue(limits["finish_required"])
+            self.assertGreaterEqual(limits["model_calls_remaining"], 2)
+            return response([tool("finish_report", {"report": proposal(self.index)}, "finish-" + str(len(messages)))])
+        script = Script([searches(0), searches(1), searches(2), finish, supported(summary_supported=False), finish, supported()])
+        result = self.run_agent(script)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertEqual(result["quality"]["model_calls"], 7)
+        self.assertEqual(result["quality"]["tool_calls"], 14)
+        self.assertEqual(result["quality"]["revisions"], 1)
+        self.assertEqual(script.calls[4][1], [])
+        self.assertEqual(script.calls[6][1], [])
+        self.assertTrue(all(finding["status"] == "unknown" for finding in result["report"]["findings"]))
 
     def test_semantic_uncertainty_after_revision_degrades_to_unknown(self):
         unsupported = supported(checks=[{"finding_index": 0, "verdict": "uncertain", "reason": "未支持"}])

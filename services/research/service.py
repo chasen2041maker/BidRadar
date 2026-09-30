@@ -2,6 +2,7 @@
 from copy import deepcopy
 from hashlib import sha256
 import re
+from services.common.local_http import LocalHTTPError
 
 from .budget import canonical
 from .store import ResearchError
@@ -17,8 +18,18 @@ class ResearchService:
     def __init__(self, store, access, catalog, tracking, *, identity="workspace", config=None):
         self.store, self.access, self.catalog, self.tracking = store, access, catalog, tracking
         self.identity = identity
-        self.config = config or {"version": "research-v1", "egress_version": "contact-redaction-v1",
-                                 "requested_model": "deepseek-v4-flash", "max_model_calls": 8, "max_tools": 16}
+        from .agent import VERSION as agent_version, PROMPT_VERSION
+        from .evidence import VERSION as evidence_version
+        from .provider import EGRESS_VERSION, REQUESTED_MODEL, OFFICIAL_RESOLUTION, PRICE_VERSION
+        # 冻结的是实际运行代码/提示词/出口版本；可信部署配置也不得伪报另一个实现版本。
+        actual = {"version": "research-v2", "agent_version": agent_version, "prompt_version": PROMPT_VERSION,
+                  "evidence_version": evidence_version, "egress_version": EGRESS_VERSION,
+                  "requested_model": REQUESTED_MODEL, "official_resolution": OFFICIAL_RESOLUTION,
+                  "price_version": PRICE_VERSION, "thinking": "disabled", "max_output_tokens": 4096,
+                  "max_model_calls": 8, "max_tools": 16}
+        if config is not None and (not isinstance(config, dict) or any(key in actual and actual[key] != value for key, value in config.items())):
+            raise ResearchError("configuration_changed")
+        self.config = {**deepcopy(config or {}), **actual}
 
     def _authorize(self, actor, wid, action="read"):
         text(actor)
@@ -110,6 +121,18 @@ class ResearchService:
         self._authorize(actor_id, workspace_id)
         result = self.store.public(workspace_id, text(run_id))
         self._tracking_only(result, actor_id)
+        catalog_state = "unavailable"
+        try:
+            current = self.catalog.bundle(result["notice_id"])
+            ids = [entry["observation_id"] for entry in current["observations"]]
+            if ids and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in ids):
+                catalog_state = "current" if ids == result["scope"]["observation_ids"] else "changed"
+        except (LocalHTTPError, KeyError, TypeError, ValueError):
+            # 目录离线时仍可查看已获准的历史报告，但不能把“无法检查”冒充最新。
+            pass
+        grant = self._authorize(actor_id, workspace_id)
+        result["freshness"] = {"profile": "current" if grant["current_profile_revision"] == result["profile_revision"] else "changed",
+                               "catalog": catalog_state}
         return result
 
     def command(self, workspace_id, actor_id, key):
@@ -125,7 +148,7 @@ class ResearchService:
         self._authorize(actor_id, workspace_id, "analyze")
         result = self.store.public(workspace_id, text(run_id))
         self._tracking_only(result, actor_id)
-        return self.store.cancel(workspace_id, run_id)
+        return self.store.cancel(workspace_id, run_id, actor_id=actor_id, key=key)
 
     def list_runs(self, actor_id, workspace_id, before=None, limit=30):
         if self.identity != "workspace":
@@ -136,6 +159,8 @@ class ResearchService:
     def guard(self, run, action):
         """动作前检查任务取消、原授权代数、正式档案及有限跟踪委托；失败关闭动作。"""
         self.store.check_lease(run)
+        if run["manifest"]["config"] != self.config:
+            raise ResearchError("configuration_changed")
         grant = self._authorize(run["actor_id"], run["workspace_id"], "analyze")
         if grant["membership_version"] != run["membership_version"]:
             raise ResearchError("authorization_changed")

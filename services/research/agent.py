@@ -11,9 +11,10 @@ import time
 
 from .evidence import (EvidenceIndex, EvidenceError, CATEGORIES, STATUSES, PROFILE_FIELDS,
                        canonical, strict_json, redact, validate_report, finalize_report, baseline_report)
-from .provider import ProviderError
+from .provider import ProviderError, prepare_egress
 
-VERSION = "bounded-research-agent-v1"
+VERSION = "bounded-research-agent-v3"
+PROMPT_VERSION = "research-budget-aware-v2"
 MAX_TOOLS = 16
 
 
@@ -84,7 +85,9 @@ def _initial(index):
     return {"version": VERSION, "manifest_digest": index.manifest_digest, "phase": "model", "steps": 0,
             "tool_count": 0, "revision_count": 0, "messages": [{"role": "system", "content": SYSTEM},
             {"role": "user", "content": canonical(context)}], "trace": [], "read_ids": [], "pending": [],
-            "candidate": None, "response": None, "local_errors": [], "semantic_errors": [], "verified": False}
+            "candidate": None, "response": None, "pending_request": None,
+            "allowed_tools": [tool["function"]["name"] for tool in TOOLS],
+            "local_errors": [], "semantic_errors": [], "verified": False}
 
 
 def _validate_resume(resume, index, max_steps):
@@ -109,6 +112,7 @@ def _validate_resume(resume, index, max_steps):
             or not isinstance(state["pending"], list) or len(state["pending"]) > MAX_TOOLS
             or state["pending"] and not _valid_calls(state["pending"])
             or type(state["verified"]) is not bool
+            or state["allowed_tools"] not in ([tool["function"]["name"] for tool in TOOLS], ["finish_report"])
             or any(not isinstance(state[key], list) or len(state[key]) > 100
                    or any(not isinstance(x, str) or len(x) > 150 for x in state[key])
                    for key in ("local_errors", "semantic_errors"))
@@ -123,7 +127,17 @@ def _validate_resume(resume, index, max_steps):
                validate_report(state["candidate"], index, set(state["read_ids"])))):
         raise EvidenceError("invalid_checkpoint")
     if state["phase"] == "model_inflight":
-        raise ProviderError("model_outcome_unknown", True)
+        pending = state["pending_request"]
+        if (not isinstance(pending, dict) or set(pending) != {"messages", "tools", "purpose"}
+                or pending["purpose"] not in ("model", "review")
+                or pending["tools"] not in ((TOOLS, [TOOLS[-1]]) if pending["purpose"] == "model" else ([],))
+                or not isinstance(pending["messages"], list) or not pending["messages"]
+                or pending["messages"][0] != {"role": "system", "content": SYSTEM if pending["purpose"] == "model" else REVIEW_SYSTEM}
+                or pending["purpose"] == "model" and pending["messages"] != prepare_egress(state["messages"], pending["tools"])[0]
+                or pending["purpose"] == "review" and validate_report(state["candidate"], index, set(state["read_ids"]))):
+            raise EvidenceError("invalid_checkpoint_request")
+    elif state["pending_request"] is not None:
+        raise EvidenceError("invalid_checkpoint_request")
     return state
 
 
@@ -167,7 +181,8 @@ def run_agent(manifest, complete, *, guard, checkpoint, resume=None, max_steps=8
 
     guard(action): read_context/model/tool:<name>/publish。checkpoint只接JSON状态副本。
     complete(messages,tools)需由宿主持久保存attempt和用量。收到响应先checkpoint再
-    处理工具；恢复只读工具可重复，model_inflight恢复拒绝盲重放。
+    处理工具；恢复只读工具可重复。model_inflight仅调用可信complete.replay复用账本
+    已知响应，不能退回普通complete；没有此接口则保守停止，绝不盲重放付费请求。
     """
     if type(max_steps) is not int or not 1 <= max_steps <= 8:
         raise EvidenceError("invalid_agent_limit")
@@ -179,24 +194,36 @@ def run_agent(manifest, complete, *, guard, checkpoint, resume=None, max_steps=8
     def save():
         checkpoint(deepcopy(state))
 
-    def call(messages, tools, purpose):
+    def apply_response(request, *, replay=False):
         guard("model")
-        state["phase"] = "model_inflight"
-        state["steps"] += 1
-        save()
-        response = complete(deepcopy(messages), deepcopy(tools))
+        callback = getattr(complete, "replay", None) if replay else complete
+        if not callable(callback):
+            raise ProviderError("model_outcome_unknown", True)
+        response = callback(deepcopy(request["messages"]), deepcopy(request["tools"]))
         # 不捕获complete/guard的业务控制异常。用量未知时宿主也必须停止，不能再补一次。
         if not isinstance(response, dict) or not isinstance(response.get("message"), dict):
             raise ProviderError("invalid_model_response", True)
         if response.get("usage") is None:
             raise ProviderError("model_usage_unknown", True)
         state["response"] = deepcopy(response)
-        state["phase"] = purpose + "_result"
-        state["trace"].append({"kind": "model", "step": state["steps"], "purpose": purpose,
+        state["phase"] = request["purpose"] + "_result"
+        if request["purpose"] == "model":
+            state["allowed_tools"] = [tool["function"]["name"] for tool in request["tools"]]
+        state["pending_request"] = None
+        state["trace"].append({"kind": "model", "step": state["steps"], "purpose": request["purpose"],
                                "model": str(response.get("model", ""))[:128],
                                "provider_request_id": str(response.get("provider_request_id", ""))[:256],
                                "finish_reason": str(response.get("finish_reason", ""))[:64]})
         save()
+
+    def call(messages, tools, purpose):
+        guard("model")
+        clean_messages, clean_tools = prepare_egress(messages, tools)
+        state["pending_request"] = {"messages": clean_messages, "tools": clean_tools, "purpose": purpose}
+        state["phase"] = "model_inflight"
+        state["steps"] += 1
+        save()  # 精确持久化这次外发输入；恢复语义核验时不会误用主对话或重新计数。
+        apply_response(state["pending_request"])
 
     def fail_or_revise(errors):
         if state["revision_count"] == 0 and state["steps"] < max_steps:
@@ -220,7 +247,17 @@ def run_agent(manifest, complete, *, guard, checkpoint, resume=None, max_steps=8
             state["phase"] = "done"
             break
         if phase == "model":
-            call(state["messages"], TOOLS, "model")
+            # 给完成/核验/一次修订留出额度，不能把所有预算耗在不断换词的空检索上。
+            # 限制工具能力而不硬编码结论；未取得的资料必须留unknown。
+            finish_only = state["tool_count"] >= 12 or state["steps"] > 0 and max_steps - state["steps"] <= 4
+            state["messages"].append({"role": "user", "content": canonical({"execution_limits": {
+                "model_calls_remaining": max_steps - state["steps"], "tool_actions_remaining": MAX_TOOLS - state["tool_count"],
+                "finish_required": finish_only}, "instruction": (
+                "本轮必须单独调用finish_report。保留已读证据，零结果/重复检索不证明要求不存在；未取得或未核验的事项标unknown，不能继续检索。"
+                if finish_only else "自行选择需要的工具；每轮最多4个。避免重复空检索，材料缺失可写unknown并完成，预留完成与核验额度。")})})
+            call(state["messages"], [TOOLS[-1]] if finish_only else TOOLS, "model")
+        elif phase == "model_inflight":
+            apply_response(state["pending_request"], replay=True)
         elif phase == "model_result":
             response, message = state["response"], state["response"]["message"]
             calls = message.get("tool_calls")
@@ -257,6 +294,9 @@ def run_agent(manifest, complete, *, guard, checkpoint, resume=None, max_steps=8
                 arguments = strict_json(tool["function"]["arguments"], limit=100_000)
                 if not isinstance(arguments, dict):
                     raise EvidenceError("invalid_tool_arguments")
+                if name not in state["allowed_tools"]:
+                    raise EvidenceError("tool_not_available_in_current_phase" if name in {t["function"]["name"] for t in TOOLS}
+                                        else "unknown_tool_or_arguments")
                 if name == "search_evidence" and set(arguments) == {"query", "category", "limit"}:
                     found = index.search(arguments["query"], arguments["category"], arguments["limit"])
                     output = {"evidence": found, "scope": index.scope, "coverage": "normalized_snippets_only"}

@@ -168,3 +168,21 @@ class BudgetLedger:
         except BaseException:
             self.abort(attempt_id, dispatched=dispatched)
             raise
+
+    def replay(self, provider, workspace_id, run_id, messages, tools):
+        """仅复用精确请求与供应商配置的已入账响应；此恢复入口没有预留或网络路径。
+
+        已知响应先settle而Agent checkpoint未保存时，恢复可继续原步骤。若配置变化、
+        原attempt不存在、pending或unknown，必须等待处理，不能生成新hash再次计费。
+        调用者负责每次恢复前重验当前权限/取消/租约，本方法只管理账本身份。
+        """
+        request_hash = sha256(canonical([messages, tools, provider.metadata]).encode()).hexdigest()
+        attempt_id = sha256((run_id + ":" + request_hash).encode()).hexdigest()
+        row = self.db.execute("SELECT * FROM attempts WHERE id=?", (attempt_id,)).fetchone()
+        if row is None or (row["workspace_id"], row["run_id"], row["request_hash"]) != (workspace_id, run_id, request_hash):
+            raise BudgetError("checkpoint_request_mismatch")
+        if row["state"] in ("pending", "unknown"):
+            raise BudgetError("billing_unknown")
+        if row["state"] != "settled":
+            raise BudgetError("checkpoint_request_not_dispatched")
+        return json.loads(row["response"])

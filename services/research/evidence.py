@@ -11,7 +11,7 @@ import json
 import math
 import re
 
-VERSION = "frozen-evidence-v1"
+VERSION = "frozen-evidence-v2"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))

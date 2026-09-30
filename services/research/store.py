@@ -4,6 +4,7 @@
 外部调用可能已经计费，由独立预算账本负责恢复语义。SQLite 仅为本地验证环境。
 """
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -49,6 +50,8 @@ class ResearchStore:
                             "next_attempt_at REAL NOT NULL DEFAULT 0, UNIQUE(workspace_id,command_key))")
             self.db.execute("CREATE TABLE IF NOT EXISTS reports(run_id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,"
                             "payload TEXT NOT NULL,trace TEXT NOT NULL,quality TEXT NOT NULL,created_at REAL NOT NULL)")
+            self.db.execute("CREATE TABLE IF NOT EXISTS cancel_commands(workspace_id TEXT NOT NULL,command_key TEXT NOT NULL,"
+                            "actor_id TEXT NOT NULL,run_id TEXT NOT NULL,PRIMARY KEY(workspace_id,command_key))")
             self.db.execute("CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL,"
                             "workspace_id TEXT NOT NULL,state TEXT NOT NULL,reason TEXT,version INTEGER NOT NULL,recorded_at REAL NOT NULL)")
             self.db.execute("CREATE INDEX IF NOT EXISTS research_queue ON runs(state,next_attempt_at,lease_until,created_at)")
@@ -113,7 +116,11 @@ class ResearchStore:
     def public(self, workspace_id, run_id):
         row = self._row(workspace_id, run_id)
         manifest, request = json.loads(row["manifest"]), json.loads(row["request"])
-        result = {k: row[k] for k in ("id", "workspace_id", "actor_id", "state", "reason", "version", "created_at", "updated_at", "retry_count")}
+        result = {k: row[k] for k in ("id", "workspace_id", "actor_id", "state", "reason", "version", "retry_count")}
+        # 库内epoch便于租约比较；边界统一UTC ISO8601，避免浏览器猜秒/毫秒和本地时区。
+        result.update({key: datetime.fromtimestamp(row[key], timezone.utc).isoformat().replace("+00:00", "Z")
+                       for key in ("created_at", "updated_at")})
+        result["freshness"] = {"profile": "not_checked", "catalog": "not_checked"}
         result.update({"kind": request.get("kind", "analysis"), "mode": request.get("mode", "agent"),
                        "notice_id": request["notice_id"], "profile_revision": manifest["profile"]["revision"],
                        "parent_run_id": request.get("parent_run_id"), "report": None, "trace": [], "quality": None})
@@ -214,10 +221,19 @@ class ResearchStore:
                             (state, reason, now, retries, now + min(30, 5 * retries), run["id"]))
             self._event(run["id"])
 
-    def cancel(self, workspace_id, run_id):
+    def cancel(self, workspace_id, run_id, *, actor_id=None, key=None):
         """取消幂等且持久；不会删除已完成报告，也不能声称撤回已发送模型请求。"""
         with self.transaction():
             row = self._row(workspace_id, run_id)
+            if actor_id is not None or key is not None:
+                if any(not isinstance(value, str) or not 1 <= len(value) <= 128 for value in (actor_id, key)):
+                    raise ResearchError("invalid_input", 400)
+                previous = self.db.execute("SELECT actor_id,run_id FROM cancel_commands WHERE workspace_id=? AND command_key=?",
+                                           (workspace_id, key)).fetchone()
+                if previous is not None and tuple(previous) != (actor_id, run_id):
+                    raise ResearchError("idempotency_conflict")
+                # 命令身份与取消动作同事务落盘；丢响应后同key不能悄悄指向另一个任务。
+                self.db.execute("INSERT OR IGNORE INTO cancel_commands VALUES(?,?,?,?)", (workspace_id, key, actor_id, run_id))
             if row["state"] not in TERMINAL:
                 self.db.execute("UPDATE runs SET state='cancelled',reason='user_cancelled',version=version+1,updated_at=?,lease_until=NULL WHERE id=?",
                                 (time.time(), run_id))

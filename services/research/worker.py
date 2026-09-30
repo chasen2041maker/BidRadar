@@ -23,22 +23,31 @@ def tick(root, access, catalog, tracking, provider, budget_path, *, worker_id="r
         run = store.claim(worker_id)
         if run is None:
             return None
-        service = ResearchService(store, access, catalog, tracking, config=config)
-        guard = lambda action: service.guard(run, action)
         ledger = None
         try:
+            service = ResearchService(store, access, catalog, tracking, config=config)
+            guard = lambda action: service.guard(run, action)
             guard("start")
             if run["request"]["mode"] == "baseline":
                 result = run_baseline(run["manifest"])
             else:
                 if provider is None:
                     raise ResearchError("model_not_configured")
+                if provider.metadata.get("provider") == "deepseek" and any(
+                        provider.metadata.get(key) != run["manifest"]["config"][key]
+                        for key in ("requested_model", "official_resolution", "price_version", "thinking", "max_output_tokens")):
+                    raise ResearchError("configuration_changed")
                 ledger = BudgetLedger(budget_path)
                 def complete(messages, tools):
                     # 全量消息统一最小化后才估算/生成计费身份；provider内再兜底脱敏。
                     clean_messages, clean_tools = prepare_egress(messages, tools)
                     return ledger.complete(provider, run["workspace_id"], run["id"], clean_messages, clean_tools,
                                            guard=guard, estimate=estimate_reservation, cost=usage_cost)
+                def replay(messages, tools):
+                    guard("before_model_replay")
+                    clean_messages, clean_tools = prepare_egress(messages, tools)
+                    return ledger.replay(provider, run["workspace_id"], run["id"], clean_messages, clean_tools)
+                complete.replay = replay  # 可信恢复能力，不来自模型/JSON；没有新增外发或预留路径。
                 def checkpoint(value):
                     guard("checkpoint")
                     store.checkpoint(run, value)
@@ -50,13 +59,19 @@ def tick(root, access, catalog, tracking, provider, budget_path, *, worker_id="r
             store.finish(run, result)
         except (ResearchError, LocalHTTPError, BudgetError, ProviderError, EvidenceError) as exc:
             code = getattr(exc, "code", "research_failed")
+            if code == "model_outcome_unknown":
+                # 模型响应可能已在账本settled，只是Agent尚未应用checkpoint；这不等于
+                # 账单未知。当前保守等待人工新命令，不盲重发，也不虚构一次退款/失败响应。
+                code = "checkpoint_incomplete_no_replay"
             # 用户动作可解决的终态明确标原因；等待不会靠重新加入公司自行恢复。
             wait = {"authorization_changed", "profile_revision_changed", "delegation_invalid", "not_found", "forbidden",
-                    "budget_exhausted", "budget_suspended", "billing_unknown", "model_not_configured"}
+                    "budget_exhausted", "budget_suspended", "billing_unknown", "model_not_configured",
+                    "checkpoint_incomplete_no_replay", "checkpoint_request_mismatch", "checkpoint_request_not_dispatched",
+                    "configuration_changed"}
             if isinstance(exc, LocalHTTPError) and exc.status >= 500:
                 state = "retry_wait"
             else:
-                state = "waiting_input" if code in wait else "failed"
+                state = "waiting_input" if code in wait or isinstance(exc, ProviderError) and exc.usage_unknown else "failed"
             try:
                 store.stop(run, state, code)
             except ResearchError as stale:
