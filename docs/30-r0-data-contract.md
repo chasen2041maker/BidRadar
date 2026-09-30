@@ -10,7 +10,7 @@ v1证据包最多100条记录（天津最多5页×20行），最多32MiB。raw_e
 
 processing输出normalized_observations v1，冻结normalizer_version、事实与证据、观察哈希。catalog整包验证后事务写入；同观察重复导入不增加历史，未知契约版本拒绝。CLI错误退出4；获取状态沿用0成功、2部分、3阻塞、4失败、5取消、6未结束。导出和处理退出0表示契约处理成功，不把其中的failed/blocked来源状态抹掉。
 
-## 天津首源：已选定，真实契约待账号验收
+## 天津首源：已选定，真实数据响应仍受阻
 
 负责人09-30明确采用天津官方免费接口。核对：[政府采购竞争性谈判公告接口](https://open.data.tj.gov.cn/sjjk/addbe9f2805346c28d4b639311e6e68a.htm)、[网站声明](https://open.data.tj.gov.cn/xgxx/wzsm/index.htm)、[常见问题](https://open.data.tj.gov.cn/hdjl/cjwt/index.htm)、[2022手册](https://open.data.tj.gov.cn/docs/2022-11/d72a65c5684b4f92aea777b947ee944d.pdf)。文档HTTP200读取证据保存于本机忽略目录research；不提交含联系人信息的网页预览。
 
@@ -18,7 +18,13 @@ processing输出normalized_observations v1，冻结normalizer_version、事实�
 
 固定API资源：`https://open.data.tj.gov.cn/api/invoke/addbe9f2805346c28d4b639311e6e68a`。官方GET/POST、JSON/UTF-8；实现用GET。`page`是每页条数（官方上限5000，本地限20），`pageNum`是页码，`authToken`是令牌。没有已确认的关键词/排序参数，当前取有限页，在目录按标题筛选；不宣称最新或全量覆盖。默认网络关闭，显式--allow-network才读取凭据，默认位于用户主目录`.bidradar/credentials/tianjin-token.txt`，不得提交。
 
-2022手册称用户中心注册开发者可取token；09-30实际登录后的页面还要求开发者名称、身份、单位/公司、专业、研究领域、邮箱、验证码，由负责人自行如实填写。仅登录不等于已取得API资格。是否立即签发/需审核，以实际结果为准。
+09-30负责人已自行完成账号与开发者注册，并授权使用本机仓库外令牌。注册成功弹窗、重新打开的开发者页面及本机凭据一致；页面显示每日20次、有效期至2026-12-29。该额度按账号共享，不等于每个运行有20次；本地单次5请求限制也不等于已实现账号全局日额度账本，其他程序/官网测试的消耗未知。
+
+真实验证出现平台状态不一致：开发者页确认已注册，官方在线测试先提示需要注册开发者；负责人重新登录后在线测试提示null。前后各一次正式API请求均HTTP200、业务code=500，msg为“令牌不合法【失效或被禁用】”。拒绝立即停止后续页，不自动重试；不能据此推断审核未过、注册失败或自行换凭据。需平台确认令牌状态，接口有效前不扩大真实采样。
+
+本机系统DNS把官方域名解析为198.18.1.97（非公网），原公网检查正确拦截。新增显式`--dns-mode google-doh`，默认仍system；只向固定Google HTTPS解析服务查询官方公开域名，不发送令牌，不改系统网络设置，不接受任意解析器/目标，不自动降级。核对Question/Status/截断/重复键、同名A记录、正TTL及全部地址为公网；当前不支持CNAME，遇到即停止。每页重新解析、不缓存IP，固定数字IP连接且TLS校验原域名。依据为[Google官方DoH JSON契约](https://developers.google.com/speed/public-dns/docs/doh/json)。
+
+DNS模式写入任务请求：旧请求缺省为system，恢复时沿用原模式；更换模式须新幂等键，终态仍不可恢复。DoH最多64KiB、10秒、不重试/跳转；单次最多5次DNS HTTPS和5次数据API，二者共用运行180秒启动预算，数据请求前仍检查取消/期限。parser升级tj-open-data-v2，将已实测的code500/明确令牌拒绝文本标为api_credential_rejected，其他业务错误保留api_business_error；旧捕获与旧解析结果不覆盖，重放返回新解析版本。
 
 准入复核窗口为2026-09-30至2026-10-30（结束不含），过期先重查来源条件。不读取浏览器Cookie/代理，不跳转，不自动重试拒绝。固定域名、公网DNS检查、固定IP/TLS校验、每次请求前取消检查、1秒间隔、单页4MiB/单次5请求、180秒启动后预算；在途请求超时20秒。令牌不进入任务、URL日志、原件元数据；响应在字节和JSON解码后的键/字符串中回显令牌则拒绝保存；重复JSON键/非法JSON在安全检查时拒绝归档；HTTP启动前再次检查时间预算。
 

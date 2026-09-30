@@ -21,7 +21,7 @@ RESOURCE_ID = "addbe9f2805346c28d4b639311e6e68a"
 HOST = "open.data.tj.gov.cn"
 ENDPOINT = f"https://{HOST}/api/invoke/{RESOURCE_ID}"
 RESOURCE_URL = f"https://{HOST}/sjjk/{RESOURCE_ID}.htm"
-PARSER_VERSION = "tj-open-data-v1"
+PARSER_VERSION = "tj-open-data-v2"
 ATTRIBUTION = "天津市信息资源统一开放平台"
 DEFAULT_TOKEN_FILE = Path.home() / ".bidradar" / "credentials" / "tianjin-token.txt"
 MAX_BYTES = 4 * 1024 * 1024
@@ -37,15 +37,69 @@ def _unique_object(pairs):
     return result
 
 
-def request_spec(*, start_page=1, pages=1, page_size=10):
+def resolve_public_dns(host, port, timeout, *, exchange=None):
+    """显式DoH兼容本机fake-IP DNS；只解析官方公开域名，绝不携带API令牌。
+
+    Google端连接固定公网IP并校验dns.google证书；返回值仍须通过官方域名/
+    公网检查。当前只接收直接A记录，不追踪CNAME或重定向，不缓存临时IP。
+    """
+    if host != HOST or port != 443:
+        raise FetchError("dns_target_not_allowed")
+    url = "https://dns.google/resolve?" + urlencode(
+        {"name": HOST, "type": "A", "edns_client_subnet": "0.0.0.0/0"})
+    try:
+        status, headers, body = (exchange or _exchange)(url, "8.8.8.8", min(timeout, 10), 65536)
+    except Exception:
+        raise FetchError("doh_transport_error") from None
+    if status != 200 or len(body) > 65536:
+        raise FetchError("doh_response_rejected")
+    if headers.get("content-type", "").split(";", 1)[0].strip().lower() not in (
+            "application/json", "application/x-javascript"):
+        raise FetchError("doh_response_rejected")
+    try:
+        value = json.loads(body.decode("utf-8"), object_pairs_hook=_unique_object)
+        if (not isinstance(value, dict) or type(value.get("Status")) is not int
+                or value["Status"] != 0 or value.get("TC") is not False
+                or value.get("CD") is not False):
+            raise ValueError()
+        questions, answers = value.get("Question"), value.get("Answer")
+        if (not isinstance(questions, list) or len(questions) != 1
+                or not isinstance(questions[0], dict)
+                or questions[0].get("name", "").lower() != HOST + "."
+                or type(questions[0].get("type")) is not int or questions[0]["type"] != 1
+                or not isinstance(answers, list) or not 1 <= len(answers) <= 16):
+            raise ValueError()
+        addresses = []
+        for answer in answers:
+            if (not isinstance(answer, dict) or answer.get("name", "").lower() != HOST + "."
+                    or type(answer.get("type")) is not int or answer["type"] != 1
+                    or type(answer.get("TTL")) is not int or answer["TTL"] <= 0
+                    or not isinstance(answer.get("data"), str)):
+                raise ValueError()
+            address = ipaddress.ip_address(answer["data"])
+            if address.version != 4 or not _public_unicast(address):
+                raise ValueError()
+            addresses.append(str(address))
+        return addresses
+    except (ValueError, TypeError, AttributeError, UnicodeError, RecursionError):
+        raise FetchError("doh_response_rejected") from None
+
+
+def request_spec(*, start_page=1, pages=1, page_size=10, dns_mode="system"):
     for name, value, maximum in (("start_page", start_page, 10000), ("pages", pages, 5),
                                   ("page_size", page_size, 20)):
         if type(value) is not int or not 1 <= value <= maximum:
             raise ValueError(f"invalid_{name}")
     if start_page + pages - 1 > 10000:
         raise ValueError("page_range_exceeded")
-    return {"schema_version": 1, "source_id": SOURCE_ID, "start_page": start_page,
+    if dns_mode not in ("system", "google-doh"):
+        raise ValueError("invalid_dns_mode")
+    request = {"schema_version": 1, "source_id": SOURCE_ID, "start_page": start_page,
             "pages": pages, "page_size": page_size, "simulation": False}
+    # 缺省system保持v1旧请求的幂等内容；启用DoH才加入新选项，恢复不静默换模式。
+    if dns_mode != "system":
+        request["dns_mode"] = dns_mode
+    return request
 
 
 def page_url(page_number, page_size):
@@ -60,10 +114,13 @@ class TianjinTransport:
     用户仍须自行注册开发者。联网默认关闭；不跳转、不代理、不自动重试认证失败。
     """
     def __init__(self, *, allow_network=False, token_file=DEFAULT_TOKEN_FILE,
-                 exchange=None, resolver=None):
+                 exchange=None, resolver=None, dns_mode="system"):
+        if dns_mode not in ("system", "google-doh"):
+            raise ValueError("invalid_dns_mode")
         self.allow_network = allow_network
         self.token_file = Path(token_file)
-        self.exchange, self.resolver = exchange or _exchange, resolver or _resolve
+        self.exchange = exchange or _exchange
+        self.resolver = resolver or (resolve_public_dns if dns_mode == "google-doh" else _resolve)
         self.calls, self.started = 0, time.monotonic()
         self.last_request = None
 
@@ -156,7 +213,10 @@ def parse_page(body: bytes, page_size: int) -> dict:
     if not isinstance(value, dict) or type(value.get("code")) is not int:
         return {"status": "parse_error", "issues": ["api_schema_unverified"]}
     if value["code"] != 200:
-        return {"status": "blocked", "issues": ["api_business_error"]}
+        # 只映射已实测的精确错误；不把未知500猜成令牌失效，也不输出任意msg。
+        issue = ("api_credential_rejected" if value["code"] == 500
+                 and value.get("msg") == "令牌不合法【失效或被禁用】" else "api_business_error")
+        return {"status": "blocked", "issues": [issue]}
     columns, rows, total = value.get("columnNames"), value.get("list"), value.get("totalCount")
     if (not isinstance(columns, list) or not 1 <= len(columns) <= 100
             or any(not isinstance(c, str) or not c.strip() or len(c) > 100 for c in columns)
@@ -216,12 +276,12 @@ def execute(store, run_id, transport):
             within_limit = page + 1 < req["start_page"] + req["pages"]
             parsed["page_number"] = page
             parsed["more_outside_run_limit"] = more and not within_limit
-            error = parsed["status"] if parsed["status"] in ("parse_error", "blocked") else None
+            error = parsed["issues"][0] if parsed["status"] in ("parse_error", "blocked") else None
             store.record(run_id, token, item, response=response, parsed=parsed,
                          parser_version=PARSER_VERSION, error=error,
                          following=[task(page + 1)] if more and within_limit else [])
             if error:
-                store.finish(run_id, token, "blocked" if error == "blocked" else "failed", parsed["issues"][0])
+                store.finish(run_id, token, "blocked" if parsed["status"] == "blocked" else "failed", error)
                 return store.report(run_id)
         store.finish(run_id, token, "succeeded")
         return store.report(run_id)

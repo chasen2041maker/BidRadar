@@ -39,11 +39,15 @@ def main(argv=None) -> int:
     tj.add_argument("--page-size", type=int, default=10)
     tj.add_argument("--allow-network", action="store_true")
     tj.add_argument("--token-file", type=Path)
+    tj.add_argument("--dns-mode", choices=("system", "google-doh"), default="system",
+                    help="显式选择公网DNS解析；默认系统DNS，不自动降级")
     resume = commands.add_parser("resume", help="仅恢复中断的同一运行；终态不自动重试")
     resume.add_argument("run_id")
     resume.add_argument("--policy", type=Path)
     resume.add_argument("--allow-network", action="store_true")
     resume.add_argument("--token-file", type=Path)
+    resume.add_argument("--dns-mode", choices=("system", "google-doh"),
+                        help="仅可与原天津运行一致；默认沿用已保存模式")
     for name in ("show", "cancel"):
         commands.add_parser(name).add_argument("run_id")
     commands.add_parser("replay", help="校验原件后离线重解析，不覆盖历史").add_argument("capture_id")
@@ -62,11 +66,13 @@ def main(argv=None) -> int:
         store = Store(args.store)
         if args.command == "collect-tianjin":
             from services.ingestion import tianjin
-            request = tianjin.request_spec(start_page=args.start_page, pages=args.pages, page_size=args.page_size)
+            request = tianjin.request_spec(start_page=args.start_page, pages=args.pages,
+                                          page_size=args.page_size, dns_mode=args.dns_mode)
             run_id, created = store.create_run(request, args.key)
             emit({"event": "run_registered", "run_id": run_id, "created": created, "simulation": False})
             transport = tianjin.TianjinTransport(allow_network=args.allow_network,
-                                               token_file=args.token_file or tianjin.DEFAULT_TOKEN_FILE)
+                                               token_file=args.token_file or tianjin.DEFAULT_TOKEN_FILE,
+                                               dns_mode=args.dns_mode)
             report = tianjin.execute(store, run_id, transport)
         elif args.command in ("collect", "demo"):
             if args.command == "demo":
@@ -84,8 +90,12 @@ def main(argv=None) -> int:
         elif args.command == "resume":
             from services.ingestion import tianjin
             if store.run(args.run_id)["request"].get("source_id") == tianjin.SOURCE_ID:
+                dns_mode = store.run(args.run_id)["request"].get("dns_mode", "system")
+                if args.dns_mode is not None and args.dns_mode != dns_mode:
+                    raise ValueError("dns_mode_must_match_run")
                 transport = tianjin.TianjinTransport(allow_network=args.allow_network,
-                                                   token_file=args.token_file or tianjin.DEFAULT_TOKEN_FILE)
+                                                   token_file=args.token_file or tianjin.DEFAULT_TOKEN_FILE,
+                                                   dns_mode=dns_mode)
                 report = tianjin.execute(store, args.run_id, transport)
             elif store.run(args.run_id)["request"].get("simulation"):
                 from services.ingestion.demo import DemoTransport

@@ -162,6 +162,13 @@ class TianjinTransportTests(unittest.TestCase):
 
 
 class TianjinParsingTests(unittest.TestCase):
+    def test_observed_http_200_credential_rejection_is_a_typed_business_failure(self):
+        body = json.dumps({"code": 500, "msg": "令牌不合法【失效或被禁用】", "data": None}).encode()
+        self.assertEqual(tj.parse_page(body, 2),
+                         {"status": "blocked", "issues": ["api_credential_rejected"]})
+        # 不因500就猜成令牌错误；官方未知消息不回显到目录日志。
+        self.assertEqual(tj.parse_page(b'{"code":500,"msg":"unknown"}', 2)["issues"], ["api_business_error"])
+
     def test_zero_result_differs_from_business_error_and_preview(self):
         self.assertEqual(tj.parse_page(response_body(rows=[], total=0), 10)["status"], "empty")
         self.assertEqual(tj.parse_page(b'{"code":401,"msg":"denied"}', 10)["status"], "blocked")
@@ -283,6 +290,27 @@ class TianjinPipelineTests(unittest.TestCase):
         empty = tj.execute(self.store, self.run_id("empty"), FakeTianjin(response_body(rows=[], total=0)))
         self.assertEqual(empty["run"]["status"], "succeeded")
         self.assertEqual(export_bundle(self.store, empty["run"]["id"])["documents"], [])
+
+    def test_credential_failure_stops_pages_and_survives_catalog_import(self):
+        body = json.dumps({"code": 500, "msg": "令牌不合法【失效或被禁用】", "data": None}).encode()
+        fake = FakeTianjin(body)
+        run = self.run_id(pages=2, page_size=2)
+        report = tj.execute(self.store, run, fake)
+        self.assertEqual(fake.calls, [1])
+        self.assertEqual(report["run"]["status"], "blocked")
+        self.assertEqual(report["captures"][0]["error_code"], "api_credential_rejected")
+        self.assertEqual(self.store.read_blob(report["captures"][0]["sha256"]), body)
+        bundle = normalize_bundle(export_bundle(self.store, run))
+        catalog = Catalog(Path(self.temp.name) / "denied-catalog")
+        try:
+            catalog.import_bundle(bundle)
+            query = catalog.query(simulation=True)
+            self.assertEqual(query["total"], 0)
+            # 空目录仍明确显示来源被拒绝；不能把这一页当作成功的零商机结果。
+            self.assertEqual(query["recent_runs"][0]["run_status"], "blocked")
+            self.assertEqual(query["recent_runs"][0]["failures"], 1)
+        finally:
+            catalog.close()
 
     def test_empty_page_with_remaining_total_is_failure_not_zero_result(self):
         report = tj.execute(self.store, self.run_id(), FakeTianjin(response_body(rows=[], total=10)))
