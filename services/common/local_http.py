@@ -10,8 +10,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
 import re
+import socket
 import time
 from urllib.parse import urlsplit
+
+BODY_TIMEOUT = 10.0
+REJECT_DRAIN_TIMEOUT = 0.25
+REJECT_DRAIN_BYTES = 64 * 1024
 
 
 class LocalHTTPError(Exception):
@@ -132,6 +137,50 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
+    def _read_body(self, expected):
+        """请求体既有字节上限，也有总截止；不断送少量字节不能刷新十秒预算。"""
+        deadline, body = time.monotonic() + BODY_TIMEOUT, bytearray()
+        while len(body) < expected:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            self.connection.settimeout(remaining)
+            chunk = self.rfile.read1(min(65536, expected - len(body)))
+            if not chunk:
+                raise LocalHTTPError("incomplete_body", 400)
+            body.extend(chunk)
+            self._body_received += len(chunk)
+        return bytes(body)
+
+    def _discard_unread_body(self):
+        """响应后只丢弃有界迟到字节，避免Windows未读body早关闭造成连接中止。
+
+        这不是第二次解析机会：Host、身份、报文边界仍先拒绝，丢弃内容不进入业务。
+        长度明确时最多读剩余body；歧义framing仅做有限丢弃，绝不解释chunk或下一请求。
+        超过64KiB或250ms即关闭，不承诺无限/严重迟到发送者仍能收到完整响应。
+        """
+        lengths = self.headers.get_all("Content-Length", [])
+        if not lengths and self.headers.get("Transfer-Encoding") is None:
+            return
+        limit = min(REJECT_DRAIN_BYTES, self.server.max_bytes)
+        if (self.headers.get("Transfer-Encoding") is None and len(lengths) == 1
+                and re.fullmatch(r"[0-9]{1,10}", lengths[0])):
+            limit = min(limit, max(0, int(lengths[0]) - self._body_received))
+        deadline = time.monotonic() + REJECT_DRAIN_TIMEOUT
+        try:
+            while limit:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.connection.settimeout(remaining)
+                chunk = self.rfile.read1(min(8192, limit))
+                if not chunk:
+                    break
+                limit -= len(chunk)
+        except OSError:
+            # 超时/对端断开只结束清理，不覆盖已经写出的错误，更不能重入业务。
+            pass
+
     def _send(self, status, value):
         raw = encode(value)
         if len(raw) > self.server.max_bytes:
@@ -141,10 +190,20 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(raw)
+        self.wfile.flush()
+        self.close_connection = True
+        # 先交付响应并半关闭写端，再接收有限尾部；不能立即全关闭尚有在途body的socket。
+        try:
+            self.connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            return
+        self._discard_unread_body()
 
     def _handle(self):
+        self._body_received = 0
         try:
             if self.headers.get_all("Host") != [self.server.authority] or len(self.path) > 8192:
                 raise LocalHTTPError("invalid_host", 400)
@@ -169,9 +228,7 @@ class _Handler(BaseHTTPRequestHandler):
                     raise LocalHTTPError("invalid_length", 400)
                 if self.headers.get_all("Content-Type") != ["application/json"]:
                     raise LocalHTTPError("json_required", 415)
-                raw = self.rfile.read(int(lengths[0]))
-                if len(raw) != int(lengths[0]):
-                    raise LocalHTTPError("incomplete_body", 400)
+                raw = self._read_body(int(lengths[0]))
                 data = decode(raw)
             elif lengths and lengths != ["0"]:
                 raise LocalHTTPError("unexpected_body", 400)
