@@ -97,8 +97,16 @@ def main(argv=None):
     deadline = time.monotonic() + args.wait_seconds
     while True:
         runs = [request(prefix + "research/runs/" + run["id"]) for run in runs]
+        # 比较的是用户实际看到的报告；partial通常是规则降级，引用合法不等于AI候选通过。
+        # 明列发布来源，避免CLI退出0或基线的正确引用被误记为真实AI质量验收。
+        outcomes = [{"id": run["id"], "state": run["state"], "mode": run["mode"], "reason": run["reason"],
+                     "ai_verified": bool((run.get("quality") or {}).get("verified")),
+                     "published_kind": ("verified_agent" if (run.get("quality") or {}).get("verified") else
+                                        "rule_baseline" if run["mode"] == "baseline" else
+                                        "conservative_fallback" if run.get("report") else "no_report")}
+                    for run in runs]
         record = {"case_key": args.case_key, "workspace_id": wid, "sample_source": "catalog_frozen",
-                  "recorded_at": time.time(), "runs": runs, "comparison": None}
+                  "recorded_at": time.time(), "runs": runs, "outcomes": outcomes, "comparison": None}
         # 此CLI是research所属验收工具，只读本服务自身任务库来核验冻结输入；不跨服务读库。
         with closing(ResearchStore(root / "research")) as store:
             manifests = [store.load(wid, run["id"])["manifest"] for run in runs]
@@ -112,7 +120,7 @@ def main(argv=None):
                 or time.monotonic() >= deadline):
             break
         time.sleep(2)
-    print(json.dumps({"file": str(output), "runs": [{k: run[k] for k in ("id", "state", "mode", "reason")} for run in runs],
+    print(json.dumps({"file": str(output), "runs": outcomes,
                       "budget": request(prefix + "research/budget")}, ensure_ascii=False))
     return 0
 
