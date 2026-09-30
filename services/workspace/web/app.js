@@ -212,10 +212,10 @@ async function loadBudget() {
   const container = $("research-budget");
   try {
     const result = await api(path("research/budget")); container.replaceChildren();
-    const values = [["本轮费用保护值", yuan(result.cap)], ["公司保护值", yuan(result.workspace_cap)], ["单任务保护值", yuan(result.run_cap)], ["已计入 / 已预留", yuan(result.charged_or_reserved)], ["调用记录 / 费用未知", `${valueText(result.attempts)} / ${valueText(result.unknown_attempts)}`], ["输入 / 输出 tokens", `${valueText(result.input_tokens)} / ${valueText(result.output_tokens)}`]];
+    const values = [["本轮总费用保护值", yuan(result.cap)], ["公司保护值", yuan(result.workspace_cap)], ["单任务保护值", yuan(result.run_cap)], ["本公司已计入 / 已预留", yuan(result.charged_or_reserved)], ["本公司调用 / 费用未定", `${valueText(result.attempts)} / ${valueText(result.unknown_attempts)}`], ["本公司输入 / 输出 tokens", `${valueText(result.input_tokens)} / ${valueText(result.output_tokens)}`]];
     for (const [title, value] of values) {const box = el("div"); box.append(el("span", title), el("strong", value)); container.append(box);}
     const costBasis = result.cost_basis === "conservative_peak_estimate" ? "按峰时价格保守估算" : "待核对";
-    container.append(el("p", "费用口径：" + costBasis + "。这里包含必要预留，不代表供应商已结算账单。", "muted budget-basis"));
+    container.append(el("p", "费用口径：" + costBasis + "。用量仅统计本公司，包含在途及费用未定的预留；不能据此计算本轮总剩余额度，也不代表供应商已结算账单。", "muted budget-basis"));
   } catch (error) {if (error.discarded) return; container.replaceChildren(el("p", "费用信息暂时不可用；不能把未知费用视为零。" + error.message, "error"));}
 }
 function latestRunStatus(run) {
