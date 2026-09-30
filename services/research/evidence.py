@@ -6,12 +6,13 @@ PDF 已归档不能变成全文已读；去除联系信息后的每个片段仍�
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal
 from hashlib import sha256
 import json
 import math
 import re
 
-VERSION = "frozen-evidence-v3"
+VERSION = "frozen-evidence-v4"
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 PROFILE_FIELDS = frozenset(("company_name", "city", "project_types", "capabilities", "delivery_constraints",
                             "cases", "qualifications", "staffing", "commercial_constraints"))
@@ -267,6 +268,22 @@ def _unsupported_completeness(text):
     return False
 
 
+def _numbers(text):
+    """仅规范数值本身的前导/尾随零；不把元数据或没有引用的数字加入事实池。"""
+    return {Decimal(value) for value in re.findall(r"(?<!\d)[+-]?\d+(?:\.\d+)?", text)}
+
+
+def _number_units(text):
+    """等值尾零不能偷换金额/百分比/时长单位；日期角色与语义仍须模型复核。
+
+    完整中文日期不当成若干个时长。这里不做万元→元换算，只允许日/天和全角百分号
+    的同义写法；数值相同、单位不同仍拒绝，避免Decimal放宽成金额口径放水。
+    """
+    without_dates = re.sub(r"(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日", "", text)
+    return {(Decimal(number), {"日": "天", "％": "%"}.get(unit, unit))
+            for number, unit in re.findall(r"(?<!\d)([+-]?\d+(?:\.\d+)?)\s*(亿元|万元|元|小时|分钟|天|日|周|%|％)", without_dates)}
+
+
 def validate_report(report, index, read_ids):
     """机械校验不等于语义证明；错误只返回码，避免不可信文本进入修订指令。"""
     errors = []
@@ -284,7 +301,9 @@ def validate_report(report, index, read_ids):
         errors.append("report_contact_information")
     if _unsupported_completeness(canonical(report)):
         errors.append("unsupported_completeness")
-    supported_numbers = set()
+    if re.search(r"notice_id|observation_id|evidence_id|raw_sha256|\brevision\b|profile_revision|catalog_snapshot|category_available_count", report["summary"], re.I):
+        errors.append("summary_contains_metadata")
+    supported_numbers, supported_units = set(), set()
     for i, finding in enumerate(report["findings"]):
         prefix = "finding_" + str(i) + "_"
         if (not isinstance(finding, dict) or set(finding) != {"category", "requirement", "status", "reason", "evidence_ids", "profile_fields", "unknown_reason"}
@@ -316,15 +335,21 @@ def validate_report(report, index, read_ids):
                 errors.append(prefix + "qualification_not_verified")
         evidence_text = " ".join(index.by_id[x]["text"] for x in ids)
         profile_text = " ".join(index.profile[x] or "" for x in finding["profile_fields"])
-        number_pool = set(re.findall(r"\d+(?:\.\d+)?", evidence_text + " " + profile_text))
+        number_pool = _numbers(evidence_text + " " + profile_text)
         supported_numbers.update(number_pool)
-        mentioned = set(re.findall(r"\d+(?:\.\d+)?", finding["requirement"] + " " + finding["reason"]))
+        unit_pool = _number_units(evidence_text + " " + profile_text)
+        supported_units.update(unit_pool)
+        mentioned = _numbers(finding["requirement"] + " " + finding["reason"])
         if not mentioned.issubset(number_pool):
             errors.append(prefix + "unsupported_number")
+        if not _number_units(finding["requirement"] + " " + finding["reason"]).issubset(unit_pool):
+            errors.append(prefix + "unsupported_numeric_unit")
     # 摘要/追问回答也不能悄悄增加数字事实；含义与日期角色仍交由独立语义节点核验。
     for field in ("summary", "answer"):
-        if not set(re.findall(r"\d+(?:\.\d+)?", report[field] or "")).issubset(supported_numbers):
+        if not _numbers(report[field] or "").issubset(supported_numbers):
             errors.append(field + "_unsupported_number")
+        if not _number_units(report[field] or "").issubset(supported_units):
+            errors.append(field + "_unsupported_numeric_unit")
     return errors
 
 

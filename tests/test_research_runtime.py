@@ -74,7 +74,8 @@ class FakeProvider:
             report = json.loads(messages[1]["content"])["report"]
             message = {"role": "assistant", "content": json.dumps({"checks": [
                 {"finding_index": i, "verdict": "supported", "reason": "脚本仅核验协议，不是人工语义真值。"}
-                for i in range(len(report["findings"]))], "summary_supported": True, "answer_supported": True})}
+                for i in range(len(report["findings"]))], "summary_supported": True, "answer_supported": True,
+                "questions_supported": True, "report_issues": []})}
             finish = "stop"
         else:
             evidence = []
