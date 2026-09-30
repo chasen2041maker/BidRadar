@@ -8,7 +8,7 @@ import sqlite3
 import sys
 
 from services.ingestion.archive import Store, StoreError
-from services.ingestion.pipeline import execute, replay, request_spec
+from services.ingestion.pipeline import execute, replay, request_spec, public_request_spec
 from services.ingestion.transport import FetchError, SourcePolicy, Transport
 
 
@@ -32,6 +32,21 @@ def main(argv=None) -> int:
     collect.add_argument("--start-date")
     collect.add_argument("--end-date")
     collect.add_argument("--policy", type=Path)
+    public = commands.add_parser("collect-public", help="CCGP/海南公开栏目有限获取；显式联网与有效policy均必需")
+    public.add_argument("--source", choices=("ccgp", "hainan"), required=True)
+    public_entry = public.add_mutually_exclusive_group(required=True)
+    public_entry.add_argument("--category", help="CCGP如zygg/jzxcs；海南如cggg")
+    public_entry.add_argument("--notice-url", action="append", default=[])
+    public.add_argument("--key", required=True)
+    public.add_argument("--start-page", type=int, default=1)
+    public.add_argument("--pages", type=int, default=1)
+    public.add_argument("--max-notices", type=int, default=10)
+    public.add_argument("--max-attachments", type=int, default=5)
+    public.add_argument("--attachments", action="store_true")
+    public.add_argument("--title-term", action="append", default=[], help="有限栏目内的标题包含词，多个按或匹配；不等于全网搜索")
+    public.add_argument("--allow-network", action="store_true")
+    public.add_argument("--policy", type=Path)
+    public.add_argument("--dns-mode", choices=("system", "google-doh"), default="system")
     tj = commands.add_parser("collect-tianjin", help="天津官方免费接口有限采样；需本人注册的本地令牌")
     tj.add_argument("--key", required=True)
     tj.add_argument("--resource", choices=("negotiation", "consultation", "correction"), default="negotiation",
@@ -65,6 +80,11 @@ def main(argv=None) -> int:
                                max_notices=args.max_notices, max_attachments=args.max_attachments,
                                attachments=args.attachments, start_date=args.start_date, end_date=args.end_date
                                ) if args.command == "collect" else None
+        if args.command == "collect-public":
+            request = public_request_spec(source_id="cn_ccgp" if args.source == "ccgp" else "cn_hainan",
+                category=args.category, notice_urls=args.notice_url, start_page=args.start_page, pages=args.pages,
+                max_notices=args.max_notices, max_attachments=args.max_attachments, attachments=args.attachments,
+                title_terms=args.title_term, dns_mode=args.dns_mode)
         store = Store(args.store)
         if args.command == "collect-tianjin":
             from services.ingestion import tianjin
@@ -77,7 +97,7 @@ def main(argv=None) -> int:
                                                token_file=args.token_file or tianjin.DEFAULT_TOKEN_FILE,
                                                dns_mode=args.dns_mode, source_id=request["source_id"])
             report = tianjin.execute(store, run_id, transport)
-        elif args.command in ("collect", "demo"):
+        elif args.command in ("collect", "collect-public", "demo"):
             if args.command == "demo":
                 from services.ingestion.demo import DemoTransport, demo_request
                 request = demo_request()
@@ -85,7 +105,9 @@ def main(argv=None) -> int:
                 request["simulation"] = True
                 transport = DemoTransport()
             else:
-                transport = Transport(SourcePolicy.from_file(args.policy) if args.policy else None)
+                transport = Transport(SourcePolicy.from_file(args.policy) if args.policy else None,
+                    dns_mode=args.dns_mode if args.command == "collect-public" else "system",
+                    allow_network=args.allow_network if args.command == "collect-public" else True)
             run_id, created = store.create_run(request, args.key)
             emit({"event": "run_registered", "run_id": run_id, "created": created,
                   "simulation": args.command == "demo"})
@@ -106,7 +128,13 @@ def main(argv=None) -> int:
                 transport = DemoTransport()
                 report = execute(store, args.run_id, transport)
             else:
-                transport = Transport(SourcePolicy.from_file(args.policy) if args.policy else None)
+                request = store.run(args.run_id)["request"]
+                dns_mode = request.get("dns_mode", "system")
+                if args.dns_mode is not None and args.dns_mode != dns_mode:
+                    raise ValueError("dns_mode_must_match_run")
+                transport = Transport(SourcePolicy.from_file(args.policy) if args.policy else None,
+                    dns_mode=dns_mode,
+                    allow_network=args.allow_network if request.get("discovery") == "public_category" else True)
                 report = execute(store, args.run_id, transport)
         elif args.command == "show":
             report = store.report(args.run_id)

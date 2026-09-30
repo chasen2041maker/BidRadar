@@ -16,6 +16,26 @@ def export_bundle(store, run_id: str) -> dict:
     documents, failures = [], []
     source = run["request"].get("source_id", "cn_ccgp")
     acquired = {item["url"]: item for item in report["captures"] if item["kind"] == "attachment"}
+    discovery = {}
+    if source == "cn_hainan":
+        from services.ingestion.sources.public_notices import canonical_notice_url
+        for listing in report["captures"]:
+            if listing["kind"] != "listing" or not listing["sha256"]:
+                continue
+            try:
+                parsed_list = parse_capture("listing", store.read_blob(listing["sha256"]), listing["headers"],
+                                            listing["final_url"] or listing["url"], source)
+            except (ValueError, TypeError, UnicodeError):
+                parsed_list = {"status": "parse_error"}
+            if parsed_list["status"] not in ("ok", "partial", "empty"):
+                failures.append({"capture_id": listing["id"], "url": listing["url"], "error": "export_listing_parse_error"})
+                continue
+            for item in parsed_list.get("items", ()):
+                identity = canonical_notice_url(source, item["url"])
+                if identity and item.get("published_text"):
+                    discovery.setdefault(identity, []).append({"capture_id": listing["id"],
+                        "raw_sha256": listing["sha256"], "url": listing["url"],
+                        "locator": item["locator"], "published_text": item["published_text"]})
     for capture in report["captures"]:
         if capture["error_code"]:
             failures.append({"capture_id": capture["id"], "url": capture["url"], "error": capture["error_code"]})
@@ -48,9 +68,9 @@ def export_bundle(store, run_id: str) -> dict:
                             for column_index, (k, v) in enumerate(fields.items()) if v],
                         "segments": [], "links": [], "attachments": [],
                         "material_status": material_status, "attribution": tianjin.ATTRIBUTION}})
-        elif capture["kind"] == "notice" and source == "cn_ccgp":
+        elif capture["kind"] == "notice" and source in ("cn_ccgp", "cn_hainan"):
             try:
-                content = parse_capture("notice", body, capture["headers"], capture["final_url"] or capture["url"])
+                content = parse_capture("notice", body, capture["headers"], capture["final_url"] or capture["url"], source)
             except (ValueError, TypeError, UnicodeError):
                 content = {"status": "parse_error"}
             if content["status"] not in ("ok", "partial"):
@@ -67,8 +87,21 @@ def export_bundle(store, run_id: str) -> dict:
                                 capture_id=attachment["id"], sha256=attachment["sha256"])
                 else:
                     link["fetch_status"] = original_links.get(link["url"], {}).get("status", "not_fetched")
+            from services.ingestion.sources.public_notices import canonical_notice_url
+            identity = canonical_notice_url(source, capture["final_url"] or capture["url"])
+            if identity is None:
+                raise StoreError("notice_url_outside_source")
+            if discovery.get(identity):
+                # 海南详情不显示发布日期；日期来自已归档列表而非本次获取时间。
+                # 明确写跨原件定位并冻结列表哈希，直接URL入口无列表时保持日期缺失。
+                content["discovery_evidence"] = discovery[identity]
+                content["metadata"] = list(content.get("metadata", ())) + [
+                    {"label": "公告发布时间", "text": evidence["published_text"],
+                     "locator": "capture:" + evidence["capture_id"] + " sha256:" + evidence["raw_sha256"]
+                                + " " + evidence["locator"]}
+                    for evidence in discovery[identity]]
             documents.append({**common, "parser_version": PARSER_VERSION,
-                              "source_record_key": capture["final_url"] or capture["url"],
+                              "source_record_key": identity,
                               "identity_kind": "source_url", "content": content})
     return {"schema_version": 1, "kind": "raw_evidence_bundle", "source_id": source,
             "simulation": run["request"].get("simulation", False),

@@ -1,6 +1,6 @@
 # DATA-001｜真实来源与证据目录
 
-摘要：天津三资源路由、证据导出、规范化与独立目录已实现；全265项离线通过，新增跨资源候选及日期/合同/材料引用语义，修复迟到旧解释降级。真实API仍拒绝令牌，实际附件下载和真实整链仍未完成，不能称只差令牌。
+摘要：第一层新增CCGP/海南有限发现、公开正文/附件、v3业务事实与目录整链；真实12条独立公告和1份PDF通过语义、幂等及原件校验。天津令牌拒绝仍保留；受限标书和生产发布不在已完成范围，最终head/全测/独审见PR #11。
 
 ## 本次改变
 
@@ -8,11 +8,11 @@
 
 ## 阅读顺序
 
-1. [tianjin.py](../../services/ingestion/tianjin.py)的request_spec、TianjinTransport.fetch_page、execute：参数语义、凭据只进请求、分页如何持久化。
+1. [pipeline.py](../../services/ingestion/pipeline.py)的public_request_spec、execute、replay：有限来源请求如何先登记，再归档、解析、恢复和离线重放；来源模板与传输由独立模块负责。
 2. [normalize.py](../../services/processing/normalize.py)的normalize_bundle、_fact：如何从带位置的证据生成可空/冲突事实，而不是从一段文本猜投标结论。
 3. [store.py](../../services/catalog/store.py)的Catalog.import_bundle/query/detail：事务/幂等、旧观察晚到、快照分页、更正候选关系。
 
-这些是最终带读入口的当前草案；独立审查和真实接口可能改变实现，阶段结束才集中带读，不把中间文件当已验收最终版。
+以上三个文件为本阶段集中带读入口；金额/获取窗口的细节从normalize_bundle进入evidence_fields.extract。最终审查/提交见PR，不把合并或AI验证当本人已掌握。
 
 ## 数据流与失败边界
 
@@ -93,3 +93,19 @@
 21:52:08同目录/版本离线结构检查（`python -`标准库断言，退出0）：10行五字段均非空字符串、DocId唯一且与URL尾部对应、发布时间均可解析、正文非空；输入时间没有时区，不自行补+08。6条标题为成交公告，10条正文均无a链接。结果`.bidradar-data/research/hubei-sample-checks.json`。抽查[6019515采购公告](https://gdj.hubei.gov.cn/zfxxgk/fdzdgknr/zfcg/202609/t20260921_6019515.shtml)明确文件线下领取，无可下载附件；列表未显示分页/总数，不猜接口参数，不声称覆盖全量、持续更新或现行软件商机。可作为真实列表/正文/身份和状态负例候选，尚无正式适配器、原件账本导出、目录导入及真实更正整链验收。
 
 两项独立只读候选核查未产生更完整路线：[浙江税务局意向详情](https://zhejiang.chinatax.gov.cn/art/2026/2/10/art_11895_649206.html)匿名正文可读，但栏目为动态列表、样本是采购意向而非招标、未取得材料/持续采集依据；[全国公共资源查询](https://www.ggzy.gov.cn/deal/dealList.html?HEADER_DEAL_TYPE=02)模板含验证码，当前公告单页虽可请求，全文/附件及再利用条件未核实。[全国网站声明](https://www.ggzy.gov.cn/home/webStated.html)仅指向原发布平台优先，不能充当采集许可。广东robots403，福建robots返回HTML，均停止该入口探测。这些是候选排除证据，不写成正式来源联调通过；不绕过访问限制、不登录新站、不启用轮询，优先保留湖北明确开放的样本路线。
+
+## CCGP/海南公开来源完整第一层增量
+
+09-30负责人要求沿软件/AI真实商机方向完成第一层。以26df180为本轮已审基线，三个独立工作树分别实现模板、事实/root集成，最终统一审查；没有引入Redis/K8s、模型、企业私有資料或生产部署。新契约与命令见[31](../31-public-source-layer.md)。
+
+`collect-public`有显式联网、有限页段/标题筛选、DNS模式和来源规则；正常、部分、阻塞分别持久保存。v2 policy只在明确复核时允许robots404，v1默认不变；公网DoH校验有界CNAME链，不接受私网或任意目标。海南HTTP:80经官方301升级为同路径HTTPS:443，因此该来源统一HTTPS身份；CCGP旧身份保持。栏目误用jzxtp的开发期问题已核官方链接修为jzxtpgg，不能凭熟悉名称猜路径。
+
+公开解析保留嵌套表格行、空附件href和未知模板；不会用标题冒充正文。海南无正文发布日期时，可引用同次归档列表的capture_id+SHA+行位置；直接正文入口无该证据仍为空。规范v3保持旧facts并添加金额角色/获取窗口/门槛/材料状态/资格与交付原文；同获取时间v3优先，v1/v2继续可读，不重写历史。公告类型和响应截止只解释公开状态，不证明公司能投。
+
+真实正式获取在source-review工作树进行，Windows11/Python3.13.12/标准库、无Cookie/令牌：两站各2列表页/5正文；补海南澄清292834、成交293379、医保云293439，合计12个公告身份。精确授权成交PDF下载成功，SHA256为8c597daf62d6fdb6a6438c19c8b5ddd146e76a456bbf9940fe71ee2cb9ec0ec3；同页另外两份引用未授权下载，故材料为partially_obtained。完整标书仍有申请/登录/付费门槛，不把公开公告PDF当完整标书。
+
+运行记录在本机忽略目录`.bidradar-data/public-chain/runs/<run>/<attempt>/`：acquisition/evidence/normalized/import/repeat-import/query/replay与manifest。manifest含实际命令、环境、开始/结束时间、HEAD/dirty标记、退出码和文件指纹，部分状态退出2不是失败空包。CCGP发现run=303a7d9f802f41cb9420aae291f64ccb；海南发现=a87d5e589d0b4fb1b5f7d1b567998f15；生命周期=5f606b80770745c392c6b0f1ba490585。采集当时是76f2392加root未提交变更，首次整链导入为c072e55加未提交变更，不能套成最终head联网成绩；最终重测/重放/提交证据放PR。
+
+`.bidradar-data/check_public_real.py`（仅本地验收脚本，不是产品模块）以三个CLI输出检查：宁都1万/100万冲突不选值；甘肃48万、10月19日14:30、文件费500元；医保云0预算不当总价、5元/人次；遥感C包限价255600元不混总额；采购/澄清/成交独立身份与候选版本关系；公开PDF、原件和所有完成清单指纹。执行时间/版本/命令/结果见`.bidradar-data/public-real-acceptance.json`，9项真实原件离线语义检查退出0，无新网络。
+
+独立预审发现整链脚本重复调用会自哈希旧manifest并覆盖，以及created=False不能证明复用终态；已改每次独立UUID目录、排除自身哈希、字段明确reused_existing_run，新增重复/中途失败证据回归。最终全套计数、完整基线差异及独立审查以PR #11为准，不沿用265项旧成绩。源码与测试都有中文意图注释；本人仍待阅读/待实践，原预算矛盾练习继续留给本人，不代做。

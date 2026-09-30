@@ -4,9 +4,9 @@
 >
 > An evidence-based tender research and tracking agent for software and AI service teams.
 
-**当前：第一阶段数据获取仍未完成。已有权限纯函数、原件获取归档；DATA-001新增天津谈判/磋商/更正资源路由、证据清洗和可查询目录，离线整链可运行。天津开发者凭据已配置但平台仍拒绝；成功响应/稳定身份待核实，天津附件只有引用保存，实际下载和真实整链仍待完成。CMS/模型/部署后置，Redis/K8s不作为当前阶段门槛。**
+**当前：DATA-001 第一层已接通中国政府采购网和海南公开公告，完成有限发现、归档、证据清洗与独立目录的真实本地整链验证：12条独立公告、1份公开PDF，含采购/更正/成交。最终提交检查和独立审查以PR #11为准；不代表生产上线、全国全量或完整标书齐备。天津接口仍被平台拒绝令牌，独立保留该阻塞；CMS/模型/部署和Redis/K8s后置。**
 
-离线整链演示：`python scripts/run_data_demo.py`，依次运行获取、清洗、导入/查询CLI；虚构原件与各服务独立SQLite在忽略目录`.bidradar-data/demo-chain/`。当前契约/天津接入/限制见[30](docs/30-r0-data-contract.md)，中文核心阅读入口见[DATA-001](docs/learning/DATA-001.md)。已合并获取工具的历史用法见[29](docs/29-acquisition-stage.md)。
+离线整链演示：`python scripts/run_data_demo.py`，依次运行获取、清洗、导入/查询CLI；虚构原件与各服务独立SQLite在忽略目录`.bidradar-data/demo-chain/`。当前公开来源运行/边界见[31](docs/31-public-source-layer.md)，历史契约/天津接入见[30](docs/30-r0-data-contract.md)，中文核心阅读入口见[DATA-001](docs/learning/DATA-001.md)。已合并获取工具的历史用法见[29](docs/29-acquisition-stage.md)。
 
 ## 新会话先读
 
@@ -32,7 +32,7 @@
 
 | 已确认 | 仍待验证/审核 |
 | --- | --- |
-| 国内软件开发/系统/AI采购外包机会，软件公司客户；少源和项目优先；已选天津免费官方接口 | 天津真实响应/身份/材料/时效待验；CCGP原限制保留，官方/地方补证按需验证 |
+| 国内软件/系统/AI采购；少源和项目优先；CCGP主源、海南补充、天津接口保留 | 两站有限公开公告本地整链已验；商业再发布/持续生产准入、受限标书和天津成功响应仍待验证 |
 | 微服务；09-30决定将Redis/K8s移至后续服务部署阶段 | 六服务完整边界与部署参数；本阶段本地三CLI不等于生产服务联调 |
 | 真实网页/文件清洗、可追溯证据与故障验证 | 真实样本、评测效果、资源容量、具体框架与模型 |
 | 阿里云方向，总月预算约 100–200 元 | 机器、地域、网络、续费、备份与模型费用；预算不是购买授权 |
@@ -95,6 +95,8 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 | [24 企业档案](docs/24-company-profile-minimum.md) | 八类信息、四组首用问题和逐项补证 |
 | [25 国内来源](docs/25-china-source-validation.md) | 来源验证顺序、官方样本、材料限制和下一走查 |
 | [29 获取阶段](docs/29-acquisition-stage.md) | SOURCE-002本地CLI、接口、运行与真实准入阻塞 |
+| [30 数据链契约](docs/30-r0-data-contract.md) | 三服务JSON边界、天津与旧版本兼容 |
+| [31 公开来源第一层](docs/31-public-source-layer.md) | 两站栏目、门槛、真实验收与运行命令 |
 | [学习索引](docs/learning/INDEX.md) | 按任务恢复有用记录，不等于用户已经掌握 |
 
 main、任务分支与 PR 的实际 SHA 以 GitHub 为准。文档合并不等于业务开发、采购或上线获批；当前没有真实用户规模、业务测试成绩或生产 SLA。

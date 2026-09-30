@@ -8,7 +8,7 @@ ingestion独占原件/获取账本，输出版本化JSON证据包；processing�
 
 v1证据包最多100条记录（天津最多5页×20行），最多32MiB。raw_evidence_bundle必有source_id、simulation布尔、run_id、run_status、documents、failures。每个文档有获取标识、source_url、source_record_key、identity_kind、observed_at、原字节sha256、parser_version和content。导出拒绝queued/running，验证原件哈希并用当前解析版本重解析；失败也导出明确记录，不把失败空包当零结果。
 
-processing当前输出normalized_observations v2，冻结normalizer_version、事实与证据、观察哈希；catalog同时接收明确配套的v1/v2，兼容细则见下文。整包验证后事务写入；同观察重复导入不增加历史，未知契约版本拒绝。CLI错误退出4；获取状态沿用0成功、2部分、3阻塞、4失败、5取消、6未结束。导出和处理退出0表示契约处理成功，不把其中的failed/blocked来源状态抹掉。
+此处历史接口为normalized_observations v2；当前公开来源增量升至v3，精确定义见[31](31-public-source-layer.md)。v2，冻结normalizer_version、事实与证据、观察哈希；catalog同时接收明确配套的v1/v2，兼容细则见下文。整包验证后事务写入；同观察重复导入不增加历史，未知契约版本拒绝。CLI错误退出4；获取状态沿用0成功、2部分、3阻塞、4失败、5取消、6未结束。导出和处理退出0表示契约处理成功，不把其中的failed/blocked来源状态抹掉。
 
 ## 天津首源：已选定，真实数据响应仍受阻
 

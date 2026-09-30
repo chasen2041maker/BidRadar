@@ -17,13 +17,14 @@ from services.ingestion.sources.ccgp import (
 )
 from services.ingestion.transport import FetchError
 
-PARSER_VERSION = "ccgp-acquisition-v2"
+PARSER_VERSION = "public-acquisition-v3"
 MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
 BLOCKING_ERRORS = frozenset({
     "blocked", "access_blocked", "policy_required", "policy_invalid", "policy_expired_or_not_yet_valid",
     "attachment_not_approved", "url_not_allowed", "dns_not_public", "robots_denied", "robots_unavailable",
     "robots_invalid", "redirect_not_allowed", "request_budget_exceeded", "byte_budget_exceeded",
     "time_budget_exceeded", "retry_after_out_of_bounds",
+    "network_opt_in_required", "dns_target_not_allowed", "doh_response_rejected", "doh_transport_error",
 })
 
 
@@ -68,6 +69,46 @@ def request_spec(*, keyword: str | None = None, notice_urls=(), pages: int = 1,
             "start_date": start_date, "end_date": end_date}
 
 
+def public_request_spec(*, source_id="cn_ccgp", category=None, notice_urls=(), start_page=1,
+                        pages=1, max_notices=10, max_attachments=5, attachments=False,
+                        title_terms=(), dns_mode="system"):
+    """v2公开栏目请求：明确来源、页段和可选标题筛选，不伪称全网关键词搜索。
+
+    标题筛选只决定有限列表中哪些正文入队，不用于推断技术适配或资格满足。
+    DNS/筛选也进入幂等内容；恢复不能悄悄换来源、扩大页段或改变网络模式。
+    """
+    from services.ingestion.sources.public_notices import build_listing_url, canonical_notice_url
+    if source_id not in ("cn_ccgp", "cn_hainan") or dns_mode not in ("system", "google-doh"):
+        raise ValueError("invalid_public_source_or_dns")
+    for name, value, maximum in (("start_page", start_page, 10000), ("pages", pages, 5),
+                                 ("max_notices", max_notices, 20), ("max_attachments", max_attachments, 10)):
+        if type(value) is not int or not 1 <= value <= maximum:
+            raise ValueError("invalid_" + name)
+    if start_page + pages - 1 > 10000:
+        raise ValueError("page_range_exceeded")
+    if (type(attachments) is not bool or bool(category) == bool(notice_urls)
+            or not isinstance(notice_urls, (tuple, list)) or len(notice_urls) > max_notices
+            or not isinstance(title_terms, (tuple, list)) or len(title_terms) > 20
+            or any(not isinstance(t, str) or not t.strip() or len(t) > 100 for t in title_terms)):
+        raise ValueError("invalid_public_request")
+    urls = []
+    for value in notice_urls:
+        url = canonical_notice_url(source_id, value)
+        if url is None:
+            raise ValueError("notice_url_outside_source")
+        if url not in urls:
+            urls.append(url)
+    if category:
+        for page in range(start_page, start_page + pages):
+            build_listing_url(source_id, category, page)
+    elif start_page != 1 or pages != 1 or title_terms:
+        raise ValueError("explicit_notices_reject_listing_options")
+    return {"schema_version": 2, "discovery": "public_category", "source_id": source_id,
+            "category": category, "notice_urls": urls, "start_page": start_page, "pages": pages,
+            "max_notices": max_notices, "max_attachments": max_attachments, "attachments": attachments,
+            "title_terms": list(dict.fromkeys(t.strip() for t in title_terms)), "dns_mode": dns_mode}
+
+
 def decode_html(body: bytes, headers: dict[str, str]) -> tuple[str, str]:
     """严格按BOM/声明解码；乱码不是有效正文，不静默替换字节再作证据。"""
     content_type = next((v for k, v in headers.items() if k.lower() == "content-type"), "")
@@ -89,7 +130,7 @@ def decode_html(body: bytes, headers: dict[str, str]) -> tuple[str, str]:
         raise ValueError("invalid_html_encoding") from exc
 
 
-def parse_capture(kind: str, body: bytes, headers: dict, url: str) -> dict:
+def parse_capture(kind: str, body: bytes, headers: dict, url: str, source_id="cn_ccgp") -> dict:
     """原始字节哈希与解析器的UTF-8文本哈希各自命名，不能混成同一版本。"""
     if kind == "attachment":
         media = next((v for k, v in headers.items() if k.lower() == "content-type"), "")
@@ -106,17 +147,36 @@ def parse_capture(kind: str, body: bytes, headers: dict, url: str) -> dict:
                 "issues": [] if magic_ok else ["attachment_signature_mismatch"],
                 "raw_sha256": sha256(body).hexdigest(), "text_extracted": False}
     html, encoding = decode_html(body, headers)
-    parsed = asdict(parse_search_page(html) if kind == "listing" else parse_notice_page(html, url))
+    if source_id not in ("cn_ccgp", "cn_hainan"):
+        raise ValueError("invalid_public_source")
+    if kind not in ("listing", "notice"):
+        raise ValueError("invalid_capture_kind")
+    from services.ingestion.sources.public_notices import listing_identity
+    if source_id == "cn_ccgp" and kind == "listing" and listing_identity(source_id, url) is None:
+        parsed = asdict(parse_search_page(html))
+    else:
+        from services.ingestion.sources.public_notices import parse_listing, parse_notice
+        parsed = asdict(parse_listing(html, url, source_id) if kind == "listing" else parse_notice(html, url, source_id))
     parsed["status"] = parsed["status"].value
     parsed["decoded_input_sha256"] = parsed.pop("input_sha256")
     parsed["raw_sha256"] = sha256(body).hexdigest()
     parsed["encoding"] = encoding
     if kind == "notice":
-        parsed["notice_id"] = sha256(("cn_ccgp\n" + _canonical_notice_url(url)).encode()).hexdigest()
+        from services.ingestion.sources.public_notices import canonical_notice_url
+        canonical = canonical_notice_url(source_id, url)
+        if canonical is None:
+            raise ValueError("notice_url_outside_source")
+        parsed["notice_id"] = sha256((source_id + "\n" + canonical).encode()).hexdigest()
     return parsed
 
 
 def _initial_tasks(request: dict) -> list[dict]:
+    if request.get("discovery") == "public_category":
+        from services.ingestion.sources.public_notices import build_listing_url
+        if request["notice_urls"]:
+            return [{"kind": "notice", "url": url} for url in request["notice_urls"]]
+        return [{"kind": "listing", "url": build_listing_url(request["source_id"], request["category"], page)}
+                for page in range(request["start_page"], request["start_page"] + request["pages"])]
     if request["keyword"] is None:
         return [{"kind": "notice", "url": url} for url in request["notice_urls"]]
     return [{"kind": "listing", "url": SEARCH_URL + "?" + urlencode(build_search_params(
@@ -129,8 +189,21 @@ def _following(store: Store, run_id: str, request: dict, task: dict, parsed: dic
     if task["kind"] == "listing":
         known = store.task_urls(run_id, "notice")
         skipped = 0
+        filtered = 0
         for item in parsed.get("items", ()):
-            url = _canonical_notice_url(item["url"])
+            if request.get("title_terms") and not any(term.casefold() in item["title"].casefold()
+                                                       for term in request["title_terms"]):
+                filtered += 1
+                continue
+            if request.get("discovery") == "public_category":
+                from services.ingestion.sources.public_notices import canonical_notice_url
+                url = canonical_notice_url(request["source_id"], item["url"])
+                if url is None:
+                    parsed["issues"] = [*parsed.get("issues", ()), "notice_url_outside_source"]
+                    parsed["status"] = "partial"
+                    continue
+            else:
+                url = _canonical_notice_url(item["url"])
             if url in known:
                 continue
             if len(known) >= request["max_notices"]:
@@ -139,6 +212,7 @@ def _following(store: Store, run_id: str, request: dict, task: dict, parsed: dic
             known.add(url)
             tasks.append({"kind": "notice", "url": url, "parent_url": task["url"], "payload": item})
         parsed["notices_outside_run_limit"] = skipped
+        parsed["notices_outside_title_filter"] = filtered
     if task["kind"] == "notice":
         known = store.task_urls(run_id, "attachment")
         for link in parsed.get("attachments", ()):
@@ -192,7 +266,8 @@ def execute(store: Store, run_id: str, transport) -> dict:
                 # 若此刻进程崩溃，恢复可能重复一次HTTP读取，但同字节不会覆盖/复制原件。
                 store.heartbeat(run_id, token)
                 archived_body = store.read_blob(store.put_blob(response.body))
-                parsed = parse_capture(task["kind"], archived_body, response.headers, response.final_url)
+                parsed = parse_capture(task["kind"], archived_body, response.headers, response.final_url,
+                                       request.get("source_id", "cn_ccgp"))
             except (ValueError, TypeError, UnicodeError) as exc:
                 parsed = {"status": "parse_error", "issues": [str(exc)], "raw_sha256": sha256(response.body).hexdigest()}
             following = _following(store, run_id, request, task, parsed, transport)
@@ -236,6 +311,7 @@ def replay(store: Store, capture_id: str) -> dict:
         req = store.run(capture["run_id"])["request"]
         parsed = tianjin.parse_page(store.read_blob(capture["sha256"]), req["page_size"])
         return store.save_replay(capture_id, tianjin.PARSER_VERSION, parsed)
+    source = store.run(capture["run_id"])["request"].get("source_id", "cn_ccgp")
     parsed = parse_capture(capture["kind"], store.read_blob(capture["sha256"]), capture["headers"],
-                           capture["final_url"] or capture["url"])
+                           capture["final_url"] or capture["url"], source)
     return store.save_replay(capture_id, PARSER_VERSION, parsed)
