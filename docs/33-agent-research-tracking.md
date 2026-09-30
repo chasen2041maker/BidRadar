@@ -69,3 +69,13 @@ tracking保存每个owner的连续接收游标和Inbox，按固定snapshot消费
 开发测试与真实AI评测分层：工具schema/注入/错引用/缺材料/资质未知；两公司/三角色/撤权；幂等/并发取消/lease过期/未知计费/重启；事件重复/断点/乱序/更正incoming/原文未分类变化；无委托不调模型、停watch阻断下一动作、历史重建不提醒。浏览器完成研究→报告→追问→决定→跟踪/变更提醒。
 
 同样冻结资料与问题比较规则基线和Agent，记录引用支持、未知误判、关键条件漏项、耗时及真实费用；人工标签与模型草拟分开，合成/真实/历史回放分开。至少覆盖真实公开样本及不同失败类，不能用测试数量替代AI效果。本人仍待阅读/实践，最终精选3个AI核心入口给统一导读；未执行项明确缺口，独立审查绑定最终SHA。
+
+## 本地运行与复验
+
+在仓库根目录使用Python3.10+，仅标准库。`python scripts/run_research_workbench.py`启动四个独立进程，默认8965–8968；Ctrl+C停止本次进程，重启保留各服务数据。浏览器打开`http://127.0.0.1:8965/`，虚构账号在忽略目录`.bidradar-data/r12-workbench/demo-accounts.json`，不提交或公开该文件。首次只有明确标记的虚构样本；可用`--bundle <已获准的normalized.json>`导入既有规范包，本命令不自动采集网站。
+
+本轮已获模型与费用授权，只有`--enable-model`才读取用户目录`.bidradar/credentials/deepseek-api-key.txt`并调用固定DeepSeek官方端点。默认运行不调用模型；点击需要模型的任务会停在待处理状态，不冒称已分析。预算账本固定在用户目录`.bidradar/budgets/deepseek-r12-20261001.sqlite3`，不要删除账本或marker来重置额度。`--root`仅切换业务库；`--port`从指定端口连续使用四个端口。
+
+真实验收CLI：`python scripts/evaluate_research_case.py --notice-id <目录公告ID> --case-key <唯一用例名> --execute --wait-seconds 45`。不传`--execute`只显示计划；同一用例名重复运行复用原命令，故意复验新代码才换用例名。`--company 1`使用第二家虚构企业；`--parent-run-id <已完成任务ID> --question <问题>`测试同项目追问。完整冻结输入/报告留本机忽略目录`evaluations`，终端仅输出状态与预算；退出0只证明CLI成功，不证明报告质量。
+
+离线回归用根AGENTS的全量unittest命令；重点入口`test_research_agent.py`、`test_research_runtime.py`和`test_tracking_http_replay.py`。后两者运行真实回环HTTP、临时分库和脚本模型，不花真实费用；实际供应商结果、浏览器及最终SHA证据另列AGENT-001笔记。恢复边界是本地进程故障与应用幂等，不是生产断电恢复承诺。

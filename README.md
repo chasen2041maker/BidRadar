@@ -6,6 +6,8 @@
 
 **已实现 R1-A 本地商机核查工作台：公司权限、渐进档案、商机证据和固定版本选择。中文运行入口为 `python scripts/run_workbench.py`，用两家虚构公司核查已有公共样本；395项提交前测试及浏览器流程已过，最终SHA验收见当前任务/PR。DATA-001第一层已验证12条真实公告与1份公开PDF，PR #11尚未合并。工作台不代表完整R1深度研究或生产上线；模型/报告/追问、PostgreSQL/RLS、Redis/K8s及云部署留后续验收。**
 
+2026-10-01：本分支新增R1/R2研究Agent、持久任务/预算、报告追问、人工决定和持续跟踪，真实AI质量仍在验收，不能以调用成功替代通过。新四服务入口`python scripts/run_research_workbench.py`，默认8965；模型须显式开启。契约及运行见[33](docs/33-agent-research-tracking.md)，三份核心代码导读与失败记录见[AGENT-001](docs/learning/AGENT-001.md)。
+
 工作台默认地址 `http://127.0.0.1:8765`，随机测试账号保存在本机忽略目录；运行方法、接口、安全与恢复边界见[32](docs/32-r1-workbench.md)，中文核心导读见[R1A-001](docs/learning/R1A-001.md)。
 
 离线整链演示：`python scripts/run_data_demo.py`，依次运行获取、清洗、导入/查询CLI；虚构原件与各服务独立SQLite在忽略目录`.bidradar-data/demo-chain/`。当前公开来源运行/边界见[31](docs/31-public-source-layer.md)，历史契约/天津接入见[30](docs/30-r0-data-contract.md)，中文核心阅读入口见[DATA-001](docs/learning/DATA-001.md)。已合并获取工具的历史用法见[29](docs/29-acquisition-stage.md)。
@@ -100,6 +102,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 | [30 数据链契约](docs/30-r0-data-contract.md) | 三服务JSON边界、天津与旧版本兼容 |
 | [31 公开来源第一层](docs/31-public-source-layer.md) | 两站栏目、门槛、真实验收与运行命令 |
 | [32 本地商机核查工作台](docs/32-r1-workbench.md) | R1-A接口、公司档案/选择、双服务运行与恢复边界 |
+| [33 AI研究与持续跟踪](docs/33-agent-research-tracking.md) | R1/R2工具循环、冻结报告、费用恢复、委托与四服务运行 |
 | [学习索引](docs/learning/INDEX.md) | 按任务恢复有用记录，不等于用户已经掌握 |
 
 main、任务分支与 PR 的实际 SHA 以 GitHub 为准。文档合并不等于业务开发、采购或上线获批；当前没有真实用户规模、业务测试成绩或生产 SLA。
