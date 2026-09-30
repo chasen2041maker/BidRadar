@@ -30,6 +30,8 @@ policy v1保留严格robots与旧来源路径。v2允许固定公开栏目/海�
 
 配套版本固定为`schema_version=3 / normalizer_version=procurement-facts-v3`，不接受混搭。`money`为数组，每项role/status/amount/currency/source_unit/package/unit_basis/evidence；金额仍是十进制字符串或null，包号与计量基础未知为null。`budget_assessment`为status/reasons/evidence，发生冲突、单价或多包作用域不清时，旧facts.budget也不能继续输出已知总额。`acquisition_window`为status/value/evidence，value是含start/end的日期对象或null，日期精度/时区仍按原文，不补零点。
 
+获取窗口只在同段恰好两个日期token均有效且无延期/分批歧义时确认；非法日期不丢弃后再用第三项补位，多窗口不静默挑第一批。未知或冲突仍保留完整原文及定位，等待人工核对。
+
 `access_conditions`为kind/status/evidence数组；`material_availability`含status和references，引用含url/name/locator/status/capture_id/raw_sha256，未取得时后两项null。只有导出提供实际成功捕获及哈希才计作取得；obtained仅表示已列引用均归档，不保证完整采购文件齐全。分类、技术、资格、交付各为原文定位数组，不能由这几组关键词得出公司满足条件。目录关键词可匹配标题、已知编号/买方与技术原文；仍是确定性检索，不调用模型。
 
 结果公告与更正可形成同发布方、买方和项目编号的候选前序关系；原件链接支持更强证据等级，但已知包号冲突仍阻断。关系绑定两端观察版本，不合并公告或静默更新原截止。海南正文无发布日期时可引用同次已归档列表的日期，定位注明列表capture_id/SHA/行；明确正文入口无列表证据就保持missing。
