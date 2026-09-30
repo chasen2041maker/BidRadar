@@ -87,8 +87,9 @@ class NormalizeTests(unittest.TestCase):
         raw["documents"][0]["content"] = content
         item = normalize_bundle(raw)["observations"][0]
         self.assertEqual(item["facts"]["project_number"]["value"], "DEMO-001")
-        # 没有已确认多包结构映射时宁可留空，不能把第1包当项目总预算。
-        self.assertEqual(item["facts"]["budget"]["status"], "missing")
+        # v3保留表格中的分包金额，仍不能把第1包当项目总预算。
+        self.assertEqual(item["facts"]["budget"]["status"], "unparsed")
+        self.assertEqual(item["evidence_fields"]["money"][0]["role"], "package_budget")
 
     def test_capture_and_parser_changes_keep_notice_identity_but_new_observation(self):
         first = normalize_bundle(raw_bundle())["observations"][0]

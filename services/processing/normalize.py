@@ -11,16 +11,17 @@ from hashlib import sha256
 import json
 import re
 from urllib.parse import urlsplit, urlunsplit
+from .evidence_fields import body_entries, extract as extract_evidence
 
-VERSION = "procurement-facts-v2"
+VERSION = "procurement-facts-v3"
 MAX_JSON_BYTES = 32 * 1024 * 1024
-SOURCES = {"cn_ccgp", "tj_procurement_negotiation", "tj_procurement_consultation", "tj_procurement_correction"}
+SOURCES = {"cn_ccgp", "cn_hainan", "tj_procurement_negotiation", "tj_procurement_consultation", "tj_procurement_correction"}
 KINDS = {"procurement", "correction", "award", "termination", "intention", "unknown"}
 LABELS = {
-    "project_number": ("项目编号", "采购项目编号"),
+    "project_number": ("项目编号", "采购项目编号", "原公告的采购项目编号"),
     "buyer": ("采购人名称", "采购单位", "采购人"),
     "published_at": ("公告发布时间", "公告时间", "发布日期"),
-    "budget": ("预算（万元）", "预算(万元)", "预算金额", "项目预算", "采购预算"),
+    "budget": ("预算（万元）", "预算(万元)", "预算金额", "项目预算", "采购预算", "预算金额（元）", "预算金额（万元）"),
     "response_deadline": ("响应文件提交的截止时间", "响应文件提交截止时间", "投标截止时间", "提交投标文件截止时间"),
     "lot_identifier": ("包号", "标段编号"),
     # 首次公告属于被引用的原公告；不能写进本次更正的published_at。
@@ -86,20 +87,14 @@ def _entries(content):
             if field == "metadata":
                 label = require_string(item.get("label"), "label", 100).strip().rstrip("：:")
                 entries.append({"label": label, "text": text, "locator": locator})
-            else:
-                # 只认段首明确标签；长正文里的“原截止/更正后截止”不混成同一事实。
-                for label in (label for labels in LABELS.values() for label in labels):
-                    match = re.fullmatch(r"\s*" + re.escape(label) + r"\s*[:：]\s*(.+)", text, re.S)
-                    if match:
-                        entries.append({"label": label, "text": match.group(1).strip(), "locator": locator})
-                        break
+    entries.extend(body_entries(content.get("segments", []), LABELS, _date))
     return entries
 
 
 def _date(text):
     """自然日期不补零点；无时区的时刻不暗中升级成北京时间/UTC。"""
     match = re.fullmatch(r"\s*(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})日?"
-                         r"(?:[ T\s]+(\d{1,2})[:时](\d{1,2})(?:[:分](\d{1,2})秒?)?分?)?"
+                         r"(?:[ T\s]*(\d{1,2})[:时点](\d{1,2})(?:[:分](\d{1,2})秒?)?分?)?"
                          r"\s*(?:[（(]?(北京时间)[）)]?)?\s*", text)
     if not match:
         return None
@@ -116,11 +111,11 @@ def _date(text):
 
 def _money(text, label):
     # 不接受区间、约数、最高限价、多币种或一段多金额；保持原文供人工核对。
-    match = re.fullmatch(r"\s*(?:人民币\s*)?((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?)\s*(万元|元)?(?:\s*（人民币）)?\s*", text)
+    match = re.fullmatch(r"\s*(?:人民币\s*)?[￥¥]?\s*((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?)\s*(万元|元)?(?:\s*[（(]人民币[）)])?\s*", text)
     if not match:
         return None
     number, unit = match.groups()
-    unit = unit or ("万元" if "万元" in label else None)
+    unit = unit or ("万元" if "万元" in label else "元" if "元" in label else None)
     if unit is None:
         return None
     try:
@@ -155,7 +150,7 @@ def _notice_kind(title, source=None):
     kind = "unknown"
     for pattern, kind in ((r"(更正|变更|澄清)公告", "correction"), (r"(废标|终止|中止)公告", "termination"),
                           (r"(中标|成交)(结果)?公告", "award"), (r"采购意向", "intention"),
-                          (r"(招标|竞争性谈判|竞争性磋商|询价|采购)公告", "procurement")):
+                          (r"(?:(?:竞争性谈判|竞争性磋商|询价)(?:公告)?|(?:招标|采购)公告)", "procurement")):
         if re.search(pattern + r"(?:[（(].*[）)])?$", title):
             break
     else:
@@ -208,6 +203,19 @@ def normalize_bundle(bundle):
         entries = _entries(content)
         facts = {name: _fact(entries, name) for name in LABELS}
         notice_type = _notice_kind(title, bundle["source_id"])
+        extra = extract_evidence(content, entries, _date, _money, notice_type)
+        assessment = extra["budget_assessment"]
+        if assessment["status"] == "known" and facts["budget"]["status"] != "known":
+            claim = next(claim for claim in extra["money"] if claim["role"] == "budget" and claim["status"] == "parsed")
+            facts["budget"] = {"status": "known", "value": {"amount": claim["amount"], "currency": "CNY",
+                               "source_unit": claim["source_unit"], "scope": "unspecified"},
+                               "evidence": assessment["evidence"]}
+        if assessment["status"] in ("conflicting", "context_required", "unparsed"):
+            # v2客户端也不能把按人次限价/多包总额/摘要冲突当成可用项目预算。
+            proof = assessment["evidence"] or [entry for claim in extra["money"] for entry in claim["evidence"]]
+            if proof:
+                facts["budget"] = {"status": "conflicting" if assessment["status"] == "conflicting" else "unparsed",
+                                   "value": None, "evidence": proof}
         if notice_type == "correction":
             # 更正正文可能同时引用旧/新日期金额；未有明确作用域契约前只保留证据。
             # 项目号/采购方仍可支持候选关联，但不让旧截止或更正前预算进入当前值。
@@ -232,6 +240,7 @@ def normalize_bundle(bundle):
             "capture_id": capture, "raw_sha256": digest, "parser_version": parser,
             "normalizer_version": VERSION, "observed_at": observed, "title": title,
             "notice_type": notice_type, "facts": facts, "references": references,
+            "evidence_fields": extra,
             # 只保留引用字段原文和位置；没有请求外部地址，也没有生成“下载成功”。
             "material_reference_evidence": [entry for entry in entries if entry["label"] in MATERIAL_LABELS],
             "material_status": content.get("material_status", "see_ingestion_evidence"),
@@ -239,7 +248,7 @@ def normalize_bundle(bundle):
         # 观察绑定同一获取+解析内容；新解析不能冒用旧ID。目录会再次校验哈希。
         observation["observation_id"] = fingerprint(observation)
         observations.append(observation)
-    return {"schema_version": 2, "kind": "normalized_observations", "normalizer_version": VERSION,
+    return {"schema_version": 3, "kind": "normalized_observations", "normalizer_version": VERSION,
             "run_id": run_id, "run_status": bundle["run_status"], "source_id": bundle["source_id"],
             "simulation": bundle["simulation"], "coverage": "bounded_sample",
             "observations": observations, "failures": failures}

@@ -32,6 +32,7 @@ def legacy_bundle(v2):
     for item in old["observations"]:
         item["normalizer_version"] = old["normalizer_version"]
         item.pop("material_reference_evidence")
+        item.pop("evidence_fields")
         item["facts"].pop("original_published_at")
         item["facts"].pop("original_contract_reference")
         item["observation_id"] = fingerprint({k: v for k, v in item.items() if k != "observation_id"})
@@ -274,7 +275,7 @@ class ResourceTests(unittest.TestCase):
             next_page = with_catalog.query(simulation=True, page_size=1, cursor=page["next_cursor"])
             self.assertEqual(next_page["items"][0]["normalizer_version"], "procurement-facts-v1")
             self.assertEqual({r["normalizer_version"] for r in with_catalog.query(simulation=True)["items"]},
-                             {"procurement-facts-v2"})
+                             {"procurement-facts-v3"})
             # 规范版本只在获取时间相同时排序；不能让旧获取的v2压过新获取的v1。
             newer = legacy_bundle(first)
             item = newer["observations"][0]
