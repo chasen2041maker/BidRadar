@@ -57,3 +57,5 @@
 20:46:40～20:46:41 +08:00，在同一source-review工作树、Windows11/Python3.13.12/SQLite3.51.1，执行本机忽略脚本`python .bidradar-data/data-001-real-checks.py`，退出0。仅额外查询一次公开DoH，不调用采购API。七个子命令依次为ingestion verify/export、processing、catalog import两次/query、ingestion replay，均退出0；日志`.bidradar-data/data-001-real-checks.json`包含完整参数、时间、当时HEAD与未提交标记。目录total=0但recent_runs=blocked/failures=1；重放得到v2令牌拒绝，原件SHA与旧捕获完全不变。它只证明真实失败传播，不证明真实采购数据取得。最终提交后必要检查/独审另见PR。
 
 公开资源目录另核实[政府采购更正公告](https://open.data.tj.gov.cn/sjjk/67393436a7cd44f5a896b3e98153f7a7.htm)，以及有“其他附件文件下载链接”字段的[政府采购磋商公告](https://open.data.tj.gov.cn/sjjk/cafe018abce346a7a34682a33fb6c4c2.htm)。仅有字段定义，未取API数据；不能把该字段当作已取得附件或把不同资源的项目号直接当稳定公告ID。待授权状态正常后按需接入。
+
+本次代码head 558d08da4b3b662b45880a892da12bb3efbafd42已独立审查通过：全250项及DoH/取消/期限/凭据隔离组合均通过。审查提示README仍有“待开发者凭据”的旧表述，现同步为“凭据已配置、平台拒绝”，仅文档校准，代码未变。最终文档head与CI/复核记录见PR，不以旧head成绩替代。
