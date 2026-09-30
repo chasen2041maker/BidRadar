@@ -1,9 +1,10 @@
-"""中国政府采购网列表适配小片：只构造参数、解析传入HTML，不联网、不启动任务。
+"""中国政府采购网离线适配：构造参数、解析列表/正文及附件引用，不联网。
 
 参数映射、列表选择器和元数据拆分改编自 bidding-ai-analyzer（MIT）：
 Copyright (c) 2026 ichthyoplanktonzyh
 上游提交/文件及完整许可见 third_party/README.md。
-本片不证明网站允许自动采集，也不是公告正文、附件或投标资格分析器。
+正文只认约定模板；附件只提取引用、不解析文件内容，也不推断投标资格。
+来源准入与下载由transport负责，获取/归档顺序由pipeline编排。
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ _VOID_TAGS = frozenset("area base br col embed hr img input link meta param sour
 
 
 class ParseStatus(str, Enum):
-    """仅描述这份列表HTML的解析结果，不代表商机状态或来源全量覆盖。"""
+    """仅描述这份HTML的解析结果，不代表商机状态或来源全量覆盖。"""
 
     OK = "ok"
     EMPTY = "empty"
@@ -54,6 +55,18 @@ class ListingResult:
 
     status: ParseStatus
     items: tuple[NoticeCandidate, ...]
+    issues: tuple[str, ...]
+    input_sha256: str
+
+
+@dataclass(frozen=True)
+class NoticePage:
+    """正文文本与附件线索；链接可见不代表文件已获取，也不解释资格/预算。"""
+
+    status: ParseStatus
+    title: str | None
+    text: str | None
+    attachments: tuple[dict[str, str], ...]
     issues: tuple[str, ...]
     input_sha256: str
 
@@ -101,7 +114,7 @@ class _Node:
             yield node
             pending.extend(child for child in reversed(node.children) if isinstance(child, _Node))
 
-    def text(self, *, skip_listing_rows: bool = False) -> str:
+    def text(self, *, skip_listing_rows: bool = False, skip_notice_body: bool = False) -> str:
         pending: list[_Node | str] = [self]
         parts: list[str] = []
         while pending:
@@ -109,6 +122,8 @@ class _Node:
             if isinstance(item, str):
                 parts.append(item)
             elif item.tag not in ("script", "style"):
+                if skip_notice_body and "vF_detail_content" in (item.attrs.get("class") or "").split():
+                    continue
                 # 页面级访问提示与招标标题分开；验证码系统采购不是验证码挑战页。
                 if (skip_listing_rows and item.tag == "ul"
                         and "vT-srch-result-list-bid" in (item.attrs.get("class") or "").split()):
@@ -124,7 +139,7 @@ class _HTMLResourceLimit(ValueError):
 
 
 class _Document(HTMLParser):
-    """标准库解析器，仅支持本片约定的列表模板；不加载图片、脚本或外链。"""
+    """标准库有界HTML树；上层选择已知列表/正文模板，不加载图片、脚本或外链。"""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -247,3 +262,57 @@ def parse_search_page(html: str) -> ListingResult:
                                      f"ul.vT-srch-result-list-bid > li:nth-of-type({index})"))
     status = ParseStatus.PARTIAL if items and issues else (ParseStatus.OK if items else ParseStatus.PARSE_ERROR)
     return ListingResult(status, tuple(items), tuple(issues), fingerprint)
+
+
+def parse_notice_page(html: str, url: str) -> NoticePage:
+    """约定正文模板的保守提取；保留原件中的位置，不把整页导航当采购条件。
+
+    附件只登记URL/显示名称，是否可下载由当前来源准入及传输层逐项判断。
+    当前模板需要真实站点回归；未知模板明确失败，不用<title>冒充已取得正文。
+    """
+    if not isinstance(html, str):
+        raise TypeError("html须为已解码文本")
+    data = html.encode("utf-8")
+    if len(data) > MAX_HTML_BYTES:
+        raise ValueError("公告HTML超过本片大小上限")
+    fingerprint = sha256(data).hexdigest()
+    document = _Document()
+    try:
+        document.feed(html)
+        document.close()
+    except _HTMLResourceLimit as exc:
+        return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), (str(exc),), fingerprint)
+    except (ValueError, AssertionError):
+        return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("malformed_html",), fingerprint)
+    nodes = list(document.root.walk())
+    body = [node for node in nodes if "vF_detail_content" in (node.attrs.get("class") or "").split()]
+    # 只在正文外判挑战，避免正常正文中的“验证码系统”触发误报。
+    if any(word in document.root.text(skip_notice_body=True)
+           for word in ("验证码", "访问频繁", "访问过于频繁", "访问受限")):
+        return NoticePage(ParseStatus.BLOCKED, None, None, (), ("access_challenge",), fingerprint)
+    if len(body) != 1 or not body[0].text():
+        return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("unexpected_notice_template",), fingerprint)
+    title_node = next((node for node in nodes if node.tag == "h2"
+                       and {"title", "tc"}.intersection((node.attrs.get("class") or "").split())), None)
+    if title_node is None:
+        title_node = next((node for node in nodes if node.tag == "h1"), None)
+    title = title_node.text() if title_node else None
+    attachments: list[dict[str, str]] = []
+    issues = [] if title else ["missing_notice_title"]
+    seen = set()
+    for anchor in body[0].walk():
+        if anchor.tag != "a" or not anchor.attrs.get("href"):
+            continue
+        href = anchor.attrs["href"]
+        try:
+            link = urljoin(url, href)
+            parts = urlsplit(link)
+        except ValueError:
+            issues.append("malformed_attachment_link")
+            continue
+        if re.search(r"\.(?:pdf|docx?|xlsx?|zip|rar|7z)$", parts.path, re.I) and link not in seen:
+            seen.add(link)
+            attachments.append({"url": link, "name": anchor.text(), "locator": "div.vF_detail_content a",
+                                "status": "not_fetched"})
+    return NoticePage(ParseStatus.PARTIAL if issues else ParseStatus.OK, title, body[0].text(),
+                      tuple(attachments), tuple(issues), fingerprint)

@@ -4,13 +4,15 @@
 >
 > An evidence-based tender research and tracking agent for software and AI service teams.
 
-**当前：DESIGN_REVIEW + 工程规范建设。没有业务服务、已接通数据源、运行中的 CMS/缓存或部署成果。文档检查工具不等于产品实现。**
+**当前：已进入实现。已有普通资源权限纯函数、CCGP列表/正文解析，以及SOURCE-002本地数据获取流程。真实来源准入和自动发现受阻，尚未完成真实站点联调；CMS/缓存/模型/云部署未运行。**
+
+数据获取阶段可先运行完全离线的虚构样本：`python -m services.ingestion demo`，再执行 `python -m services.ingestion verify`。原件和SQLite账本在忽略目录`.bidradar-data/`。完整命令、接口、失败与真实准入条件见[29运行说明](docs/29-acquisition-stage.md)，三个核心文件的带读见[SOURCE-002](docs/learning/SOURCE-002.md)。
 
 ## 新会话先读
 
 [AGENTS.md](AGENTS.md) → [项目状态](PROJECT_STATE.md) → [当前任务](CURRENT_TASK.md)。按[上下文管理](docs/21-context-management.md)再读相关专题，不要求每次把所有历史文档塞入上下文。
 
-**2026-09-12 最新协作要求：**默认由 Codex 执行已授权任务的开发、自测、联调与记录；人工负责业务决策、风险授权和必要验收。此分工替代旧材料中“负责人先写关键代码”的前置要求，仍要求理解关键逻辑、审核真实证据并对结果负责。规范见 [20](docs/20-development-standard.md)。自动合并与自动关闭未获常态授权；本次人工合并授权不豁免独立审查。
+**2026-09-30 最新协作要求：**Codex连续完成已授权完整阶段的实现、中文注释、自测、排错和独立审查，再集中带读最终核心文件；人工负责业务决策、风险授权和验收。替代旧“每小片暂停”与“负责人先手写”的前置要求，本人阅读/实践仍须有真实反馈。规范见 [AGENTS](AGENTS.md)及[20](docs/20-development-standard.md)。自动合并与自动关闭未获常态授权。
 
 ## 产品主线
 
@@ -60,7 +62,7 @@ python3 scripts/check_project_memory.py
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
-上述命令只检查交接结构、链接、大小和工具测试，不构成 CMS、缓存、真实接口或生产验证。仓库规则是否已生效以 GitHub 实际配置为准，不能凭本文宣称开启了保护。
+上述命令检查交接结构及全部离线测试，包含权限、解析、受控传输和本地归档流程；不构成CMS、缓存、真实站点或生产验证。仓库规则是否已生效以GitHub实际配置为准，不能凭本文宣称开启了保护。
 
 ## 专题导航（按需读取）
 
@@ -92,6 +94,7 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 | [23 首批市场与RAG](docs/23-first-market-rag.md) | 中国软件公司客户、首闭环和检索/生成分工 |
 | [24 企业档案](docs/24-company-profile-minimum.md) | 八类信息、四组首用问题和逐项补证 |
 | [25 国内来源](docs/25-china-source-validation.md) | 来源验证顺序、官方样本、材料限制和下一走查 |
+| [29 获取阶段](docs/29-acquisition-stage.md) | SOURCE-002本地CLI、接口、运行与真实准入阻塞 |
 | [学习索引](docs/learning/INDEX.md) | 按任务恢复有用记录，不等于用户已经掌握 |
 
 main、任务分支与 PR 的实际 SHA 以 GitHub 为准。文档合并不等于业务开发、采购或上线获批；当前没有真实用户规模、业务测试成绩或生产 SLA。
