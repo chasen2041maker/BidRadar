@@ -16,7 +16,7 @@
 
 ## 服务与入口
 
-catalog、workspace、research、tracking各自拥有数据库，仅通过有界HTTP通信；可共享纯传输工具，不共享业务ORM或跨库事务。每个服务的内部API精确Host、独立Bearer令牌、loopback绑定、JSON/大小/超时校验；模型不接触服务令牌或任意路由。workspace继续作为浏览器入口，验证Cookie/Origin/CSRF并从当前会话派生actor_id，浏览器不得自报主体。
+catalog、workspace、research、tracking各自拥有数据库，仅通过有界HTTP通信；可共享纯传输工具，不共享业务ORM或跨库事务。每个服务的内部API精确Host、独立Bearer令牌、loopback绑定、JSON/大小/超时校验；模型不接触服务令牌或任意路由。共用传输层正常body读取总截止10秒；早拒绝先发送错误JSON并半关闭写端，再有限丢弃最多64KiB/250ms尾部，歧义报文不进入解析或业务。此边界避免普通迟到小请求体造成连接竞态，不承诺超界发送者能读完响应。workspace继续作为浏览器入口，验证Cookie/Origin/CSRF并从当前会话派生actor_id，浏览器不得自报主体。
 
 内部接口统一前缀`/internal/v1`（catalog保留`/v1`）。内部调用含`workspace_id/actor_id`仍须向workspace重验当前授权；服务令牌只识别受信本地调用者，不替代业务权限。用户明确提交的持久任务可在刷新/退出浏览器后继续，取消任务须显式操作；成员撤权/降级在下一私有读取、工具动作和模型调用前拒绝。已发出外部请求不承诺瞬时撤回。
 
@@ -44,7 +44,7 @@ catalog、workspace、research、tracking各自拥有数据库，仅通过有界
 
 模型调用前同事务检查任务/公司/本轮上限并预留费用、保存attempt；每次工具/模型/发布前检查取消、当前权限、委托和租约。响应后记录供应商模型/请求ID/usage/价格版本。未知计费保留预留且停止自动继续；崩溃恢复不盲重放已可能发出的模型调用。无副作用的本地步骤可从checkpoint继续，外部调用不承诺恰好一次。
 
-首轮有界参数作为开发配置：最多8次模型调用（包括核验/修订）、16次工具动作、单调用60秒、任务300秒、输出4096tokens；真实评测后根据证据调整。每请求保守输入估计和输出上限预留，实际usage超估计仍按真实值入账并暂停后续动作；不伪造供应商硬上限。网络错误不自动换模型或重试收费调用。
+首轮有界参数作为开发配置：最多8次模型调用（包括核验/修订）、16次工具动作、单调用60秒、从首次领取起300秒执行窗口、输出4096tokens；执行窗口在动作边界检查，排队不计入，恢复不重置started_at；不能强行中断已发出的请求，不承诺端到端硬截止。真实评测后根据证据调整。每请求保守输入估计和输出上限预留，实际usage超估计仍按真实值入账并暂停后续动作；不伪造供应商硬上限。网络错误不自动换模型或重试收费调用。
 
 ## Agent、证据与报告
 
@@ -52,17 +52,29 @@ catalog、workspace、research、tracking各自拥有数据库，仅通过有界
 
 Agent纯入口为`run_agent(manifest, complete, *, guard, checkpoint, resume=None, max_steps=8)`；complete接收messages/tools并返回供应商适配后的message/usage/model，费用由调用包装器持久化；guard在每动作前重验权限/取消/lease；checkpoint保存有限执行状态和工具轨迹。返回report、trace、state和quality，进程/HTTP由服务层负责。测试注入脚本provider与真实provider严格标识。
 
-证据ID由来源观察/字段位置/片段计算，带notice_id/observation_id/raw_sha256/locator/text；不从别的项目或新版本补足。现有规范数据只有选定证据片段，不是完整标书；报告须写实际覆盖与未获取材料。检索基线用结构分类/中文关键词与字符片段匹配，记录检索版本；是否引入向量依实际效果评测，不先堆组件。
+证据ID由来源观察/字段位置/片段计算，带notice_id/observation_id/raw_sha256/locator/text；不从别的项目或新版本补足；新索引保留原label和结构化money_role，因此新任务的证据ID可能变化，旧报告保持原引用。现有规范数据只有选定证据片段，不是完整标书；报告须写实际覆盖与未获取材料。检索基线用结构分类/中文关键词与字符片段匹配，记录检索版本；是否引入向量依实际效果评测，不先堆组件。
 
-报告包含scope、summary、findings（category/requirement/status/reason/evidence_ids/profile_fields/unknown_reason）、questions、coverage、limitations与追问answer。五状态met/unmet/unknown/conflicting/not_applicable；每项已知要求必须有当前输入引用，企业未填资质不能判断满足/不满足，管理员确认不是资质认证。程序校验证据存在/范围/数字及字段，额外语义核验检查引用能否支持结论；最多一次修订，未通过降级partial并显示未决项，不把可点击引用等同事实正确。
+报告包含scope、summary、findings（category/requirement/status/reason/evidence_ids/profile_fields/unknown_reason）、questions、coverage、limitations与追问answer。五状态met/unmet/unknown/conflicting/not_applicable；每项已知要求必须有当前输入引用，企业未填资质不能判断满足/不满足，管理员确认不是资质认证。程序校验证据存在/范围/数字及字段，额外语义核验检查引用能否支持结论；最多两次修订，且总模型8次/工具16次上限不增加；未通过降级partial并显示未决项，不把可点击引用等同事实正确。要求、理由和未知说明中的明确采购金额断言按角色、数值、原单位与币种绑定本项引用，企业自身预算另由本项企业字段支持：预算、最高限价和文件费同额也不能互为证据，表头/表行共同证明时须完整引用。摘要/回答仅对本报告实际引用的完整ID豁免数值扫描，原文不改，未引或伪造ID仍拒绝。这个机械守卫不是完整自然语言或法律判断器，复杂条件仍须语义核验及独立样本审查。
+
+报告分三层：findings为0–30项有依据的采购要求，建议优先3–6个关键项；所有类别（含materials）必须引用非空已读证据。questions展示待核查缺口，覆盖缺口只由服务器coverage/limitations说明；不把疑问或企业声明伪装成来源要求。没有finding直接partial/not_verified，不对空数组花费语义核验。动态工具schema只枚举本次已读引用ID，恢复时严格重建并比较，不自动猜补错误ID。零已读证据仍能使用检索工具，只是此时finish不能提交非空finding。
+
+资格要求采用抽取式契约：每项只能引用一条已读、可完整摘录的资格entry，requirement与整条原文只允许空白规范化差异，统一上限2400字。类别由来源同时约束，不能换成other/technical逃避；过长或隐私裁剪形成的片段标记qualification_extractable=false，不冒充完整条款。规则基线展示片段时另列限制。程序不为模型补ID或改写候选，旧报告不迁移。当前资格证明未核验，qualification+unknown的reason固定为“企业资格资料尚未核验，本条要求及适用分支需结合原文和企业证明逐项核对。”，unknown_reason固定为“缺少已核验的企业资格资料，当前不能确认本条的适用情况。”；模型必须提交正确文本，程序只校验、不补写。代价是不能自动给出已核完的材料清单，详细分支由原文承载。技术/交付等自由理由及摘要仍须语义核验，完整摘录不等于整份报告不会出错。
+
+追问answer对外仍为string/null；新候选须按本报告finding顺序组合1–3条不同的完整reason文本，仅允许规范空白，非追问为null。程序检查匹配，不改写候选、不补新句、不复用旧报告理由；语义节点按派生answer_finding_indices检查所选理由是否支持结论并回应子问题。除上述未核验资格固定说明外，理由仍由AI生成和核验，复用不保证理由本身正确。基线追问也复用自身保守理由；无条目保持null和partial，不设置模板白名单。
+
+questions对外仍为string[]，产品含义为待核查缺口，不要求疑问句；最多12项、每项600字，仅完整复用当前finding的非空unknown_reason，允许空白规范化及选择顺序，不得截句、补句、拼接或重复。unknown_reason上限800字，过长时不可截短放入questions；其本身仍须逐项证据核验。程序派生questions_finding_indices供语义核验，无checkpoint新字段；基线也从自身缺口去重，没有条目就用空列表，没有通用模板豁免。此约束不限制用户自由追问。
+
+当前配置为`bounded-research-agent-v14` / `research-question-gaps-v13` / `frozen-evidence-v13-question-gaps`。provider使用`deepseek-chat-v2-temperature-zero`，temperature=0及provider版本写入冻结配置和计费请求标识；降低随机性不保证确定性或正确性。旧任务保留其冻结配置；版本变化后待执行任务等待人工处理，不静默用新规则续跑。两次修订均需至少留出提出新报告与核验的两次模型额度；格式纠正不等于语义通过，错误前提不能借开放问句绕过检查。
 
 ## R2 委托、变化与提醒
 
-人工decision状态needs_review/follow_up/dismissed，带reason、expected_version、key，历史追加。watch独立active和auto_reassess（默认false），包含actor、公司、notice_id、rule_version、期望版本及明确复核范围；停跟踪不删除历史也不自动改变人工决定。
+人工decision状态needs_review/follow_up/dismissed，带reason、expected_version、key，历史追加。watch独立active和auto_reassess（默认false），包含actor、公司、notice_id、rule_version、期望版本及明确复核范围；自动委托默认且最长7天，成员授权版本变化后须重新授权。停跟踪不删除历史也不自动改变人工决定。
+
+本轮持续跟踪处理已进入catalog的新观察和workspace正式档案事件；四服务运行器不定时采集源站，源站变化尚未导入时无法发现。因此本阶段不承诺网站无人值守持续更新。
 
 tracking保存每个owner的连续接收游标和Inbox，按固定snapshot消费每个新观察，不只轮询latest以免A→B→A丢中间变化。新更正/结果通过incoming有依据关联映射到watch；关系不明给待核查，不能自动改写原公告。只比较结构化字段相同不足以声称原文只是排版变化：raw变化但缺完整正文fingerprint时记unclassified_content_change，保守提示/复核。
 
-每个watch/规则/变化fingerprint唯一change与站内notification。实质变化标记相关报告陈旧，auto_reassess为真且当前权限/额度/委托有效时才保存reassessment命令；接受后按command key查research终态，丢失响应不能换键重复创建。定期对账accepted/failed/rejected/completed，不能靠事件收到就称研究完成。取消或改规则使旧delegation失效；迟到结果仅留历史，不复活watch。重建模式只重建投影默认不发布历史提醒。
+每个watch/规则/变化fingerprint唯一change；提醒另按kind去重，因此同一变化可各有一条change_detected和reassessment_completed，后者也可能对应partial，不代表条件满足。实质变化标记相关报告陈旧，auto_reassess为真且当前权限/委托有效时保存reassessment命令；额度由research在模型外发前检查并预留。接受后按command key查research终态，丢失响应不能换键重复创建。正常派送/对账只领取pending/accepted；deferred须人工显式重试，waiting_input为待处理终态，不自动恢复。不能靠事件收到就称研究完成。取消或改规则使旧delegation失效；迟到结果仅留历史，不复活watch。重建模式只重建投影默认不发布历史提醒。
 
 ## 验收与集中阅读
 
