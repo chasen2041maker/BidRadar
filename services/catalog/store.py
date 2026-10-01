@@ -295,22 +295,35 @@ def _matches_keyword(observation, keyword):
 
 
 class Catalog:
-    def __init__(self, root):
+    def __init__(self, root, *, read_only=False):
         root = Path(root).absolute()
         if root.is_symlink():
             raise ValueError("store_symlink")
-        root.mkdir(parents=True, exist_ok=True)
+        # HTTP 查询只打开已存在的目录，服务故障/路径配错不能悄悄创建一个空库。
+        if not read_only:
+            root.mkdir(parents=True, exist_ok=True)
         marker = root / ".bidradar-catalog-v1"
+        if read_only and (not marker.is_file() or not (root / "catalog.sqlite3").is_file()):
+            raise ValueError("catalog_not_initialized")
         if not marker.exists() and any(root.iterdir()):
             raise ValueError("catalog_directory_not_empty")
-        marker.touch(exist_ok=True)
+        if not read_only:
+            marker.touch(exist_ok=True)
         if (root / "catalog.sqlite3").is_symlink():
             raise ValueError("store_symlink")
-        self.db = sqlite3.connect(root / "catalog.sqlite3", timeout=5)
+        self.db = (sqlite3.connect((root / "catalog.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=5)
+                   if read_only else sqlite3.connect(root / "catalog.sqlite3", timeout=5))
         self.db.row_factory = sqlite3.Row
         # 每次打开都注册同一纯函数；不改写旧payload，也不依赖SQLite的可选JSON扩展。
         self.db.create_function("normalizer_rank", 1,
             lambda payload: NORMALIZER_RANK[json.loads(payload)["normalizer_version"]], deterministic=True)
+        if read_only:
+            try:
+                self.key = self.db.execute("SELECT value FROM settings WHERE key='cursor_key'").fetchone()[0].encode()
+            except Exception:
+                self.db.close()
+                raise
+            return
         self.db.execute("PRAGMA journal_mode=WAL")
         # seq只表示目录接收顺序；当前版本仍先按实际获取时间选，防晚到旧数据回退。
         self.db.executescript("""
