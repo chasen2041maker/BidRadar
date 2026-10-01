@@ -453,6 +453,73 @@ class Catalog:
         return {"current": current, "history": history, "currentness": currentness(current, now),
                 "relationships": relationships(current, candidates), "snapshot": snapshot}
 
+    def observation(self, notice_id, observation_id):
+        """研究按固定版本读取；新观察到达不能悄悄替换旧报告的输入。"""
+        if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+               for value in (notice_id, observation_id)):
+            raise ValueError("invalid_observation_id")
+        row = self.db.execute("SELECT payload FROM observations WHERE notice_id=? AND id=?", (notice_id, observation_id)).fetchone()
+        if row is None:
+            raise ValueError("observation_not_found")
+        return json.loads(row[0])
+
+    def changes(self, after=0, limit=100):
+        """接收流在本地SQLite写事务内提交；seq仅为接收顺序，不是公告业务新旧。
+
+        无删除的本地观察日志使游标可补追赶。未来更换数据库须重新验证提交顺序，
+        不能把普通sequence的MAX当已提交连续水位。
+        """
+        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("invalid_query")
+        self.db.execute("BEGIN")
+        try:
+            high = self.db.execute("SELECT coalesce(max(seq),0) FROM observations").fetchone()[0]
+            if after > high:
+                raise ValueError("cursor_ahead")
+            rows = self.db.execute("SELECT seq,id,notice_id,observed_at FROM observations WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
+                                   (after, high, limit)).fetchall()
+            items = [{"seq": r["seq"], "event_id": "catalog:" + r["id"], "notice_id": r["notice_id"],
+                      "observation_id": r["id"], "observed_at": r["observed_at"]} for r in rows]
+            return {"schema_version": 1, "items": items, "next_after": rows[-1]["seq"] if rows else after, "high_watermark": high}
+        finally:
+            self.db.rollback()
+
+    def bundle(self, notice_id, snapshot=None):
+        """固定接收快照的研究范围，包含有依据的后来更正/结果，而非只查原公告。
+
+        候选、歧义及冲突关系只提示，不把它们的条件混入主公告。保留各观察身份，
+        即便已确认关系也不自动以更正中的任意日期覆盖原期限。
+        """
+        if not isinstance(notice_id, str) or not re.fullmatch(r"[0-9a-f]{64}", notice_id):
+            raise ValueError("invalid_notice_id")
+        self.db.execute("BEGIN")
+        try:
+            high = self.db.execute("SELECT coalesce(max(seq),0) FROM observations").fetchone()[0]
+            if snapshot is None:
+                snapshot = high
+            if type(snapshot) is not int or not 0 <= snapshot <= high:
+                raise ValueError("invalid_snapshot")
+            candidates = [json.loads(r["payload"]) for r in self._current(snapshot)]
+            current = next((o for o in candidates if o["notice_id"] == notice_id), None)
+            if current is None:
+                raise ValueError("notice_not_found")
+            incoming, related = [], []
+            for item in candidates:
+                if item["notice_id"] == notice_id or item["simulation"] != current["simulation"]:
+                    continue
+                for relation in relationships(item, candidates):
+                    if (relation.get("target_notice_id") == notice_id
+                            or relation.get("target_observation_id") == current["observation_id"]):
+                        record = {**relation, "source_notice_id": item["notice_id"], "source_observation_id": item["observation_id"]}
+                        incoming.append(record)
+                        if relation.get("status") == "evidenced" and item not in related:
+                            related.append(item)
+            related.sort(key=lambda o: (o["observed_at"], o["notice_id"]))
+            return {"notice_id": notice_id, "snapshot": snapshot, "current": current,
+                    "observations": [current, *related], "relationships": incoming + relationships(current, candidates)}
+        finally:
+            self.db.rollback()
+
 
 def relationships(current, candidates):
     """更正/结果可连接同项目的候选前序公告；不合并身份，也不自动改写原截止。"""

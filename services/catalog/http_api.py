@@ -140,17 +140,25 @@ class _Handler(BaseHTTPRequestHandler):
                 filters = self._filters(path.query)
                 operation, argument = "query", filters
             elif re.fullmatch(r"/v1/notices/[0-9a-f]{64}", path.path) and "?" not in self.path:
-                operation, argument = "detail", path.path.rsplit("/", 1)[1]
+                operation, argument = "detail", {"notice_id": path.path.rsplit("/", 1)[1]}
+            elif re.fullmatch(r"/v1/observations/[0-9a-f]{64}/[0-9a-f]{64}", path.path) and "?" not in self.path:
+                _, _, _, nid, oid = path.path.split("/")
+                operation, argument = "observation", {"notice_id": nid, "observation_id": oid}
+            elif re.fullmatch(r"/v1/bundles/[0-9a-f]{64}", path.path):
+                operation = "bundle"
+                argument = {"notice_id": path.path.rsplit("/", 1)[1], **self._numbers(path.query, {"snapshot"})}
+            elif path.path == "/v1/changes":
+                operation, argument = "changes", self._numbers(path.query, {"after", "limit"})
             else:
                 raise _RequestError("route_not_found", 404)
             with closing(Catalog(self.server.store_path, read_only=True)) as catalog:
                 try:
-                    result = catalog.query(**argument) if operation == "query" else catalog.detail(argument)
+                    result = getattr(catalog, operation)(**argument)
                 except ValueError as exc:
                     code = str(exc)
-                    if code == "notice_not_found":
+                    if code in ("notice_not_found", "observation_not_found"):
                         raise _RequestError(code, 404) from None
-                    if code in ("invalid_cursor", "cursor_query_mismatch"):
+                    if code in ("invalid_cursor", "cursor_query_mismatch", "invalid_snapshot", "invalid_query", "cursor_ahead"):
                         raise _RequestError(code) from None
                     raise
             self._json(200, result)
@@ -158,6 +166,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(exc.code, exc.status)
         except (OSError, sqlite3.DatabaseError, ValueError, TypeError, KeyError, IndexError, RecursionError):
             self._error("catalog_unavailable", 503)
+
+    def _numbers(self, query, allowed):
+        """增量与历史读接口只接受明确的十进制整数，不借重复键更换快照。"""
+        try:
+            pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+            values = dict(pairs)
+            if len(values) != len(pairs) or set(values) - allowed:
+                raise ValueError()
+            if any(not re.fullmatch(r"0|[1-9][0-9]{0,15}", v) for v in values.values()):
+                raise ValueError()
+            return {k: int(v) for k, v in values.items()}
+        except ValueError:
+            raise _RequestError("invalid_query") from None
 
     def _unsupported(self):
         try:

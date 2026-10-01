@@ -124,6 +124,23 @@ class CatalogHTTPTests(unittest.TestCase):
             call()
         self.assertEqual((raised.exception.code, raised.exception.status), (code, status))
 
+    def test_research_history_and_incremental_contract(self):
+        from services.common.owner_clients import CatalogEvidenceClient
+        client = CatalogEvidenceClient(self.address, self.token)
+        frozen = client.bundle(self.one["notice_id"])
+        change_page = client.changes(0, 1)
+        self.assertEqual(len(change_page["items"]), 1)
+        self.assertLess(change_page["next_after"], change_page["high_watermark"])
+        newer = self.add(1, "2026-10-01T12:00:00Z")
+        self.assertEqual(client.bundle(self.one["notice_id"])["current"], newer)
+        self.assertEqual(client.bundle(self.one["notice_id"], frozen["snapshot"]), frozen)
+        self.assertEqual(client.observation(self.one["notice_id"], self.one["observation_id"]), self.one)
+        # 存在的观察不能借另一个公告身份读取，旧版本仍可按原身份核验。
+        self.assertEqual(self.request(f"/v1/observations/{self.two['notice_id']}/{self.one['observation_id']}")[0], 404)
+        for route in ("/v1/changes?after=0&after=1", "/v1/changes?limit=0",
+                      "/v1/changes?after=-1", f"/v1/bundles/{self.one['notice_id']}?snapshot=true"):
+            self.assertEqual(self.request(route)[0], 400, route)
+
     def test_health_and_queries_are_json_with_no_browser_cors(self):
         status, headers, body = self.request("/health", headers={"Authorization": ""})
         self.assertEqual((status, body), (200, {"ok": True, "version": "catalog-http-v1"}))

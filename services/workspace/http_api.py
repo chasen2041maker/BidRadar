@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 from datetime import datetime, timezone
 from http.cookies import SimpleCookie, CookieError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from services.workspace.catalog_client import CatalogClient, CatalogError
 from services.workspace.store import WorkspaceStore, WorkspaceError
+from services.common.local_http import token_valid
+from services.common.local_http import LocalHTTPError
+from services.workspace.research_routes import dispatch as dispatch_research
 
 ASSETS = Path(__file__).with_name("web")
 MAX_BODY = 128 * 1024
@@ -86,13 +90,45 @@ class Handler(BaseHTTPRequestHandler):
         if parts.scheme or parts.netloc or parts.fragment or "%" in parts.path:
             raise WorkspaceError("invalid_path", 400)
         if self.command == "POST":
-            if self.headers.get_all("Origin") != [self.server.origin]:
+            if parts.path.startswith("/internal/v1/"):
+                self._internal_identity()
+            elif self.headers.get_all("Origin") != [self.server.origin]:
                 raise WorkspaceError("invalid_origin", 403)
             if self.headers.get_all("Content-Type") != ["application/json"]:
                 raise WorkspaceError("json_required", 415)
             if self.headers.get("Transfer-Encoding") is not None:
                 raise WorkspaceError("invalid_framing", 400)
         return parts
+
+    def _internal_identity(self):
+        """内部凭据只豁免内部接口的浏览器 Origin，不授予任何浏览器路由权限。"""
+        values = self.headers.get_all("Authorization", [])
+        if len(values) == 1:
+            for name, secret in self.server.internal_tokens.items():
+                if hmac.compare_digest(values[0].encode(), ("Bearer " + secret).encode()):
+                    return name
+        raise WorkspaceError("unauthorized_service", 401)
+
+    def _internal(self, store, path, body):
+        identity = self._internal_identity()
+        if self.command != "POST" or "?" in self.path:
+            raise WorkspaceError("not_found", 404)
+        if identity not in ("research", "tracking"):
+            raise WorkspaceError("forbidden", 403)
+        if path == "/internal/v1/authorize":
+            _fields(body, "schema_version actor_id workspace_id action")
+            result = lambda: store.authorize(body["actor_id"], body["workspace_id"], body["action"])
+        elif path == "/internal/v1/context":
+            _fields(body, "schema_version actor_id workspace_id profile_revision selection_id")
+            result = lambda: store.context(body["actor_id"], body["workspace_id"], body["profile_revision"], body["selection_id"])
+        elif path == "/internal/v1/events" and identity == "tracking":
+            _fields(body, "schema_version after limit")
+            result = lambda: store.events(body["after"], body["limit"])
+        else:
+            raise WorkspaceError("not_found", 404)
+        if type(body["schema_version"]) is not int or body["schema_version"] != 1:
+            raise WorkspaceError("unsupported_contract")
+        return result()
 
     def _body(self):
         lengths = self.headers.get_all("Content-Length", [])
@@ -141,6 +177,9 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body() if self.command == "POST" else None
         store = WorkspaceStore(self.server.store_path)
         try:
+            if parts.path.startswith("/internal/v1/"):
+                self._send(200, self._internal(store, parts.path, body))
+                return
             if self.command == "POST" and parts.path == "/api/login" and not parts.query:
                 _fields(body, "username password")
                 result = store.login(body["username"], body["password"])
@@ -168,7 +207,7 @@ class Handler(BaseHTTPRequestHandler):
                 store.check_csrf(token, csrf_values[0])
             if parts.path == "/api/session" and self.command == "GET" and not parts.query:
                 self._send(200, {"user": user, "workspaces": store.list_workspaces(uid),
-                                 "mode": "local_development", "analysis_enabled": False})
+                                 "mode": "local_development", "analysis_enabled": self.server.research_client is not None})
                 return
             if parts.path == "/api/logout" and self.command == "POST" and not parts.query:
                 _fields(body, "")
@@ -193,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
                 return member
 
             current_member()
+            handled, result = dispatch_research(self.command, action, parts.query, body, uid, wid, self.server, current_member)
+            if handled:
+                self._send(200, result)
+                return
             client = self.server.catalog_client
             if self.command == "GET":
                 if action == "notices":
@@ -266,7 +309,11 @@ class Handler(BaseHTTPRequestHandler):
     def _handle(self):
         try:
             self._dispatch()
-        except (WorkspaceError, CatalogError) as error:
+        except (CatalogError, LocalHTTPError) as error:
+            # 内部Bearer配置失效不是浏览器会话失效；不得把用户踢回一个无法解决的登录循环。
+            self._error("dependency_authentication_failed" if error.status == 401 else error.code,
+                        503 if error.status == 401 else error.status)
+        except WorkspaceError as error:
             self._error(error.code, error.status)
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
             self._error("invalid_request", 400)
@@ -295,14 +342,21 @@ class Handler(BaseHTTPRequestHandler):
         raise AttributeError(name)
 
 
-def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0):
+def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0, internal_tokens=None,
+                  research_client=None, tracking_client=None):
     """端口0供集成测试；只允许回环，不能把开发身份系统暴露到网卡。"""
     if host != "127.0.0.1" or type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("loopback_required")
     client = CatalogClient(catalog_url, catalog_token)
+    internal_tokens = dict(internal_tokens or {})
+    if (set(internal_tokens) - {"research", "tracking"} or not all(token_valid(v) for v in internal_tokens.values())
+            or len(set(internal_tokens.values())) != len(internal_tokens)):
+        raise ValueError("invalid_service_tokens")
     server = WorkbenchServer((host, port), Handler)
     server.store_path = Path(store)
     server.catalog_client = client
+    server.internal_tokens = internal_tokens
+    server.research_client, server.tracking_client = research_client, tracking_client
     server.authority = f"127.0.0.1:{server.server_port}"
     server.origin = "http://" + server.authority
     return server

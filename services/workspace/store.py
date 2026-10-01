@@ -211,6 +211,11 @@ SCHEMA = (
     "CREATE INDEX IF NOT EXISTS member_user ON memberships(user_id,active)",
     "CREATE INDEX IF NOT EXISTS proposal_workspace ON profile_proposals(workspace_id,created_at)",
     "CREATE INDEX IF NOT EXISTS selection_workspace ON selections(workspace_id,created_at)",
+    """CREATE TABLE IF NOT EXISTS owner_events(
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE,
+        event_type TEXT NOT NULL, workspace_id TEXT NOT NULL, actor_id TEXT,
+        target_user_id TEXT, profile_revision INTEGER, membership_version INTEGER,
+        occurred_at TEXT NOT NULL)""",
 )
 
 
@@ -237,16 +242,26 @@ class WorkspaceStore:
             self.db.execute("PRAGMA synchronous=FULL")
             with self._transaction(write=True):
                 version = self.db.execute("PRAGMA user_version").fetchone()[0]
-                if version not in (0, 1):
+                if version not in (0, 1, 2):
                     raise WorkspaceError("unsupported_store_version", 503)
                 for statement in SCHEMA:
                     self.db.execute(statement)
+                # 旧开发库升级时补齐所属服务的历史事件；唯一业务身份保证重启不复制。
+                if version < 2:
+                    self.db.execute("INSERT OR IGNORE INTO owner_events(event_id,event_type,workspace_id,actor_id,target_user_id,"
+                                "membership_version,occurred_at) SELECT 'access:'||workspace_id||':'||user_id||':'||version,"
+                                "'AccessChanged',workspace_id,actor_id,user_id,version,"
+                                "strftime('%Y-%m-%dT%H:%M:%SZ',recorded_at,'unixepoch') FROM membership_events ORDER BY recorded_at,workspace_id,user_id,version")
+                    self.db.execute("INSERT OR IGNORE INTO owner_events(event_id,event_type,workspace_id,actor_id,profile_revision,"
+                                "occurred_at) SELECT 'profile:'||workspace_id||':'||revision,'ProfileConfirmed',workspace_id,"
+                                "confirmed_by,revision,strftime('%Y-%m-%dT%H:%M:%SZ',confirmed_at,'unixepoch') "
+                                "FROM profile_revisions ORDER BY confirmed_at,workspace_id,revision")
                 # 只保护本库的版本记录不被误更新；不是对有磁盘权限者的安全隔离。
-                for table in ("membership_events", "profile_proposals", "profile_revisions", "selection_history", "commands"):
+                for table in ("membership_events", "profile_proposals", "profile_revisions", "selection_history", "commands", "owner_events"):
                     for action in ("UPDATE", "DELETE"):
                         self.db.execute(f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{action.lower()} "
                                         f"BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT,'immutable_record'); END")
-                self.db.execute("PRAGMA user_version=1")
+                self.db.execute("PRAGMA user_version=2")
         except (OSError, sqlite3.Error):
             self.close()
             raise WorkspaceError("storage_unavailable", 503) from None
@@ -459,6 +474,9 @@ class WorkspaceStore:
         self.db.execute("INSERT INTO membership_events VALUES(?,?,?,?,?,?,?,?,?,?)",
                         (workspace_id, target_user_id, version, actor_id, "bootstrap" if actor_id is None else "user",
                          old_role, old_active, role, int(active), now))
+        self.db.execute("INSERT INTO owner_events(event_id,event_type,workspace_id,actor_id,target_user_id,membership_version,occurred_at) "
+                        "VALUES(?,?,?,?,?,?,?)", (f"access:{workspace_id}:{target_user_id}:{version}", "AccessChanged", workspace_id,
+                                                 actor_id, target_user_id, version, _utc(now)))
 
     def member_history(self, user_id, workspace_id, target_user_id):
         """当前管理员读取本公司成员审计，已撤权成员的既有记录仍属于公司。"""
@@ -497,6 +515,45 @@ class WorkspaceStore:
 
     def _current_revision(self, workspace_id):
         return self.db.execute("SELECT current_profile_revision FROM workspaces WHERE id=?", (workspace_id,)).fetchone()[0]
+
+    def authorize(self, user_id, workspace_id, action):
+        """仅由认证过的内部入口调用；授权代数防止撤权后重新加入复活旧任务。"""
+        if action not in ("read", "analyze", "track", "admin"):
+            raise WorkspaceError("invalid_action")
+        roles = ROLES if action == "read" else ({"admin"} if action == "admin" else WRITERS)
+        with self._transaction():
+            role = self._authorize(user_id, workspace_id, roles)
+            version = self.db.execute("SELECT version FROM memberships WHERE workspace_id=? AND user_id=?",
+                                      (workspace_id, user_id)).fetchone()[0]
+            return {"role": role, "membership_version": version,
+                    "current_profile_revision": self._current_revision(workspace_id)}
+
+    def context(self, user_id, workspace_id, profile_revision, selection_id=None):
+        """返回本公司指定的不可变档案及选择；当前版本单列，调用者不能把历史冒充最新。"""
+        with self._transaction():
+            self._authorize(user_id, workspace_id)
+            _integer(profile_revision, 1)
+            row = self.db.execute("SELECT * FROM profile_revisions WHERE workspace_id=? AND revision=?",
+                                  (workspace_id, profile_revision)).fetchone()
+            if row is None:
+                raise WorkspaceError("not_found", 404)
+            selection = self._selection(workspace_id, _text(selection_id, 128)) if selection_id is not None else None
+            return {"profile": self._revision(row), "current_profile_revision": self._current_revision(workspace_id),
+                    "selection": selection}
+
+    def events(self, after=0, limit=100):
+        """内部跟踪消费者拉取事件；不外发档案正文，游标是本服务接收序列。"""
+        _integer(after)
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise WorkspaceError("invalid_limit")
+        with self._transaction():
+            high = self.db.execute("SELECT coalesce(max(seq),0) FROM owner_events").fetchone()[0]
+            if after > high:
+                raise WorkspaceError("cursor_ahead")
+            rows = self.db.execute("SELECT * FROM owner_events WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
+                                   (after, high, limit)).fetchall()
+            return {"schema_version": 1, "items": [dict(r) for r in rows],
+                    "next_after": rows[-1]["seq"] if rows else after, "high_watermark": high}
 
     def _command(self, workspace_id, operation, key, payload):
         # 缓存是该命令当时的结果，不冒充对象当前状态；授权必须由调用方先重验。
@@ -563,6 +620,9 @@ class WorkspaceStore:
             revision = expected_revision + 1
             self.db.execute("INSERT INTO profile_revisions VALUES(?,?,?,?,?,?)", (workspace_id, revision, proposal_id, proposal["payload"], user_id, _now()))
             self.db.execute("UPDATE workspaces SET current_profile_revision=? WHERE id=?", (revision, workspace_id))
+            self.db.execute("INSERT INTO owner_events(event_id,event_type,workspace_id,actor_id,profile_revision,occurred_at) "
+                            "VALUES(?,?,?,?,?,?)", (f"profile:{workspace_id}:{revision}", "ProfileConfirmed", workspace_id,
+                                                   user_id, revision, _utc(_now())))
             result = self._revision(self.db.execute("SELECT * FROM profile_revisions WHERE workspace_id=? AND revision=?", (workspace_id, revision)).fetchone())
             return self._remember(workspace_id, "confirm_profile", key, request_hash, result)
 
