@@ -31,8 +31,10 @@ class DemoTransport:
                     + '">虚构软件采购演示</a><span>2026-09-30 | 采购人：虚构单位</span></li></ul>').encode()
             media = "text/html; charset=utf-8"
         elif kind == "notice" and url == NOTICE_URL:
-            body = ('<h2 class="tc">虚构软件采购演示</h2><div class="vF_detail_content">'
-                    '<p>全部文字仅用于演示，非真实采购机会。</p><a href="' + ATTACHMENT_URL
+            body = ('<h2 class="tc">虚构软件采购演示招标公告</h2><div class="vF_detail_content">'
+                    '<p>全部文字仅用于演示，非真实采购机会。</p>'
+                    '<p>项目编号：DEMO-001</p><p>采购单位：虚构单位</p><p>预算金额：12.34万元</p>'
+                    '<p>投标截止时间：2026-10-10 09:30（北京时间）</p><a href="' + ATTACHMENT_URL
                     + '">虚构测试附件</a></div>').encode()
             media = "text/html; charset=utf-8"
         elif kind == "attachment" and url == ATTACHMENT_URL:

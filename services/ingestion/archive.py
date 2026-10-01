@@ -249,12 +249,14 @@ class Store:
             task = dict(stored)
             version_id = None
             if digest is not None:
-                version_id = sha256(("cn_ccgp\n" + task["url"] + "\n" + digest).encode()).hexdigest()
-                latest = self.db.execute("SELECT max(version) FROM versions WHERE source_id='cn_ccgp' AND url=?",
-                                         (task["url"],)).fetchone()[0] or 0
-                self.db.execute("INSERT INTO versions VALUES(?,'cn_ccgp',?,?,?,?) "
+                # 来源归属取自已持久化运行，不让新接入的数据混入CCGP的版本命名空间。
+                source = self.run(run_id)["request"].get("source_id", "cn_ccgp")
+                version_id = sha256((source + "\n" + task["url"] + "\n" + digest).encode()).hexdigest()
+                latest = self.db.execute("SELECT max(version) FROM versions WHERE source_id=? AND url=?",
+                                         (source, task["url"])).fetchone()[0] or 0
+                self.db.execute("INSERT INTO versions VALUES(?,?,?,?,?,?) "
                                 "ON CONFLICT(source_id,url,sha256) DO NOTHING",
-                                (version_id, task["url"], digest, latest + 1, captured_at))
+                                (version_id, source, task["url"], digest, latest + 1, captured_at))
             # 只记录无凭据、无Set-Cookie的必要响应头；原URL仅来自受控入口。
             headers = ({key: val for key, val in response.headers.items()
                         if key.lower() in ("content-type", "etag", "last-modified", "content-length")}

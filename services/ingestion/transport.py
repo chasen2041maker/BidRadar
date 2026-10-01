@@ -21,7 +21,7 @@ import threading
 import time
 from urllib.parse import unquote, urljoin, urlsplit
 
-HOSTS = frozenset({"search.ccgp.gov.cn", "www.ccgp.gov.cn", "ccgp.gov.cn"})
+HOSTS = frozenset({"search.ccgp.gov.cn", "www.ccgp.gov.cn", "ccgp.gov.cn", "ggzy.hainan.gov.cn"})
 KINDS = frozenset({"listing", "notice", "attachment", "robots"})
 USER_AGENT = "BidRadar/0.1"
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -86,7 +86,9 @@ def _url_parts(url):
         parts = urlsplit(url)
         if (parts.scheme not in ("http", "https") or parts.hostname not in HOSTS
                 or parts.username is not None or parts.password is not None
-                or parts.port is not None or parts.fragment or not parts.path.startswith("/")):
+                or (parts.port is not None and not (parts.hostname == "ggzy.hainan.gov.cn"
+                    and parts.port == (443 if parts.scheme == "https" else 80)))
+                or parts.fragment or not parts.path.startswith("/")):
             raise ValueError()
         path = unquote(parts.path, errors="strict")
         if (any(c in path for c in "\\%?#") or any(ord(c) < 32 for c in path)
@@ -108,6 +110,8 @@ class SourcePolicy:
     evidence: tuple[str, ...]
     attachments_allowed: bool
     allowed: tuple[tuple[str, str, tuple[str, ...]], ...]
+    schema_version: int = 1
+    robots_missing: str = "deny"
 
     @classmethod
     def from_file(cls, path):
@@ -123,8 +127,12 @@ class SourcePolicy:
     @classmethod
     def from_dict(cls, data):
         try:
-            if (not isinstance(data, dict) or type(data.get("schema_version")) is not int or data.get("schema_version") != 1
+            if (not isinstance(data, dict) or type(data.get("schema_version")) is not int or data.get("schema_version") not in (1, 2)
                     or data.get("approved") is not True):
+                raise ValueError()
+            version = data["schema_version"]
+            missing = data.get("robots_missing", "deny")
+            if missing not in ("deny", "allow_404") or (version == 1 and missing != "deny"):
                 raise ValueError()
             purpose = data["purpose"]
             evidence = data["evidence"]
@@ -140,14 +148,15 @@ class SourcePolicy:
                 raise ValueError()
             for rule in data["allowed"]:
                 host, prefix, kinds = rule["host"], rule["path_prefix"], rule["kinds"]
-                if (host not in HOSTS or not isinstance(prefix, str) or not prefix.startswith("/")
+                if (host not in HOSTS or (version == 1 and host == "ggzy.hainan.gov.cn")
+                        or not isinstance(prefix, str) or not prefix.startswith("/")
                         or any(c in prefix for c in "\\%?#") or any(ord(c) < 33 or ord(c) > 126 for c in prefix)
                         or any(s in (".", "..") for s in prefix.split("/"))
                         or not isinstance(kinds, list) or not kinds
                         or any(k not in KINDS - {"robots"} for k in kinds)):
                     raise ValueError()
                 rules.append((host, prefix, tuple(kinds)))
-            return cls(purpose, reviewed, expires, tuple(evidence), attachments, tuple(rules))
+            return cls(purpose, reviewed, expires, tuple(evidence), attachments, tuple(rules), version, missing)
         except (KeyError, ValueError, TypeError):
             raise FetchError("policy_invalid") from None
 
@@ -164,11 +173,18 @@ class SourcePolicy:
             if path == "/robots.txt" and not parts.query and any(r[0] == parts.hostname for r in self.allowed):
                 return
             raise FetchError("url_not_allowed")
-        if kind == "listing" and (parts.hostname != "search.ccgp.gov.cn" or path != "/bxsearch"):
-            raise FetchError("url_not_allowed")
-        if kind == "notice" and (parts.hostname == "search.ccgp.gov.cn" or not re.fullmatch(
-                r"/cggg/(?:zygg|dfgg)/[A-Za-z0-9_/-]+\.html?", path)):
-            raise FetchError("url_not_allowed")
+        if kind in ("listing", "notice"):
+            legacy = (parts.hostname == "search.ccgp.gov.cn" and path == "/bxsearch") if kind == "listing" else (
+                parts.hostname in ("www.ccgp.gov.cn", "ccgp.gov.cn") and bool(re.fullmatch(
+                    r"/cggg/(?:zygg|dfgg)/[A-Za-z0-9_/-]+\.html?", path)))
+            public = False
+            if self.schema_version == 2 and not parts.query:
+                from services.ingestion.sources.public_notices import canonical_notice_url, listing_identity
+                source = "cn_hainan" if parts.hostname == "ggzy.hainan.gov.cn" else "cn_ccgp"
+                public = (canonical_notice_url(source, url) is not None if kind == "notice"
+                          else listing_identity(source, url) is not None)
+            if not legacy and not public:
+                raise FetchError("url_not_allowed")
         if kind == "attachment" and not self.attachments_allowed:
             raise FetchError("attachment_not_approved")
         for host, prefix, kinds in self.allowed:
@@ -406,7 +422,7 @@ class Transport:
 
     def __init__(self, policy, *, timeout=10, max_attempts=2, min_interval=2,
                  max_requests=50, max_seconds=180, exchange=None, resolver=None,
-                 clock=None, sleep=None, utcnow=None):
+                 clock=None, sleep=None, utcnow=None, dns_mode="system", allow_network=True):
         if (type(timeout) not in (int, float) or not 0 < timeout <= 30
                 or type(max_attempts) is not int or not 1 <= max_attempts <= 3
                 or type(min_interval) not in (int, float) or not 0 <= min_interval <= 60
@@ -414,6 +430,8 @@ class Transport:
                 or type(max_seconds) not in (int, float) or not 0 < max_seconds <= 600
                 or (exchange is None and min_interval < 2)):
             raise ValueError("invalid transport limits")
+        if dns_mode not in ("system", "google-doh") or type(allow_network) is not bool:
+            raise ValueError("invalid transport options")
         self.policy, self.timeout, self.max_attempts = policy, timeout, max_attempts
         self.min_interval, self.max_requests, self.max_seconds = min_interval, max_requests, max_seconds
         self.exchange, self.resolver = exchange or _exchange, resolver
@@ -421,6 +439,8 @@ class Transport:
         self.started, self.last_request = self.clock(), None
         self.requests, self.bytes_received = 0, 0
         self.robots, self.blocked_hosts = {}, set()
+        self.dns_mode, self.allow_network = dns_mode, allow_network
+        self.dns_requests = 0
 
     def _remaining(self):
         remaining = self.max_seconds - (self.clock() - self.started)
@@ -438,6 +458,8 @@ class Transport:
         self._remaining()
 
     def _authorize(self, url, kind):
+        if not self.allow_network:
+            raise FetchError("network_opt_in_required")
         if not isinstance(self.policy, SourcePolicy):
             raise FetchError("policy_required")
         self.policy._authorize(url, kind, self.utcnow())
@@ -458,8 +480,15 @@ class Transport:
         parts = urlsplit(url)
         port = 443 if parts.scheme == "https" else 80
         try:
-            addresses = (self.resolver(parts.hostname, port) if self.resolver else
-                         _resolve(parts.hostname, port, min(self.timeout, self._remaining())))
+            timeout = min(self.timeout, self._remaining())
+            if self.resolver:
+                addresses = self.resolver(parts.hostname, port)
+            elif self.dns_mode == "google-doh":
+                from services.ingestion.public_dns import resolve_public_dns
+                self.dns_requests += 1
+                addresses = resolve_public_dns(parts.hostname, port, timeout)
+            else:
+                addresses = _resolve(parts.hostname, port, timeout)
         finally:
             _checkpoint(checkpoint)
         try:
@@ -502,6 +531,11 @@ class Transport:
                 _, status, _, body = self._read(origin + "/robots.txt", "robots", MAX_ROBOTS_BYTES, checkpoint)
                 self.robots[origin] = _parse_robots(body)
             except FetchError as exc:
+                # RFC9309允许404时视为没有robots规则；它不是使用许可。只有新版
+                # 准入明确选择时生效，旧policy、403/429、5xx和网络失败仍失败关闭。
+                if exc.code == "http_error" and exc.http_status == 404 and self.policy.robots_missing == "allow_404":
+                    self.robots[origin] = _Robots((), 0)
+                    return self.robots[origin]
                 if exc.code in ("blocked", "policy_expired_or_not_yet_valid", "request_budget_exceeded", "time_budget_exceeded"):
                     raise
                 raise FetchError("robots_unavailable", exc.http_status) from None
