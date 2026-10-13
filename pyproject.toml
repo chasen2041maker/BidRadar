@@ -1,6 +1,96 @@
-# 代码格式配置。
-# 格式化 Python：ruff format services scripts tests
-# 只用于格式化，项目运行仍然只依赖 Python 标准库。
+# 项目依赖和工具配置。
+#
+# 这里的依赖只给 v2 新代码（bidradar/）用，用 uv 管理：uv sync 安装，uv run 运行。
+# 旧代码（services/、scripts/、tests/）仍然只用 Python 标准库，不需要安装这些依赖，到阶段 6 删除。
+
+[project]
+name = "bidradar"
+version = "0.2.0"
+description = "Evidence-based tender research and tracking for software and AI service teams."
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "fastapi>=0.143.0",
+    "psycopg[binary]>=3.3.6",
+    "pydantic-settings>=2.15.0",
+    "sqlalchemy>=2.1.4",
+    "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.13.1",
+    "import-linter>=2.15",
+    "pytest>=9.1.1",
+    "ruff==0.16.8",
+]
+
+# 代码格式。格式化：uv run ruff format services scripts tests bidradar migrations tests_v2
+# 目标版本仍是 3.10，因为旧代码还要在 3.10 上跑。
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+
+# 新代码的测试。旧测试在 tests/ 里，用 unittest 跑，pytest 不收集它们。
+[tool.pytest.ini_options]
+testpaths = ["tests_v2"]
+pythonpath = ["."]
+
+# 分层规则，对应蓝图 3.3 节。运行：uv run lint-imports
+# 每条契约违反时，报错里会列出是哪一行 import 越界了。
+[tool.importlinter]
+root_package = "bidradar"
+# 让契约也能检查对第三方库的依赖，比如"models.py 不能 import SQLAlchemy"。
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "模块内分层：上层可以 import 下层，下层不能 import 上层"
+type = "layers"
+containers = ["bidradar.modules.*"]
+# 从上到下。schemas 在 service 上面：service 也给 Worker 调用，不能依赖 HTTP 的请求和响应结构。
+# tables 在 models 上面：表定义可以用领域里的枚举，领域对象不能知道表的存在。
+layers = ["api", "schemas", "service", "repo", "tables", "models"]
+
+[[tool.importlinter.contracts]]
+name = "api 只调用 service，不直接读写数据库"
+type = "forbidden"
+source_modules = ["bidradar.modules.*.api"]
+forbidden_modules = ["bidradar.modules.*.repo", "bidradar.modules.*.tables"]
+# 经过 service 间接用到 repo 是正常的，只禁止 api 直接 import。
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "跨模块只能调用对方的 service"
+type = "independence"
+modules = ["bidradar.modules.*"]
+# 对任何模块 service 的 import 都放行，其余跨模块 import（repo、tables、models、api、schemas）都算越界。
+ignore_imports = ["bidradar.** -> bidradar.modules.*.service"]
+# 还没有模块互相调用时，上面这条放行规则一条 import 都匹配不到，这是正常的，不报警。
+unmatched_ignore_imports_alerting = "none"
+
+[[tool.importlinter.contracts]]
+name = "models.py 不依赖 Web 框架和数据库"
+type = "forbidden"
+source_modules = ["bidradar.modules.*.models"]
+forbidden_modules = ["fastapi", "starlette", "sqlalchemy", "psycopg", "alembic"]
+
+[[tool.importlinter.contracts]]
+name = "agent 是纯逻辑：不依赖业务模块、数据库和 Web 框架"
+type = "forbidden"
+source_modules = ["bidradar.agent"]
+forbidden_modules = [
+    "bidradar.app",
+    "bidradar.modules",
+    "bidradar.infra",
+    "fastapi",
+    "starlette",
+    "sqlalchemy",
+    "psycopg",
+    "alembic",
+]
+
+[[tool.importlinter.contracts]]
+name = "infra 是最底层，不认识业务模块"
+type = "forbidden"
+source_modules = ["bidradar.infra"]
+forbidden_modules = ["bidradar.app", "bidradar.modules", "bidradar.agent"]

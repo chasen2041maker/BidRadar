@@ -4,3 +4,9 @@ __pycache__/
 
 # 本地公开原文也可能含联系方式；不提交获取数据或SQLite运行记录。
 .bidradar-data/
+
+# v2 新代码：uv 建的虚拟环境、本机配置（可能含密码）、工具缓存。
+.venv/
+.env
+.pytest_cache/
+.ruff_cache/
