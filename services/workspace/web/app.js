@@ -1,6 +1,18 @@
 "use strict";
-// 页面只提交稳定ID和版本；可信标题/权限/档案版本由服务端再次核对。
-// 所有来源与企业文字用textContent展示，禁止把采购原文当可执行HTML。
+// BidRadar 工作台前端（原生 JavaScript，不依赖任何框架）。
+//
+// 页面分六个视图：发现商机、企业档案、我的选择、成员、研究、跟踪，由 showView 切换。
+// 文件从上到下大致是：
+//   1. 全局状态 state 和各种中文显示名称
+//   2. 通用工具：创建元素、调用接口（api）、带幂等键的提交（command）、格式化
+//   3. 登录、切换公司、各视图的加载函数（search、loadProfile、loadSelections、loadMembers）
+//   4. 研究：发起分析、任务列表、轮询任务状态、渲染报告
+//   5. 跟踪：决定、关注、变化、提醒、复核
+//   6. 最底部：给按钮和表单绑定事件
+//
+// 两条安全规则：
+//   - 页面只提交 ID 和版本号；标题、权限、档案版本这些都由服务端重新核对，不信任页面传的值。
+//   - 公告原文、企业填写的内容、模型输出一律用 textContent 显示，绝不当作 HTML 插入页面。
 const $ = (id) => document.getElementById(id);
 const state = {session: null, workspace: null, profile: null, view: "discover", cart: new Map(), cursor: null, query: null, epoch: 0, searchVersion: 0,
   runId: null, runVersion: 0, runListVersion: 0, runBefore: null, runStatuses: new Map(), pollTimer: null, trackedNotice: null, trackingVersion: 0, notificationAfter: 0, changeAfter: 0, changeTargets: new Map()};
@@ -37,7 +49,7 @@ async function api(path, body) {
   try {response = await fetch(path, {method: body === undefined ? "GET" : "POST", credentials: "same-origin", cache: "no-store", headers: body === undefined ? {} : {"Content-Type": "application/json", "X-CSRF-Token": csrf()}, body: body === undefined ? undefined : JSON.stringify(body)});}
   catch (_) {throw new Error("连接中断。尚未确认操作结果；恢复后可重试，服务端会核对重复请求。");}
   const value = await response.json();
-  // 空间切换/退出后的迟到响应必须丢弃，不能把上一家公司资料画到当前空间。
+  // 请求发出后如果已经切换了公司或退出登录（epoch 变了），就丢弃这个迟到的响应，免得把上一家公司的数据显示到当前公司。
   if (epoch !== state.epoch) {const stale = new Error("界面范围已变化。"); stale.discarded = true; throw stale;}
   if (!response.ok) {const code = value.error?.code || "request_failed"; const error = new Error(errors[code] || (response.status === 401 ? "登录已失效，请重新登录。" : response.status === 503 ? "服务暂时不可用，已有记录仍保留，请稍后重试。" : response.status === 409 ? "记录或版本已变化，请刷新后重新核对。" : "操作未完成，请检查输入和当前权限。")); error.code = code; error.status = response.status; if (response.status === 401 && path !== "/api/login") {const hadSession = Boolean(state.session); showLogin(); if (hadSession) $("login-error").textContent = error.message;} throw error;}
   return value;
@@ -47,8 +59,9 @@ function canWrite() {return state.workspace && ["admin", "member"].includes(stat
 async function run(button, action) {if (button) button.disabled = true; try {await action();} catch (error) {if (!error.discarded) notice(error.message, true);} finally {if (button) button.disabled = false; updateCart();}}
 function actionButton(text, action, cls) {const button = el("button", text, cls); button.type = "button"; button.addEventListener("click", () => run(button, action)); return button;}
 function key() {return crypto.randomUUID();}
-// 网络结果未知时保留同一请求的key，刷新后也可重放；这里只存请求指纹与随机key，
-// 不把企业正文、密码或会话令牌放进Web Storage。成功才移除该待定命令。
+// 带幂等键提交修改。网络中断时不知道服务端有没有处理，所以把幂等键存在 sessionStorage 里，
+// 重试（甚至刷新页面后重试）时用同一个键，服务端就不会重复处理。
+// sessionStorage 里只存"请求指纹 → 幂等键"，不存企业资料、密码或会话令牌。请求成功后删除。
 async function command(resource, data) {
   const epoch = state.epoch;
   const endpoint = path(resource);
@@ -57,12 +70,12 @@ async function command(resource, data) {
   const storageKey = "bidradar-command-" + hash;
   let commandKey = sessionStorage.getItem(storageKey);
   if (!commandKey) {commandKey = key(); sessionStorage.setItem(storageKey, commandKey);}
-  // 失败不换key；改过的请求内容自然具有不同指纹，成功才清理。
+  // 失败时不换键；如果用户改了内容，指纹不同，自然会用新的键。
   const result = await api(endpoint, {...data, key: commandKey}); sessionStorage.removeItem(storageKey); return result;
 }
 function empty(container, title, text) {const box = el("div", null, "empty"); box.append(el("strong", title), el("p", text)); container.append(box);}
 function dateText(value) {if (!value) return "尚未确认"; return value.local.replace("T", " ") + (value.timezone === "+08:00" ? "（北京时间）" : "（原文时区未确认）");}
-// 金额在契约中是十进制字符串；展示也不经过浮点数，避免大金额的小数被舍入。
+// 金额在接口里是十进制字符串。显示时直接处理字符串、不转成浮点数，避免大金额的小数被舍入。
 function factText(fact) {if (!fact || fact.status !== "known") return statusNames[fact?.status] || "尚未确认"; if (fact.value?.amount !== undefined) {const [whole, fraction] = fact.value.amount.split("."); return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (fraction ? "." + fraction : "") + " 元";} if (fact.value?.local) return dateText(fact.value); return String(fact.value);}
 function localTime(value) {if (!value) return "—"; const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", {hour12: false});}
 function safeLink(label, value) {try {const url = new URL(value); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return el("span", "来源链接待核对"); const a = el("a", label); a.href = url.href; a.target = "_blank"; a.rel = "noopener noreferrer"; return a;} catch (_) {return el("span", "来源链接待核对");}}
@@ -186,7 +199,9 @@ async function loadMembers() {
     if (state.workspace.role === "admin") {const select = el("select"); select.setAttribute("aria-label", member.display_name + "的角色"); for (const [role, label] of Object.entries(roleNames)) {const option = el("option", label); option.value = role; select.append(option);} select.value = member.role; row.append(select, actionButton("保存角色", async () => {await api(path("members/change"), {target_user_id: member.user_id, role: select.value, active: member.active, expected_version: member.version}); notice("成员角色已更新，下一次操作按新权限检查。"); await loadSession();}), actionButton(member.active ? "撤销访问" : "恢复访问", async () => {await api(path("members/change"), {target_user_id: member.user_id, role: member.role, active: !member.active, expected_version: member.version}); notice("成员访问状态已更新。"); await loadSession();}));} else row.append(badge(roleNames[member.role], "neutral")); list.append(row);}
 }
 
-// R1/R2只通过当前公司的网关路径读取；来源文字、模型输出和diff都当作数据展示。
+// ---- 研究与跟踪 ----
+// 都通过当前公司的 /api/workspaces/{公司}/research|tracking/... 接口访问。
+// 公告原文、模型输出和变化对比都只当作文字显示。
 const runStates = {queued: "已保存 · 等待执行", running: "正在研究", waiting_input: "等待人工处理 · 自动执行已停止", retry_wait: "等待受控恢复", succeeded: "研究已完成", partial: "部分完成 · 仍有缺口", failed: "研究失败", cancelled: "已取消", pending: "等待派送", accepted: "研究服务已接受", deferred: "依赖失败 · 等待人工重试", rejected: "复核未获接受"};
 const findingStates = {met: "证据支持满足", unmet: "证据支持不满足", unknown: "尚未确认", conflicting: "依据存在冲突", not_applicable: "不适用"};
 const decisionStates = {needs_review: "需要进一步核查", follow_up: "人工决定跟进", dismissed: "人工决定放弃"};
@@ -219,7 +234,7 @@ async function loadBudget() {
   } catch (error) {if (error.discarded) return; container.replaceChildren(el("p", "费用信息暂时不可用；不能把未知费用视为零。" + error.message, "error"));}
 }
 function latestRunStatus(run) {
-  // 同公司内只记状态/版本；详情先完成时，晚到的旧列表不能把终态降回queued。
+  // 按版本号取最新状态：如果详情已经显示"完成"，晚到的旧列表数据不能把它改回"排队中"。
   const previous = state.runStatuses.get(run.id), version = Number.isInteger(run.version) ? run.version : 0;
   if (!previous || version >= previous.version) state.runStatuses.set(run.id, {state: run.state, version});
   return state.runStatuses.get(run.id).state;
@@ -251,7 +266,7 @@ async function loadRunList(more = false) {
 }
 async function loadResearch() {
   if (!analysisEnabled()) {$("research-list").replaceChildren(); empty($("research-list"), "研究服务尚未启用", "当前仍可核查公告、确认档案和保存选择。"); return;}
-  // 用量失败不覆盖已保存报告；两个独立只读请求各自呈现结果。
+  // 任务列表和预算用量是两个独立请求，一个失败不影响另一个显示。
   const results = await Promise.allSettled([loadRunList(), loadBudget()]);
   for (const result of results) if (result.status === "rejected" && !result.reason.discarded) notice(result.reason.message, true);
   if (state.runId && state.view === "research") await viewRun(state.runId);
@@ -262,7 +277,7 @@ async function viewRun(id, remaining = 20) {
   if (version !== state.runVersion || state.view !== "research") return;
   renderRun(run, remaining);
   syncRunListStatus(run);
-  // 只轮询已存在的任务；最多20次、每次完成后隔3秒，绝不通过POST重新创建。
+  // 轮询任务状态：最多 20 次，每次间隔 3 秒。只查询已有任务，不会重新创建。
   if (["queued", "running", "retry_wait"].includes(run.state) && remaining > 0) {
     state.pollTimer = setTimeout(async () => {
       if (state.view !== "research" || state.runId !== id || version !== state.runVersion) return;
@@ -311,7 +326,7 @@ function renderRun(run, remaining) {
   container.append(el("p", `档案第 ${run.profile_revision ?? "待核对"} 版 · ${run.kind === "question" ? "同项目追问" : run.kind === "reassessment" ? "变化复核" : "固定输入研究"}`, "muted"));
   if (run.reason) container.append(el("p", "当前原因：" + (errors[run.reason] || valueText(run.reason)), "note"));
   if (run.state === "waiting_input") container.append(el("p", waitingInputMessage(run), "note"));
-  // 当前性单独核对；冻结报告正文永远不随新档案或新公告静默改变。
+  // 单独显示报告是否还是最新的（档案或公告有没有变）。报告正文本身永远不会因此被改动。
   const freshnessNames = {current: "与当前输入一致", changed: "输入已有变化", unavailable: "暂无法核对", not_checked: "尚未核对"};
   const freshness = run.freshness || {};
   container.append(el("p", `报告当前性：企业档案 ${freshnessNames[freshness.profile] || "尚未核对"}；公告 ${freshnessNames[freshness.catalog] || "尚未核对"}。`, "muted"));
@@ -330,7 +345,7 @@ function renderRun(run, remaining) {
   const steps = Array.isArray(run.trace) ? run.trace : Array.isArray(run.trace?.steps) ? run.trace.steps : [];
   if (!steps.length) trace.append(el("p", run.mode === "baseline" ? "此任务是规则基线，没有模型工具选择轨迹。" : "尚无可展示的已保存工具动作。", "muted"));
   steps.forEach((step, index) => {
-    // 只展示工具审计字段，原始模型思维不是产品内容，不能整份渲染供应商响应。
+    // 只显示工具调用记录（调了什么工具、读了哪些原文），不显示模型的原始回复。
     const audit = {}; for (const name of ["tool", "name", "tool_name", "arguments", "input", "status", "result", "result_summary", "evidence_ids", "step", "event", "kind"]) if (step && Object.hasOwn(step, name)) audit[name] = step[name];
     trace.append(jsonDetails(`动作 ${index + 1} · ${step?.tool || step?.name || step?.tool_name || step?.event || "已记录步骤"}`, audit));
   }); container.append(trace);
