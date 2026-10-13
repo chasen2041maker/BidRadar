@@ -24,11 +24,13 @@
 - 数据来自中国政府采购网和海南省公共资源交易平台的有限公开样本（12 条真实公告），企业是两家虚构公司。
 - 486 项自动化测试在 Python 3.10 和 3.12 上通过。
 
-还没有做的：正式的用户系统、PostgreSQL、云端部署、完整招标文件的获取，以及真实用户试用。详见 [路线图](docs/roadmap.md)。
+还没有做的：正式的用户系统、云端部署、完整招标文件的获取，以及真实用户试用。详见 [路线图](docs/roadmap.md)。
+
+正在进行 v2 改造：新代码写在 `bidradar/`，改成模块化单体（FastAPI + PostgreSQL）。阶段 0 地基已完成，计划见 [v2 改造蓝图](docs/v2-blueprint.md)。
 
 ## 快速开始
 
-需要 Python 3.10 或更高版本，项目只用标准库，不需要安装依赖。
+需要 Python 3.10 或更高版本。旧代码只用标准库，不需要安装依赖。
 
 ```bash
 # 启动四个服务（不调用真实模型）
@@ -46,6 +48,17 @@ python scripts/run_data_demo.py                        # 离线演示数据链�
 python scripts/run_research_workbench.py --enable-model   # 允许调用 DeepSeek（会产生费用，见开发指南）
 ```
 
+v2 新代码需要 Python 3.12、[uv](https://docs.astral.sh/uv/) 和 Docker：
+
+```bash
+docker compose up -d --wait db                  # 启动 PostgreSQL 16
+uv run alembic upgrade head                     # 迁移数据库
+uv run uvicorn bidradar.app.main:app            # 启动 API，打开 http://127.0.0.1:8000/health
+uv run pytest && uv run lint-imports            # 测试和分层规则检查
+```
+
+详见 [开发指南](docs/dev-guide.md#v2-新代码bidradar)。
+
 ## 文档
 
 | 文档 | 内容 |
@@ -62,7 +75,14 @@ python scripts/run_research_workbench.py --enable-model   # 允许调用 DeepSee
 ## 目录结构
 
 ```text
-services/
+bidradar/       v2 新代码（模块化单体）
+  app/          组装：FastAPI 应用、配置、依赖注入
+  modules/      业务模块：identity、workspace、catalog、ingestion、documents、research、tracking
+  agent/        研究流水线（纯逻辑）
+  infra/        数据库连接等基础设施
+migrations/     数据库迁移（Alembic）
+tests_v2/       v2 新代码的测试（pytest）
+services/       旧代码，v2 阶段 6 删除
   ingestion/    采集：从公开网站抓取公告，保存原始文件
   processing/   规范化：把原始内容整理成统一格式
   catalog/      商机目录：公告、版本、搜索
@@ -71,7 +91,7 @@ services/
   tracking/     跟踪：跟进决定、关注、变化、提醒、自动复核
   common/       服务之间通信用的 HTTP 工具
 scripts/        启动、演示、评测脚本
-tests/          自动化测试
+tests/          旧代码的测试（unittest）
 docs/           文档
 third_party/    第三方代码的来源与许可
 ```

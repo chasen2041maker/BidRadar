@@ -1,0 +1,27 @@
+# 本地开发用的 PostgreSQL。启动：docker compose up -d --wait db
+#
+# --wait 会等到下面的健康检查通过才返回，紧接着跑 alembic upgrade head 不会因为数据库还没就绪而失败。
+# 账号密码只用于本机开发；端口只绑定在 127.0.0.1，局域网里的其他机器连不上。
+# 数据存在名为 pgdata 的 Docker 卷里，docker compose down 不会删数据，加 -v 才会。
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bidradar
+      POSTGRES_PASSWORD: bidradar
+      POSTGRES_DB: bidradar
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 数据库第一次初始化时执行这里的 SQL：再建一个测试专用的库，测试不会碰开发数据。
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bidradar -d bidradar"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  pgdata:

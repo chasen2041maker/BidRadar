@@ -11,8 +11,9 @@
 | [0005](0005-evidence-first.md) | 证据优先：每条结论要有原文，未知不当成满足 | 已采纳 |
 | [0006](0006-model-and-budget.md) | 研究模型用 DeepSeek V4 Flash，本轮预算 20 元，调用前先预留费用 | 已采纳 |
 | [0007](0007-defer-redis-k8s.md) | Redis 和 K8s 推迟到服务部署阶段 | 已采纳 |
-| [0008](0008-v2-modular-monolith.md) | v2：先做模块化单体（FastAPI + PostgreSQL），研究改成流水线 | 已采纳，待开工 |
+| [0008](0008-v2-modular-monolith.md) | v2：先做模块化单体（FastAPI + PostgreSQL），研究改成流水线 | 已采纳，阶段 0 已完成 |
 | [0009](0009-plain-language-docs.md) | 文档精简为少量人话文档，旧文档归档 | 已采纳 |
+| [0010](0010-upload-first-direct-analysis.md) | 招标文件上传作为研究主入口；去掉选择批次，点"分析"时确认后直接创建任务 | 已采纳 |
 
 ## 模板
 

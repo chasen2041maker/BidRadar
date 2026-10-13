@@ -1,4 +1,7 @@
-# 每次推送和 PR：在 Python 3.10 和 3.12 上跑全部测试，检查前端语法和代码格式。
+# 每次推送和 PR：
+# - test：旧代码的全部测试，Python 3.10 和 3.12，外加前端语法检查。
+# - v2：新代码（bidradar/）的分层规则、数据库迁移、pytest 和健康检查，连一个真实的 PostgreSQL。
+# - format：Python 代码格式。
 name: Tests
 
 on:
@@ -29,6 +32,51 @@ jobs:
       - name: Check front-end syntax
         run: node --check services/workspace/web/app.js
 
+  v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bidradar
+          POSTGRES_PASSWORD: bidradar
+          POSTGRES_DB: bidradar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bidradar -d bidradar_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      # CI 里只有一个用完即弃的数据库，迁移命令、API 和 pytest 都连它。
+      BIDRADAR_DATABASE_URL: postgresql+psycopg://bidradar:bidradar@localhost:5432/bidradar_test
+      BIDRADAR_TEST_DATABASE_URL: postgresql+psycopg://bidradar:bidradar@localhost:5432/bidradar_test
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        # --locked：uv.lock 和 pyproject.toml 对不上就直接失败，保证 CI 装的就是锁文件里的版本。
+        run: |
+          pip install uv==0.11.32
+          uv sync --locked
+      - name: Check import rules
+        run: uv run lint-imports
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+      - name: Run tests
+        run: uv run pytest
+      - name: Start the API and check /health
+        run: |
+          uv run uvicorn bidradar.app.main:app --port 8000 &
+          curl --silent --show-error --fail-with-body --retry 20 --retry-connrefused --retry-delay 1 \
+            http://127.0.0.1:8000/health
+
   format:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -42,4 +90,4 @@ jobs:
       - name: Check Python formatting
         run: |
           pip install ruff==0.16.8
-          ruff format --check services scripts tests
+          ruff format --check services scripts tests bidradar migrations tests_v2
