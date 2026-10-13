@@ -84,6 +84,6 @@
 | 2026-09-30 | 真实公开样本跑通整条数据链（PR #11） |
 | 2026-10-01 | 工作台（PR #12）；AI 研究和跟踪（PR #13） |
 | 2026-10-12 | 文档重组为人话版本；全部代码注释重写；拆分 `run_agent`；修复 Python 3.10 兼容问题；统一代码格式；写 v2 改造蓝图 |
-| 2026-10-13 | 拍板蓝图第 13 节剩下的几项；v2 阶段 0 地基：`bidradar/` 骨架、FastAPI、PostgreSQL、Alembic、import-linter、CI |
+| 2026-10-13 | 拍板蓝图第 13 节剩下的几项；v2 阶段 0 地基：`bidradar/` 骨架、FastAPI、PostgreSQL、Alembic、import-linter、CI（PR #14） |
 
 每个阶段的原始记录在 [历史文档](archive/) 里。
