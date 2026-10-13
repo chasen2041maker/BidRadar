@@ -1,7 +1,14 @@
-"""本地核查工作台的 HTTP 边界：身份→当前权限→目录证据→私有版本。
+"""工作台的 HTTP 服务：浏览器的唯一入口，同时给 research 和 tracking 提供内部接口。
 
-仅绑定回环地址、只服务虚构企业开发环境。每请求独立连接；不会读取 catalog 库，
-更不会把 selected 当作 research 任务。先读 Handler._dispatch，再读选择确认分支。
+一个浏览器请求的处理顺序：
+    检查 Host / Origin / 请求格式 → 从 Cookie 找到会话 → 修改类请求检查 CSRF
+    → 检查此人是不是这家公司的成员 → 执行操作（读写本地数据，或转发给其他服务）
+    → 其他服务返回后，再检查一次成员身份（防止等待期间被移出）
+
+浏览器永远不能自己声明"我是谁、我在哪家公司"：身份只从会话里取。
+服务只监听本机回环地址，只用于虚构企业的本地开发。
+
+阅读顺序：Handler._dispatch → 选择（selections）的创建和确认分支 → research_routes.dispatch。
 """
 from __future__ import annotations
 
@@ -22,12 +29,15 @@ from services.common.local_http import token_valid
 from services.common.local_http import LocalHTTPError
 from services.workspace.research_routes import dispatch as dispatch_research
 
-ASSETS = Path(__file__).with_name("web")
-MAX_BODY = 128 * 1024
+ASSETS = Path(__file__).with_name("web")   # 前端静态文件目录
+MAX_BODY = 128 * 1024                      # 请求体最大 128 KB
 
 
 def _json(raw):
-    """重复键或 NaN 不是兼容 JSON；拒绝歧义，避免两层解释不同请求。"""
+    """严格解析请求体 JSON：有重复键或 NaN 就拒绝。
+
+    不同程序对重复键的处理不一样（取第一个还是最后一个），拒绝掉可以避免同一个请求被两边理解成两件事。
+    """
     def pairs(values):
         result = {}
         for key, value in values:
@@ -40,12 +50,15 @@ def _json(raw):
 
 
 def _fields(value, keys):
+    """检查请求体正好包含 keys 里列出的字段（空格分隔），不多不少。"""
     if not isinstance(value, dict) or set(value) != set(keys.split()):
         raise WorkspaceError("invalid_request", 400)
     return value
 
 
 class WorkbenchServer(ThreadingHTTPServer):
+    """多线程 HTTP 服务器。每个连接 10 秒超时，防止慢连接一直占着线程。"""
+
     daemon_threads = True
     allow_reuse_address = False
 
@@ -56,13 +69,17 @@ class WorkbenchServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    """Cookie 只证明会话；角色与对象归属永远重新从 workspace 存储查询。"""
+    """处理单个 HTTP 请求。
+
+    Cookie 只用来找到会话；角色和数据归属每次都重新从数据库查，不信任浏览器传来的任何身份信息。
+    """
     server_version = "BidRadarLocal/1"
 
     def log_message(self, *_):
-        pass  # 登录请求、私有标识和外部公告文本均不写 HTTP 控制台日志。
+        pass  # 不打印访问日志：日志里可能出现登录信息、私有 ID 或公告原文。
 
     def _send(self, status, value, *, mime="application/json; charset=utf-8", cookies=()):
+        """发送响应，附带一组安全响应头（禁止缓存、禁止嗅探类型、严格的内容安全策略）。"""
         raw = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
         self.send_response(status)
         self.send_header("Content-Type", mime)
@@ -78,10 +95,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def _error(self, code, status=400):
-        # API 的稳定 code 可被中文界面解释，异常正文不从服务端透出。
+        # 只返回错误码，由前端翻译成中文提示；服务端的异常细节不外露。
         self._send(status, {"error": {"code": code, "message": "请求未完成，请核对权限、输入或服务状态。"}})
 
     def _guard(self):
+        """请求的基础检查：Host 必须是本服务、不接受代理转发头、路径格式正确；
+        POST 请求还要检查来源（Origin）、Content-Type 和请求体的分帧方式。"""
         if len(self.path) > 8192 or self.headers.get_all("Host") != [self.server.authority]:
             raise WorkspaceError("invalid_host", 400)
         if any(self.headers.get(name) for name in ("Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto")):
@@ -101,7 +120,10 @@ class Handler(BaseHTTPRequestHandler):
         return parts
 
     def _internal_identity(self):
-        """内部凭据只豁免内部接口的浏览器 Origin，不授予任何浏览器路由权限。"""
+        """识别内部调用方：比对 Bearer 令牌，返回服务名（research 或 tracking）。
+
+        内部令牌只用于 /internal/v1/ 接口，拿着它也访问不了任何浏览器接口。
+        """
         values = self.headers.get_all("Authorization", [])
         if len(values) == 1:
             for name, secret in self.server.internal_tokens.items():
@@ -110,6 +132,7 @@ class Handler(BaseHTTPRequestHandler):
         raise WorkspaceError("unauthorized_service", 401)
 
     def _internal(self, store, path, body):
+        """处理内部接口：authorize（查权限）、context（取档案和选择）、events（拉事件，仅 tracking）。"""
         identity = self._internal_identity()
         if self.command != "POST" or "?" in self.path:
             raise WorkspaceError("not_found", 404)
@@ -131,6 +154,7 @@ class Handler(BaseHTTPRequestHandler):
         return result()
 
     def _body(self):
+        """读取并解析 JSON 请求体。必须有且只有一个 Content-Length，大小不超过 MAX_BODY。"""
         lengths = self.headers.get_all("Content-Length", [])
         if len(lengths) != 1 or not re.fullmatch(r"\d{1,7}", lengths[0]):
             raise WorkspaceError("invalid_content_length", 400)
@@ -149,10 +173,11 @@ class Handler(BaseHTTPRequestHandler):
         return result
 
     def _token(self):
+        """从 Cookie 里取出会话令牌 br_session。"""
         values = self.headers.get_all("Cookie", [])
         if len(values) != 1 or len(values[0]) > 4096:
             raise WorkspaceError("unauthenticated", 401)
-        # SimpleCookie 覆盖重复键；先拒绝重复会话，避免代理/框架选取不同值。
+        # 出现多个 br_session 就拒绝。SimpleCookie 遇到重复只保留最后一个，别的程序可能取第一个，会产生歧义。
         if sum(part.strip().startswith("br_session=") for part in values[0].split(";")) != 1:
             raise WorkspaceError("unauthenticated", 401)
         cookie = SimpleCookie()
@@ -163,6 +188,7 @@ class Handler(BaseHTTPRequestHandler):
             raise WorkspaceError("unauthenticated", 401) from None
 
     def _dispatch(self):
+        """按路径分发请求。顺序：静态文件 → 健康检查 → 内部接口 → 登录 → 需要登录的接口。"""
         parts = self._guard()
         static = {"/": ("index.html", "text/html; charset=utf-8"),
                   "/app.js": ("app.js", "text/javascript; charset=utf-8"),
@@ -183,7 +209,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "POST" and parts.path == "/api/login" and not parts.query:
                 _fields(body, "username password")
                 result = store.login(body["username"], body["password"])
-                # 登录成功轮换浏览器会话；旧会话如存在则持久注销，不输出令牌到JSON。
+                # 登录成功就换一个新会话，旧会话（如果有）直接注销。令牌只放在 Cookie 里，不出现在响应正文。
                 try:
                     old_token = self._token()
                 except WorkspaceError:
@@ -222,7 +248,10 @@ class Handler(BaseHTTPRequestHandler):
             wid, action = match.groups()
 
             def current_member(write=False):
-                # 远程 catalog 返回之后也重查，旧Cookie或已移除成员不能读到迟到响应。
+                """确认会话仍有效、此人仍是这家公司的成员；write=True 时还要求不是只读成员。
+
+                调用其他服务前后都要查一次：等待期间如果被移出公司，迟到的响应也不能交给他。
+                """
                 store.bind_session(token)
                 member = next((w for w in store.list_workspaces(uid) if w["workspace_id"] == wid), None)
                 if member is None:
@@ -279,13 +308,13 @@ class Handler(BaseHTTPRequestHandler):
             elif action == "selections":
                 _fields(body, "profile_revision items key")
                 current_member(write=True)
-                # 成功响应丢失后的重放不能依赖目录仍在线/未变化。先按当前授权核对
-                # 已持久命令与原输入；只有真正新命令才做外部核验。
+                # 先看这是不是一次重复提交（上次成功了但响应丢了）。
+                # 是的话直接返回上次的结果，不需要目录在线；只有新请求才去目录核实公告。
                 result = store.replay_selection(uid, wid, body["profile_revision"], body["items"], body["key"])
                 if result is None:
                     items = client.validate_selection(body["items"])
                     checked_at = datetime.now(timezone.utc).isoformat()
-                    # 写事务仍由store重验绑定会话、成员和档案，不把远程调用包在数据库锁里。
+                    # 远程核实在事务外完成；写入时 store 会再检查一遍会话、成员和档案版本。
                     result = store.create_selection(uid, wid, body["profile_revision"], items, body["key"], checked_at=checked_at)
             elif re.fullmatch(r"selections/[A-Za-z0-9_-]{1,128}/(confirm|cancel)", action):
                 _fields(body, "expected_version key")
@@ -307,10 +336,12 @@ class Handler(BaseHTTPRequestHandler):
             store.close()
 
     def _handle(self):
+        """处理请求并把各种异常转成统一的错误响应。"""
         try:
             self._dispatch()
         except (CatalogError, LocalHTTPError) as error:
-            # 内部Bearer配置失效不是浏览器会话失效；不得把用户踢回一个无法解决的登录循环。
+            # 其他服务返回 401，说明服务之间的令牌配置有问题，不是用户没登录。
+            # 转成 503，免得前端以为会话失效、把用户踢回登录页，陷入重新登录也解决不了的循环。
             self._error("dependency_authentication_failed" if error.status == 401 else error.code,
                         503 if error.status == 401 else error.status)
         except WorkspaceError as error:
@@ -328,6 +359,7 @@ class Handler(BaseHTTPRequestHandler):
     do_POST = _handle
 
     def _unsupported(self):
+        """不支持的 HTTP 方法：照样做基础检查，然后返回 405。"""
         try:
             self._guard()
             self._error("method_not_allowed", 405)
@@ -344,7 +376,10 @@ class Handler(BaseHTTPRequestHandler):
 
 def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0, internal_tokens=None,
                   research_client=None, tracking_client=None):
-    """端口0供集成测试；只允许回环，不能把开发身份系统暴露到网卡。"""
+    """创建工作台 HTTP 服务器（未启动）。
+
+    只允许监听 127.0.0.1：这套开发用的身份系统不能暴露到网络上。port=0 表示随机端口，测试用。
+    """
     if host != "127.0.0.1" or type(port) is not int or not 0 <= port <= 65535:
         raise ValueError("loopback_required")
     client = CatalogClient(catalog_url, catalog_token)
@@ -363,6 +398,7 @@ def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0
 
 
 def main(argv=None):
+    """命令行入口：只启动工作台（旧的双服务模式），不含研究和跟踪。"""
     parser = argparse.ArgumentParser(description="R1-A 本地工作台；仅虚构企业开发数据")
     parser.add_argument("--store", required=True, type=Path)
     parser.add_argument("--port", type=int, default=8765)

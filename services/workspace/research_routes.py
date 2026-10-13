@@ -1,4 +1,8 @@
-"""浏览器到所属服务的窄网关：身份从会话派生，正文不能指定公司或actor。"""
+"""把浏览器的研究、跟踪请求转发给 research 和 tracking 服务。
+
+浏览器路径 /api/workspaces/{公司}/research/... 和 /tracking/... 在这里映射成内部接口。
+发起人和公司 ID 由工作台从会话里取出后加上去，浏览器的请求体里不能指定这两样。
+"""
 import re
 
 from services.common.query import parse_query_pairs
@@ -7,11 +11,13 @@ from .store import WorkspaceError
 
 
 def fields(value, expected):
+    """检查请求体正好包含 expected 里列出的字段（空格分隔）。"""
     if not isinstance(value, dict) or set(value) != set(expected.split()):
         raise WorkspaceError("invalid_request")
 
 
 def page(query, *, research=False):
+    """解析分页参数。研究列表用 before（上一页最后一个任务 ID），变化和提醒用 after（序号）。"""
     try:
         pairs = parse_query_pairs(query, strict_parsing=True, keep_blank_values=True, max_num_fields=2)
         values = dict(pairs)
@@ -35,7 +41,11 @@ def page(query, *, research=False):
 
 
 def dispatch(method, action, query, body, actor, wid, server, current_member):
-    """返回(是否本扩展路由,结果)；跨服务响应后重验浏览器会话和当前成员。"""
+    """处理研究或跟踪类请求，返回 (是否由这里处理, 结果)。
+
+    不是 research/ 或 tracking/ 开头的路径返回 (False, None)，交回给工作台自己处理。
+    转发前后都会调用 current_member 检查成员身份。
+    """
     if not action.startswith(("research/", "tracking/")):
         return False, None
     base = {"schema_version": 1, "actor_id": actor, "workspace_id": wid}

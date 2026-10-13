@@ -1,8 +1,10 @@
-"""workspace 到 catalog 的只读 HTTP 客户端；不 import catalog ORM、不跨库读取。
+"""工作台访问商机目录（catalog）的客户端，只读。
 
-只有固定 loopback 服务与固定路由可访问；无代理、重定向、原件下载或模型调用。
-选择校验返回当前观察的最小冻结快照；不是两个服务的原子事务，后续消费仍须
-按工作流重验当前权限/版本，不承诺保存之后目录永不变化。
+工作台不直接读 catalog 的数据库，所有数据都通过这个客户端的 HTTP 请求获取。
+只能访问本机的 catalog 服务和固定的几个路径；不走代理、不跟随重定向、不下载原件。
+
+validate_selection 用于创建选择时核实公告：确认每条公告存在、并且还是用户看到的那个版本。
+核实和保存不在同一个事务里，所以保存之后目录仍可能变化，后续步骤要自己再核对版本。
 """
 from __future__ import annotations
 
@@ -14,17 +16,20 @@ import time
 from urllib.parse import urlencode, urlsplit
 
 _HEX = re.compile(r"[0-9a-f]{64}")
+# 公告类型：采购、更正、结果、终止、意向、未知。
 _KINDS = {"procurement", "correction", "award", "termination", "intention", "unknown"}
 
 
 class CatalogError(Exception):
-    """仅携带稳定错误码/HTTP 状态，不把令牌、上游原文或网络地址拼进异常。"""
+    """访问目录出错。只带错误码和 HTTP 状态，不带令牌、对方的原文或网络地址。"""
+
     def __init__(self, code: str, status: int = 503):
         super().__init__(code)
         self.code, self.status = code, status
 
 
 def _pairs(pairs):
+    """json.loads 的钩子：遇到重复键就报错。"""
     result = {}
     for key, value in pairs:
         if key in result:
@@ -38,6 +43,7 @@ def _invalid_constant(value):
 
 
 def _decode(raw):
+    """严格解析响应 JSON，并限制嵌套深度和节点数量，防止异常大的响应拖垮服务。"""
     value = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_invalid_constant)
     pending, nodes = [(value, 0)], 0
     while pending:
@@ -55,6 +61,7 @@ def _decode(raw):
 
 
 def _observation(value):
+    """检查一条公告观察的必填字段和格式，不合格就抛 ValueError。"""
     required = {"observation_id", "notice_id", "source_id", "simulation", "source_record_key", "identity_kind",
                 "source_url", "capture_id", "raw_sha256", "parser_version", "normalizer_version", "observed_at",
                 "title", "notice_type", "facts", "references", "material_status", "attribution", "run_id"}
@@ -73,8 +80,10 @@ def _observation(value):
 
 
 class CatalogClient:
+    """商机目录的只读客户端。"""
+
     def __init__(self, base_url, token, *, timeout=5, max_bytes=8 * 1024 * 1024, selection_timeout=15):
-        # 用完整字符串文法拒绝 localhost、userinfo、路径/查询、替代 IP 表示法与任意 URL。
+        # 地址必须严格是 http://127.0.0.1:端口。localhost、带用户名、带路径、其他 IP 写法一律拒绝。
         match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", base_url) if isinstance(base_url, str) else None
         if match is None or not 1 <= int(match[1]) <= 65535:
             raise ValueError("invalid_catalog_address")
@@ -89,6 +98,7 @@ class CatalogClient:
         self._selection_timeout = selection_timeout
 
     def _request(self, target, *, deadline=None):
+        """发一个 GET 请求，返回解析后的 JSON。总耗时不超过超时时间，响应大小有上限。"""
         if len(target) > 8192:
             raise CatalogError("invalid_query", 400)
         now = time.monotonic()
@@ -108,7 +118,7 @@ class CatalogClient:
                 sock.settimeout(seconds)
             remaining()
             response = connection.getresponse()
-            # http.client 从不自动跟随 3xx；仅接受无压缩的 JSON，有界读取且有总时限。
+            # 遇到重定向直接报错（http.client 本身也不会自动跟随）；只接受未压缩的 JSON。
             if (response.status in range(300, 400) or response.getheader("Content-Encoding") is not None
                     or response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json"):
                 raise ValueError("unexpected_catalog_response")
@@ -143,13 +153,16 @@ class CatalogClient:
         except (OSError, HTTPException, ValueError, TypeError, RecursionError, UnicodeError):
             raise CatalogError("catalog_unavailable", 503) from None
         finally:
-            # Connection: close 时响应流仍可能持有 socket 引用；超时/拒绝响应也必须释放。
+            # 无论成功失败都要关闭响应和连接，否则 socket 可能一直不释放。
             if response is not None:
                 response.close()
             connection.close()
 
     def query(self, *, keyword="", kind=None, page_size=20, simulation=False, cursor=None):
-        """默认真实目录；显式 simulation=True 才查询演示。游标须沿用同一组过滤条件。"""
+        """搜索公告列表。默认只查真实公告，simulation=True 才查演示数据。
+
+        翻页时 cursor 必须和第一页使用相同的筛选条件。
+        """
         if (not isinstance(keyword, str) or len(keyword) > 200 or type(page_size) is not int
                 or not 1 <= page_size <= 100 or type(simulation) is not bool
                 or kind is not None and (not isinstance(kind, str) or kind not in _KINDS)
@@ -184,6 +197,7 @@ class CatalogClient:
         return result
 
     def detail(self, notice_id):
+        """读取一条公告的当前版本、历史版本和关联公告。"""
         return self._detail(notice_id)
 
     def _detail(self, notice_id, *, deadline=None):
@@ -206,10 +220,10 @@ class CatalogClient:
         return result
 
     def validate_selection(self, items):
-        """只接受 1..20 个唯一公告的固定版本；全部核验成功才交付最小快照。
+        """核实用户要选择的公告：1–20 条，每条都必须存在，并且仍是用户看到的那个版本。
 
-        所有串行详情共享至多 15 秒总截止，同时保留单次请求上限；前面已读成功
-        不会重置预算，也不会在超时后返回一部分“已验证”的选择。
+        全部核实通过才返回保存所需的信息（ID、标题、链接）；任何一条不通过就整体失败。
+        所有请求加起来最多 15 秒，超时就整体失败，不会只返回一部分。
         """
         if not isinstance(items, list) or not 1 <= len(items) <= 20:
             raise CatalogError("invalid_selection", 400)
