@@ -1,7 +1,15 @@
-"""本地服务的纯HTTP边界，不能包含业务存储、租户推断或授权默认值。
+"""本地服务之间通信用的 HTTP 客户端和服务器（只处理传输，不含任何业务逻辑）。
 
-服务令牌只识别受信调用者，所属服务仍必须向workspace核查当前业务权限。
-固定回环地址、无代理/重定向、严格JSON和总体截止；日志不输出请求/凭据。
+research、tracking 的内部接口都用这里的 create_server 起服务，用 LocalClient 互相调用。
+
+几条规则：
+    - 只连本机 127.0.0.1，不走代理，不跟随重定向。
+    - 请求和响应都是严格的 JSON（不允许重复键、NaN），有大小上限和总超时。
+    - 服务令牌只说明"调用方是哪个服务"，不代表任何用户权限；
+      用户权限仍由各服务向 workspace 查询。
+    - 不打印访问日志，免得请求内容或令牌进日志。
+
+v2 计划换成 FastAPI，这一层基本可以删掉（见 docs/v2-blueprint.md）。
 """
 from __future__ import annotations
 
@@ -14,22 +22,26 @@ import socket
 import time
 from urllib.parse import urlsplit
 
-BODY_TIMEOUT = 10.0
-REJECT_DRAIN_TIMEOUT = 0.25
-REJECT_DRAIN_BYTES = 64 * 1024
+BODY_TIMEOUT = 10.0              # 读取请求体的总时限（秒）
+REJECT_DRAIN_TIMEOUT = 0.25      # 拒绝请求后，最多再等多久来读掉没读完的请求体
+REJECT_DRAIN_BYTES = 64 * 1024   # 拒绝请求后，最多读掉多少字节
 
 
 class LocalHTTPError(Exception):
+    """服务间调用出错。code 是错误码，status 是 HTTP 状态码。"""
+
     def __init__(self, code, status=503):
         super().__init__(code)
         self.code, self.status = code, status
 
 
 def encode(value):
+    """对象编码成 UTF-8 的 JSON 字节（键排序、无多余空格）。"""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
 def decode(raw):
+    """严格解析 JSON 字节：不允许重复键和 NaN，限制嵌套深度和节点数，顶层必须是对象。"""
     def pairs(values):
         result = {}
         for key, value in values:
@@ -55,10 +67,13 @@ def decode(raw):
 
 
 def token_valid(token):
+    """服务令牌格式是否合法：32–128 位的字母、数字、下划线或连字符。"""
     return isinstance(token, str) and re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is not None
 
 
 class LocalClient:
+    """调用另一个本地服务的客户端。base_url 必须是 http://127.0.0.1:端口。"""
+
     def __init__(self, base_url, token, timeout=5, max_bytes=8 * 1024 * 1024):
         match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", base_url)
         if not match or not 1 <= int(match[1]) <= 65535 or not token_valid(token):
@@ -68,6 +83,11 @@ class LocalClient:
         self.port, self.token, self.timeout, self.max_bytes = int(match[1]), token, timeout, max_bytes
 
     def request(self, method, path, payload=None):
+        """发一个请求并返回解析后的 JSON。
+
+        对方返回错误时抛 LocalHTTPError(对方的错误码, 状态码)；
+        网络问题、格式不对、超时，一律抛 LocalHTTPError("service_unavailable", 503)。
+        """
         parts = urlsplit(path)
         if method not in ("GET", "POST") or not path.startswith("/") or parts.scheme or parts.netloc or parts.fragment or len(path) > 8192:
             raise LocalHTTPError("invalid_route", 400)
@@ -122,6 +142,8 @@ class LocalClient:
 
 
 class _Server(ThreadingHTTPServer):
+    """多线程服务器。每个连接 10 秒超时。"""
+
     daemon_threads = True
     allow_reuse_address = False
 
@@ -132,13 +154,18 @@ class _Server(ThreadingHTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
+    """处理一个内部请求：检查 Host、令牌、请求体格式，然后交给 dispatch 函数。"""
+
     server_version = "BidRadarInternal/1"
 
     def log_message(self, *_):
         pass
 
     def _read_body(self, expected):
-        """请求体既有字节上限，也有总截止；不断送少量字节不能刷新十秒预算。"""
+        """读取请求体，总共最多等 BODY_TIMEOUT 秒。
+
+        超时是按总时间算的：对方每次只发几个字节、一直拖着，也不会让等待时间无限延长。
+        """
         deadline, body = time.monotonic() + BODY_TIMEOUT, bytearray()
         while len(body) < expected:
             remaining = deadline - time.monotonic()
@@ -153,11 +180,11 @@ class _Handler(BaseHTTPRequestHandler):
         return bytes(body)
 
     def _discard_unread_body(self):
-        """响应后只丢弃有界迟到字节，避免Windows未读body早关闭造成连接中止。
+        """提前拒绝了请求之后，把对方还没发完的请求体读掉一部分再关闭连接。
 
-        这不是第二次解析机会：Host、身份、报文边界仍先拒绝，丢弃内容不进入业务。
-        长度明确时最多读剩余body；歧义framing仅做有限丢弃，绝不解释chunk或下一请求。
-        超过64KiB或250ms即关闭，不承诺无限/严重迟到发送者仍能收到完整响应。
+        为什么要这样：在 Windows 上，如果服务器还有没读的数据就关闭连接，系统会发 RST，
+        客户端可能因此收不到我们已经发出的错误响应。
+        读掉的内容直接丢弃，不会被解析。最多读 64 KB 或 250 毫秒，超过就直接关闭。
         """
         lengths = self.headers.get_all("Content-Length", [])
         if not lengths and self.headers.get("Transfer-Encoding") is None:
@@ -178,10 +205,11 @@ class _Handler(BaseHTTPRequestHandler):
                     break
                 limit -= len(chunk)
         except OSError:
-            # 超时/对端断开只结束清理，不覆盖已经写出的错误，更不能重入业务。
+            # 超时或对方断开：清理到此为止，已经发出的响应不受影响。
             pass
 
     def _send(self, status, value):
+        """发送 JSON 响应，然后关闭连接。"""
         raw = encode(value)
         if len(raw) > self.server.max_bytes:
             status, raw = 503, encode({"error": {"code": "response_too_large", "message": "response_too_large"}})
@@ -195,7 +223,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
         self.wfile.flush()
         self.close_connection = True
-        # 先交付响应并半关闭写端，再接收有限尾部；不能立即全关闭尚有在途body的socket。
+        # 先关闭写方向（响应已经完整发出），再读掉对方没发完的数据，最后才完全关闭。
         try:
             self.connection.shutdown(socket.SHUT_WR)
         except OSError:
@@ -203,6 +231,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._discard_unread_body()
 
     def _handle(self):
+        """处理请求：检查 Host、转发头、路径、令牌、方法、请求体，然后调用 dispatch。"""
         self._body_received = 0
         try:
             if self.headers.get_all("Host") != [self.server.authority] or len(self.path) > 8192:
@@ -232,8 +261,8 @@ class _Handler(BaseHTTPRequestHandler):
                 data = decode(raw)
             elif lengths and lengths != ["0"]:
                 raise LocalHTTPError("unexpected_body", 400)
-            # 多调用者模式把服务身份交给拥有者，拥有者限制路由/任务种类，不能用
-            # tracking令牌通过人工分析入口绕过watch委托。
+            # 有多个调用方时，把调用方的名字一起传给 dispatch，由服务自己决定谁能用哪个接口。
+            # 例如 tracking 不能借用户发起分析的接口，绕过自动复核的委托检查。
             result = (self.server.dispatch(self.command, self.path, data, identity)
                       if self.server.multiple_tokens else self.server.dispatch(self.command, self.path, data))
             status, value = result if isinstance(result, tuple) else (200, result)
@@ -256,6 +285,11 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def create_server(dispatch, token, *, port=0, host="127.0.0.1", max_bytes=8 * 1024 * 1024):
+    """创建内部服务器（未启动）。
+
+    dispatch(method, path, body[, identity]) 处理业务，返回结果或 (状态码, 结果)。
+    token 可以是一个令牌，也可以是 {调用方名字: 令牌}；后者会把调用方名字传给 dispatch。
+    """
     multiple = isinstance(token, dict)
     tokens = token if multiple else {"service": token}
     if (host != "127.0.0.1" or not tokens or not all(isinstance(k, str) and token_valid(v) for k, v in tokens.items())

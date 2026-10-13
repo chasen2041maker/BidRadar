@@ -1,8 +1,17 @@
-"""目录拥有自己的SQLite，只接收规范观察契约，绝不跨库读取获取原件。
+"""商机目录：保存规范化后的公开公告，提供搜索、详情和变化流。
 
-阅读顺序：import_bundle事务 → query固定快照 → detail的更正证据关系。
-同一公告的观察不可改写；旧观察晚到也不能回退当前内容；原公告与更正分开。
-这是可信单用户本地开发后端，不能作为企业私有资料/多租户授权接口。
+几个核心概念：
+    - 公告（notice）：一条采购公告，ID 由"来源 + 来源里的记录键"算出，同一公告 ID 不变。
+    - 观察（observation）：某次抓取得到的公告内容。同一公告会有多个观察，每个都不可修改。
+    - 当前版本：抓取时间最新的那个观察。晚到的旧观察不会把当前版本"倒退"回去。
+    - 快照（snapshot）：观察的接收序号上限。搜索翻页、研究取材都固定在一个快照上，
+      期间导入的新数据不会让结果前后不一致。
+    - 关联（relationships）：更正公告、结果公告和原采购公告之间的关系，需要有依据才算确认。
+
+只接收规范化格式的数据，不去读原始抓取库。
+这是本地开发用的单机后端，不处理企业私有资料，也没有多租户权限。
+
+阅读顺序：import_bundle → query → detail / bundle → relationships。
 """
 from __future__ import annotations
 
@@ -18,31 +27,39 @@ import secrets
 import sqlite3
 
 VERSION = "procurement-facts-v3"
+# 公告类型：采购、更正、结果、终止、意向、未知。
 KINDS = {"procurement", "correction", "award", "termination", "intention", "unknown"}
+# 规范化事实字段（v1），v2 加了原发布时间和原合同引用。
 FIELDS = {"project_number", "buyer", "published_at", "budget", "response_deadline", "lot_identifier"}
 V2_FIELDS = FIELDS | {"original_published_at", "original_contract_reference"}
-# 发布方映射属于目录关系契约；只列已核实资源，不能按tj_前缀放宽关联范围。
+# 来源 → 发布方。只有同一发布方的公告之间才会建立更正、结果关联。
+# 这里只列已经核实过的来源，不按名字前缀（比如 tj_）推断。
 SOURCE_FAMILIES = {"cn_ccgp": "cn_ccgp", "cn_hainan": "cn_hainan", "tj_procurement_negotiation": "tj_finance_procurement",
                    "tj_procurement_consultation": "tj_finance_procurement",
                    "tj_procurement_correction": "tj_finance_procurement"}
+# 每个格式版本对应的规范化器版本，以及允许的来源。
 SCHEMAS = {1: ("procurement-facts-v1", {"cn_ccgp", "tj_procurement_negotiation"}),
            2: ("procurement-facts-v2", set(SOURCE_FAMILIES) - {"cn_hainan"}),
            3: (VERSION, set(SOURCE_FAMILIES))}
-# 只比较明确支持的解释版本，不按字符串猜版本先后。获取时间仍优先；同一时刻
-# 优先采用较新的规范语义，最后才比较接收序号，防迟到v1把v2当前事实降级。
+# 选"当前版本"的排序：先比抓取时间；同一时刻抓到的，选规范化器版本高的；
+# 最后才比接收序号。这样晚到的 v1 数据不会把已有的 v2 结果降级。
+# 版本高低按这张表查，不按字符串比较。
 NORMALIZER_RANK = {"procurement-facts-v1": 1, "procurement-facts-v2": 2, "procurement-facts-v3": 3}
 OBSERVATION_ORDER = "observed_at DESC, normalizer_rank(payload) DESC, seq DESC"
 
 
 def _json(value):
+    """固定格式的 JSON 序列化。"""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _hash(value):
+    """对象的 SHA-256，用来校验观察 ID 和公告 ID。"""
     return sha256(_json(value).encode()).hexdigest()
 
 
 def _time(value):
+    """解析带时区的 ISO 8601 时间，统一转成 UTC。"""
     try:
         if not isinstance(value, str) or len(value) > 40:
             raise ValueError()
@@ -55,11 +72,13 @@ def _time(value):
 
 
 def _string(value, limit=4096, empty=False):
+    """检查是不超长的字符串；empty=False 时不能全是空白。"""
     if not isinstance(value, str) or len(value) > limit or (not empty and not value.strip()):
         raise ValueError("invalid_string")
 
 
 def _evidence(value):
+    """检查证据列表：每条都是 {label, text, locator}。"""
     if not isinstance(value, list) or len(value) > 10000:
         raise ValueError("invalid_evidence")
     for entry in value:
@@ -71,6 +90,7 @@ def _evidence(value):
 
 
 def _date_value(value):
+    """检查日期事实：精度（日、分、秒）和格式一致；只有原文写明北京时间才带 +08:00。"""
     if (not isinstance(value, dict) or set(value) != {"local", "precision", "timezone", "timezone_basis"}
             or value["precision"] not in ("date", "minute", "second") or value["timezone"] not in (None, "+08:00")):
         raise ValueError("invalid_date_fact")
@@ -85,7 +105,10 @@ def _date_value(value):
 
 
 def _validate_evidence_fields(value):
-    """目录独立验证v3的版本化JSON边界，不从processing导入实现或共用ORM。"""
+    """检查 v3 格式里的 evidence_fields（金额、获取窗口、资格、交付等证据）。
+
+    目录自己做一遍完整检查，不依赖 processing 的代码。
+    """
     keys = {"money", "budget_assessment", "acquisition_window", "access_conditions", "material_availability",
             "category_evidence", "technical_evidence", "qualification_evidence", "delivery_evidence"}
     if not isinstance(value, dict) or set(value) != keys:
@@ -176,7 +199,7 @@ def _validate_evidence_fields(value):
 
 
 def _validate(observation, bundle):
-    """目录边界重新检查类型与内容哈希；生产身份认证不由这个本地哈希提供。"""
+    """导入前检查一条观察：字段齐全、类型正确、ID 和内容哈希对得上、事实格式合法。"""
     if not isinstance(observation, dict):
         raise ValueError("invalid_observation")
     required = {"observation_id", "notice_id", "source_id", "simulation", "source_record_key", "identity_kind",
@@ -269,7 +292,11 @@ def _validate(observation, bundle):
 
 
 def currentness(observation, as_of):
-    """查询时计算时间状态：获取成功不等于可参与；未写时区的截止不作过期推断。"""
+    """按 as_of 时刻判断公告的时间状态。
+
+    只看截止时间是否已过，不代表还能不能参与。原文没写时区的截止时间不做判断，记为 unknown。
+    更正、结果、终止、意向这几类公告不是报名公告，直接标出来。
+    """
     kind = observation["notice_type"]
     if kind in ("award", "termination", "intention", "correction"):
         return {"status": "not_opening_notice", "reason": kind, "as_of": as_of}
@@ -284,7 +311,7 @@ def currentness(observation, as_of):
 
 
 def _matches_keyword(observation, keyword):
-    # 品目分类不能否定正文中的软件需求；检索只匹配已保留的业务证据，不作AI资格判断。
+    """关键词是否出现在标题、项目编号、采购人或技术要求原文里。只做字符串匹配，不做任何判断。"""
     texts = [observation["title"]]
     for name in ("project_number", "buyer"):
         fact = observation["facts"][name]
@@ -295,11 +322,13 @@ def _matches_keyword(observation, keyword):
 
 
 class Catalog:
+    """商机目录。root 是数据目录；read_only=True 时只读打开（HTTP 服务用）。"""
+
     def __init__(self, root, *, read_only=False):
         root = Path(root).absolute()
         if root.is_symlink():
             raise ValueError("store_symlink")
-        # HTTP 查询只打开已存在的目录，服务故障/路径配错不能悄悄创建一个空库。
+        # 只读模式下目录必须已经存在。路径配错时直接报错，而不是悄悄建一个空库、返回"零结果"。
         if not read_only:
             root.mkdir(parents=True, exist_ok=True)
         marker = root / ".bidradar-catalog-v1"
@@ -314,7 +343,7 @@ class Catalog:
         self.db = (sqlite3.connect((root / "catalog.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=5)
                    if read_only else sqlite3.connect(root / "catalog.sqlite3", timeout=5))
         self.db.row_factory = sqlite3.Row
-        # 每次打开都注册同一纯函数；不改写旧payload，也不依赖SQLite的可选JSON扩展。
+        # 注册一个 SQL 函数，用于在排序时取规范化器版本的高低。
         self.db.create_function("normalizer_rank", 1,
             lambda payload: NORMALIZER_RANK[json.loads(payload)["normalizer_version"]], deterministic=True)
         if read_only:
@@ -325,7 +354,7 @@ class Catalog:
                 raise
             return
         self.db.execute("PRAGMA journal_mode=WAL")
-        # seq只表示目录接收顺序；当前版本仍先按实际获取时间选，防晚到旧数据回退。
+        # seq 是目录收到数据的顺序，不代表公告的新旧；判断当前版本看的是抓取时间。
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS imports(id TEXT PRIMARY KEY, run_id TEXT NOT NULL, payload TEXT NOT NULL);
@@ -340,9 +369,14 @@ class Catalog:
         self.key = self.db.execute("SELECT value FROM settings WHERE key='cursor_key'").fetchone()[0].encode()
 
     def close(self):
+        """关闭数据库连接。"""
         self.db.close()
 
     def import_bundle(self, bundle):
+        """导入一批规范化观察。已有的观察会跳过，返回新增和重复的数量。
+
+        先全部检查，再在一个事务里写入：要么全部导入，要么一条都不导入。
+        """
         if (not isinstance(bundle, dict) or type(bundle.get("schema_version")) is not int
                 or bundle["schema_version"] not in SCHEMAS
                 or bundle.get("kind") != "normalized_observations"
@@ -363,7 +397,6 @@ class Catalog:
             _validate(observation, bundle)
         bundle_id = _hash(bundle)
         added = 0
-        # 全部类型验证在事务前完成；唯一键与事务保证重复/崩溃不留下半包新观察。
         with self.db:
             for observation in observations:
                 cursor = self.db.execute("INSERT OR IGNORE INTO observations(id,notice_id,observed_at,simulation,kind,title,payload) "
@@ -376,10 +409,12 @@ class Catalog:
                 "run_status": bundle["run_status"], "failures": len(failures)}
 
     def _cursor(self, value):
+        """生成翻页游标：内容加 HMAC 签名，客户端改不了。"""
         raw = _json(value).encode()
         return base64.urlsafe_b64encode(raw).decode() + "." + hmac.new(self.key, raw, sha256).hexdigest()
 
     def _read_cursor(self, cursor):
+        """解析并验证翻页游标。"""
         try:
             if not isinstance(cursor, str) or len(cursor) > 5000:
                 raise ValueError()
@@ -392,11 +427,16 @@ class Catalog:
             raise ValueError("invalid_cursor") from None
 
     def _current(self, snapshot):
+        """在快照范围内，取每条公告的当前版本。"""
         return self.db.execute(f"""SELECT * FROM (
             SELECT *,row_number() OVER(PARTITION BY notice_id ORDER BY {OBSERVATION_ORDER}) AS rank
             FROM observations WHERE seq<=?) WHERE rank=1 ORDER BY observed_at DESC,notice_id ASC""", (snapshot,)).fetchall()
 
     def query(self, *, keyword="", kind=None, page_size=20, simulation=False, as_of=None, cursor=None):
+        """搜索公告。第一页时固定一个快照，后续翻页都用同一个快照，结果不会因为新导入而错乱。
+
+        同时返回最近几次导入的情况。导入失败时目录可能是空的，要让用户知道"空"是因为抓取失败，而不是没有项目。
+        """
         _string(keyword, 200, empty=True)
         if kind is not None and kind not in KINDS:
             raise ValueError("invalid_kind_filter")
@@ -417,14 +457,12 @@ class Catalog:
             state = {"snapshot": snapshot, "imports_snapshot": imports_snapshot,
                      "offset": 0, "filters": filters,
                      "as_of": _time(as_of).isoformat() if as_of else datetime.now(timezone.utc).isoformat()}
-        # 按固定接收序号截断后再选当时最新；分页期间新导入/旧观察不改变此快照。
         rows = [json.loads(row["payload"]) for row in self._current(state["snapshot"])
                 if bool(row["simulation"]) == simulation and (kind is None or row["kind"] == kind)]
         rows = [row for row in rows if _matches_keyword(row, keyword)]
         offset = state["offset"]
         page = rows[offset:offset + page_size]
         next_cursor = self._cursor({**state, "offset": offset + page_size}) if offset + page_size < len(rows) else None
-        # 即使本次失败没有任何观察，也显示最近获取状态，不能让空目录冒充成功零结果。
         imports = [json.loads(r[0]) for r in self.db.execute(
             "SELECT payload FROM imports WHERE rowid<=? ORDER BY rowid DESC", (state["imports_snapshot"],))]
         summaries = [{"run_id": b["run_id"], "source_id": b["source_id"], "run_status": b["run_status"],
@@ -435,9 +473,10 @@ class Catalog:
                 "snapshot": state["snapshot"], "simulation": simulation, "recent_runs": summaries}
 
     def detail(self, notice_id, *, as_of=None):
+        """公告详情：当前版本、全部历史版本、时间状态、关联公告。"""
         if not isinstance(notice_id, str) or not re.fullmatch("[0-9a-f]{64}", notice_id):
             raise ValueError("invalid_notice_id")
-        # 一个读事务固定详情/历史/关联所用版本，防并发导入在三次读取之间切换依据。
+        # 三次读取放在同一个读事务里，期间有新导入也看不到，保证三者一致。
         self.db.execute("BEGIN")
         try:
             snapshot = self.db.execute("SELECT coalesce(max(seq),0) FROM observations").fetchone()[0]
@@ -454,7 +493,7 @@ class Catalog:
                 "relationships": relationships(current, candidates), "snapshot": snapshot}
 
     def observation(self, notice_id, observation_id):
-        """研究按固定版本读取；新观察到达不能悄悄替换旧报告的输入。"""
+        """读取一个固定的观察。用于研究按版本取材：有了新版本，旧报告的输入也不会被替换。"""
         if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
                for value in (notice_id, observation_id)):
             raise ValueError("invalid_observation_id")
@@ -464,10 +503,10 @@ class Catalog:
         return json.loads(row[0])
 
     def changes(self, after=0, limit=100):
-        """接收流在本地SQLite写事务内提交；seq仅为接收顺序，不是公告业务新旧。
+        """按接收序号返回 after 之后的新观察，给 tracking 服务消费。
 
-        无删除的本地观察日志使游标可补追赶。未来更换数据库须重新验证提交顺序，
-        不能把普通sequence的MAX当已提交连续水位。
+        seq 只是接收顺序，不代表公告本身的新旧。观察从不删除，所以消费方落后多少都能补上。
+        注意：SQLite 的写入是串行的，seq 一定连续提交；换成 PostgreSQL 后要重新确认这一点。
         """
         if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("invalid_query")
@@ -485,10 +524,11 @@ class Catalog:
             self.db.rollback()
 
     def bundle(self, notice_id, snapshot=None):
-        """固定接收快照的研究范围，包含有依据的后来更正/结果，而非只查原公告。
+        """研究用的公告包：主公告的当前版本，加上有确切依据关联到它的更正、结果公告。
 
-        候选、歧义及冲突关系只提示，不把它们的条件混入主公告。保留各观察身份，
-        即便已确认关系也不自动以更正中的任意日期覆盖原期限。
+        只有关系状态为 evidenced（有原文链接作证）的公告才放进 observations；
+        候选、有歧义、有冲突的关系只列在 relationships 里供参考，不混进研究材料。
+        即使确认了更正关系，也不会自动用更正里的日期覆盖原公告的截止时间。
         """
         if not isinstance(notice_id, str) or not re.fullmatch(r"[0-9a-f]{64}", notice_id):
             raise ValueError("invalid_notice_id")
@@ -522,13 +562,20 @@ class Catalog:
 
 
 def relationships(current, candidates):
-    """更正/结果可连接同项目的候选前序公告；不合并身份，也不自动改写原截止。"""
+    """找出一条更正或结果公告对应的原采购公告。
+
+    判断依据，按可靠程度从高到低：
+        1. 原文里有指向原公告的链接，并且目录里能找到 → evidenced（确认）
+        2. 同一发布方、同一采购人、同一项目编号 → candidate（候选，需要人工确认）
+        3. 都找不到 → unresolved
+    包号对不上时标为 conflicting；匹配到多个时标为 ambiguous。
+    只建立关系，不合并两条公告，也不改写原公告的内容。
+    """
     if current["notice_type"] not in ("correction", "award"):
         return []
     contract_reference = current["facts"].get("original_contract_reference", {}).get("evidence", [])
     if contract_reference:
-        # “原合同”不是“原采购公告”。即使同项目号也不建立错误的采购更正关系。
-        # v1没有此字段，按旧行为读取；v2始终保留它的原文和定位。
+        # 引用的是"原合同"而不是"原采购公告"，不能当成采购更正来关联，哪怕项目编号相同。
         return [{"status": "unresolved", "basis": "original_contract_outside_scope",
                  "source_observation_id": current["observation_id"], "evidence": contract_reference}]
     def value(item, name):
@@ -546,7 +593,7 @@ def relationships(current, candidates):
     if explicit:
         conflicts = [(other, ref) for other, ref in explicit if different_lot(other)]
         if conflicts:
-            # 原文链接不能推翻已知包号冲突；保留两边版本供核对，不建立可用关联。
+            # 链接对上了但包号不一致：标为冲突，两边的原文都保留，不建立关联。
             return [{"status": "conflicting", "basis": "original_link_lot_mismatch",
                      "source_observation_id": current["observation_id"], "target_observation_id": other["observation_id"],
                      "evidence": [ref] + current["facts"]["lot_identifier"]["evidence"]

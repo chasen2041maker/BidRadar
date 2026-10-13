@@ -1,4 +1,10 @@
-"""可查询的本地证据目录：导入不调用模型，query只读目录自有存储。"""
+"""商机目录的命令行工具：导入规范化公告（import）、搜索（query）、查看详情（detail）。
+
+用法示例：
+    python -m services.catalog --store .bidradar-data/catalog import normalized.json
+    python -m services.catalog query --keyword 系统开发
+不调模型，只读写目录自己的数据库。
+"""
 import argparse
 import json
 from pathlib import Path
@@ -9,6 +15,7 @@ from services.catalog.store import Catalog
 
 
 def main(argv=None):
+    """解析命令行参数并执行。成功返回 0，失败打印错误并返回 4。"""
     parser = argparse.ArgumentParser(description="公共证据目录；不承诺当前可投标")
     parser.add_argument("--store", type=Path, default=Path(".bidradar-data/catalog"))
     commands = parser.add_subparsers(dest="command", required=True)

@@ -1,10 +1,16 @@
-"""只共享 HTTP 契约适配，不共享业务 ORM；对象权限仍由所属服务逐次检查。"""
+"""各服务内部接口的客户端：把 HTTP 调用包装成普通方法。
+
+每个类对应一个服务，方法名和服务端的操作一一对应。
+这里只负责组装请求，权限检查由被调用的服务自己做。
+"""
 from urllib.parse import urlencode
 
 from .local_http import LocalClient
 
 
 class WorkspaceAccessClient(LocalClient):
+    """调用 workspace：查权限、取档案和选择、拉事件。"""
+
     def authorize(self, actor_id, workspace_id, action):
         return self.request("POST", "/internal/v1/authorize", {
             "schema_version": 1, "actor_id": actor_id, "workspace_id": workspace_id, "action": action})
@@ -19,6 +25,8 @@ class WorkspaceAccessClient(LocalClient):
 
 
 class CatalogEvidenceClient(LocalClient):
+    """调用 catalog：取研究用的公告包、固定版本的观察、变化流。"""
+
     def bundle(self, notice_id, snapshot=None):
         query = "" if snapshot is None else "?" + urlencode({"snapshot": snapshot})
         return self.request("GET", "/v1/bundles/" + notice_id + query)
@@ -31,6 +39,8 @@ class CatalogEvidenceClient(LocalClient):
 
 
 class ResearchClient(LocalClient):
+    """调用 research：创建研究、查任务、按幂等键查命令、取消任务。"""
+
     def create_analysis(self, request):
         return self.request("POST", "/internal/v1/analyses", request)
 
@@ -48,6 +58,8 @@ class ResearchClient(LocalClient):
 
 
 class TrackingClient(LocalClient):
+    """调用 tracking：检查自动复核委托是否仍然有效。"""
+
     def check_delegation(self, actor_id, workspace_id, delegation):
         return self.request("POST", "/internal/v1/delegations/check", {"schema_version": 1,
                             "actor_id": actor_id, "workspace_id": workspace_id, "delegation": delegation})
