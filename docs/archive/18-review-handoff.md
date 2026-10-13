@@ -1,10 +1,10 @@
 # 18｜新会话与新审核者交接入口
 
-更新：2026-09-12。最新执行规则见 [AGENTS](../AGENTS.md) 与 [20 研发规范](20-development-standard.md)。本文件不再重复一整份状态快照。
+更新：2026-09-12。最新执行规则见 [AGENTS](../../AGENTS.md) 与 [20 研发规范](20-development-standard.md)。本文件不再重复一整份状态快照。
 
 ## 先读什么
 
-[PROJECT_STATE](../PROJECT_STATE.md) 说明当前阶段、已确认约束、未验证项和证据入口；[CURRENT_TASK](../CURRENT_TASK.md) 只保留当前一个任务；[21 上下文索引](21-context-management.md) 指向本次需要的专题。
+[PROJECT_STATE](handoff/PROJECT_STATE.md) 说明当前阶段、已确认约束、未验证项和证据入口；[CURRENT_TASK](handoff/CURRENT_TASK.md) 只保留当前一个任务；[21 上下文索引](21-context-management.md) 指向本次需要的专题。
 
 新审核者必须读取实际分支/提交、差异和关联 PR/CI。聊天总结或这份入口本身不证明合并、运行、验收或授权。开始前简要回报“当前阶段、这次任务、明确不做什么、证据缺什么”。
 

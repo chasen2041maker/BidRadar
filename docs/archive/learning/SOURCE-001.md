@@ -14,9 +14,9 @@
 
 ## 阅读顺序
 
-1. [ccgp.py](../../services/ingestion/sources/ccgp.py)::build_search_params：关键词、页码和发布日期区间如何变为查询参数，为什么只生成参数、不执行网络请求。
+1. [ccgp.py](../../../services/ingestion/sources/ccgp.py)::build_search_params：关键词、页码和发布日期区间如何变为查询参数，为什么只生成参数、不执行网络请求。
 2. 同文件parse_search_page：输入HTML→确认列表模板→逐条校验→保留文本/原链接/位置/指纹→区分ok/empty/partial/blocked/parse_error。
-3. [test_ccgp_source.py](../../tests/test_ccgp_source.py)::test_block_page_is_not_empty与test_dom_drift_is_not_empty：看“无法读到列表”为什么不能报告“零商机”。
+3. [test_ccgp_source.py](../../../tests/test_ccgp_source.py)::test_block_page_is_not_empty与test_dom_drift_is_not_empty：看“无法读到列表”为什么不能报告“零商机”。
 
 设计阅读入口是[01](../01-project-plan.md)第5节与[28](../28-two-stage-and-source-reuse.md)第2节；本轮不要求通读其他历史。
 

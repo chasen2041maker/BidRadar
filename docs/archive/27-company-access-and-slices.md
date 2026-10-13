@@ -25,7 +25,7 @@ RQ-37：负责人邀请加入；公司名称、相同邮箱后缀、持有报告
 
 ## 2. 执行节奏：小片实现，再一起读
 
-2026-09-30替代说明：负责人要求完整阶段实现、中文注释、验证及独立审查后统一阅读最终核心文件。下面RQ-38的逐小片暂停规则保留为ACCESS-001历史；当前执行以[AGENTS](../AGENTS.md)和[29](29-acquisition-stage.md)为准，内部仍小步验证，不再要求中途逐片参与。权限矩阵与授权边界未由此扩大。
+2026-09-30替代说明：负责人要求完整阶段实现、中文注释、验证及独立审查后统一阅读最终核心文件。下面RQ-38的逐小片暂停规则保留为ACCESS-001历史；当前执行以[AGENTS](../../AGENTS.md)和[29](29-acquisition-stage.md)为准，内部仍小步验证，不再要求中途逐片参与。权限矩阵与授权边界未由此扩大。
 
 RQ-38（历史）：不用等待全系统所有参数确定才开始。每次只推进一个可验证目标，通常1–3个核心实现文件及对应测试/必要记录。先解释本段输入、输出和失败边界，完成中文注释、自测、独立审查和交付后停在阅读检查点，由负责人反馈或指示继续再进入下一片；不一次写完若干模块后让人补课。
 
@@ -35,7 +35,7 @@ AUTH-ACCESS-001：本次“保存到main、可以开始”的请求用于权限�
 
 ## 3. 首切片的输入输出契约
 
-唯一实现入口：[allows_shared_action](../services/workspace/domain/access_policy.py)。它属于workspace领域规则，当前仅为可单测的纯Python切片，没有HTTP入口、数据库、进程或部署。未来运行服务的独立依赖/镜像/迁移在该阶段加入；其他业务服务不能直接import它作为共享ORM/鉴权捷径。
+唯一实现入口：[allows_shared_action](../../services/workspace/domain/access_policy.py)。它属于workspace领域规则，当前仅为可单测的纯Python切片，没有HTTP入口、数据库、进程或部署。未来运行服务的独立依赖/镜像/迁移在该阶段加入；其他业务服务不能直接import它作为共享ORM/鉴权捷径。
 
 输入：当前Membership（user_id、workspace_id、Role、active）；资源实际workspace_id；Action；Visibility。Role使用ADMIN/MEMBER/VIEWER，Action只实现VIEW_REPORT、REQUEST_ANALYSIS；Visibility区分COMPANY与RESTRICTED。这些是内部类型，不是已经公布的HTTP字段约定。未知、缺失、错误类型、非活跃或跨空间输入默认拒绝。
 
@@ -45,7 +45,7 @@ AUTH-ACCESS-001：本次“保存到main、可以开始”的请求用于权限�
 
 ## 4. 本片验收与边界
 
-测试入口：[test_workspace_access_policy.py](../tests/test_workspace_access_policy.py)。覆盖三角色×两动作、跨公司管理员、被移除/缺失成员、受限资源、未知动作/角色/分类、空身份/范围、非布尔active、字典伪装成员，以及调用间不残留状态。使用两家虚构公司，既不接真实账号，也不调用外部模型。
+测试入口：[test_workspace_access_policy.py](../../tests/test_workspace_access_policy.py)。覆盖三角色×两动作、跨公司管理员、被移除/缺失成员、受限资源、未知动作/角色/分类、空身份/范围、非布尔active、字典伪装成员，以及调用间不残留状态。使用两家虚构公司，既不接真实账号，也不调用外部模型。
 
 仓库根目录命令：`python3 -m unittest discover -s tests -p 'test_workspace_access_policy.py' -v`。既有根测试命令也会发现这些测试，无须改CI权限。精确命令、被测提交/源码、时间、环境、退出码与最终审查写在本任务PR；未取得结果不预填通过。
 

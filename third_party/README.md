@@ -19,6 +19,6 @@ BidRadar新增：严格参数/日期校验、标准库离线HTML解析、只接�
 
 ## 其他项目的处理
 
-来源入口、软件结构或产品流程引用在 [28](../docs/28-two-stage-and-source-reuse.md)，不是直接复制其代码或数据集。tender-mcp的MIT已核查，但海外客户端不在本轮实施范围；BidMaster的LICENSE为AGPL-3.0，与README徽章不一致，本轮不引入其实现；其余许可未充分核验的实现不复制。
+来源入口、软件结构或产品流程引用在 [28](../docs/archive/28-two-stage-and-source-reuse.md)，不是直接复制其代码或数据集。tender-mcp的MIT已核查，但海外客户端不在本轮实施范围；BidMaster的LICENSE为AGPL-3.0，与README徽章不一致，本轮不引入其实现；其余许可未充分核验的实现不复制。
 
 后续升级先固定上游提交、检查许可/差异/依赖与访问边界，再运行自有回归和独立审查。不能用对上游软件的信任代替网站准入、真实样本或本项目验收。

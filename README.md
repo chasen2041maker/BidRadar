@@ -1,108 +1,77 @@
-# BidRadar — 招标商机分析与跟踪 Agent
+# BidRadar
 
-> 帮希望承接公开采购项目的软件与 AI 服务团队，读懂要求、对照能力、保留证据并跟踪变化。远程团队也是目标用户，不以能否驻场划分用户资格。
->
+帮软件公司和 AI 服务团队研究中国公开采购项目：这个项目要求什么、我们能不能做、还缺哪些信息。
+
 > An evidence-based tender research and tracking agent for software and AI service teams.
 
-**当前分支已完成 R1/R2 本地开发与有限样本验收：AI 研究、证据核验、同项目追问与持续跟踪。** 四个本地服务分别保存自己的数据；新入口为 `python scripts/run_research_workbench.py`，默认 `http://127.0.0.1:8965`，真实模型须显式开启。运行与费用边界见[33](docs/33-agent-research-tracking.md)，三份核心代码导读及真实失败记录见[AGENT-001](docs/learning/AGENT-001.md)。542项测试和独立审查通过，最终5项真实AI样本通过有限业务审查；仍有材料/条件漏项，不代表完整标书或生产质量保证。累计峰价计入/预留约4.48元，测试自动委托和付费运行器已关闭。
+## 它解决什么问题
 
-前置 R1-A 已完成公司权限、渐进档案、公共商机证据和固定版本选择，共395项测试及浏览器流程通过。DATA-001已验证12条真实公告与1份公开PDF。依赖PR #11/#12尚未合并；本地SQLite适配器不代表正式身份、PostgreSQL/RLS、Redis/K8s或云部署已验收。
+一家软件公司想接政府或国企的软件项目，每天要在大量招标公告里找合适的，再逐条核对资格、技术要求、交付期限、预算。BidRadar 把这件事拆成几步：
 
-旧双服务工作台默认地址 `http://127.0.0.1:8765`，随机测试账号保存在本机忽略目录；运行方法、接口、安全与恢复边界见[32](docs/32-r1-workbench.md)，中文核心导读见[R1A-001](docs/learning/R1A-001.md)。
+1. **确认企业档案**：公司能做什么、不做什么、有哪些限制。
+2. **发现项目**：从公开采购网站采集公告，整理成可搜索的目录。
+3. **研究项目**：AI 逐条列出采购要求，对照企业档案判断"满足 / 不满足 / 未知"，每条结论都附原文引用。
+4. **追问**：针对同一个项目继续提问。
+5. **人工决定**：跟进还是放弃，由人来定。
+6. **跟踪变化**：公告更正或档案修改后，提醒并（经授权后）自动复核。
 
-离线整链演示：`python scripts/run_data_demo.py`，依次运行获取、清洗、导入/查询CLI；虚构原件与各服务独立SQLite在忽略目录`.bidradar-data/demo-chain/`。当前公开来源运行/边界见[31](docs/31-public-source-layer.md)，历史契约/天津接入见[30](docs/30-r0-data-contract.md)，中文核心阅读入口见[DATA-001](docs/learning/DATA-001.md)。已合并获取工具的历史用法见[29](docs/29-acquisition-stage.md)。
+它不预测中标概率，不自动投标，也不替人联系采购方。
 
-## 新会话先读
+## 现在能做什么
 
-[AGENTS.md](AGENTS.md) → [项目状态](PROJECT_STATE.md) → [当前任务](CURRENT_TASK.md)。按[上下文管理](docs/21-context-management.md)再读相关专题，不要求每次把所有历史文档塞入上下文。
+- 四个本地服务已经能跑通整条流程：登录、公司成员、企业档案、商机目录、AI 研究、追问、跟进决定、关注、变化提醒、自动复核。
+- AI 研究使用 DeepSeek，每条结论都要通过程序检查和模型语义核验；没通过就发布只列原文的保守版本。
+- 数据来自中国政府采购网和海南省公共资源交易平台的有限公开样本（12 条真实公告），企业是两家虚构公司。
+- 486 项自动化测试在 Python 3.10 和 3.12 上通过。
 
-**2026-09-30 最新协作要求：**Codex连续完成已授权完整阶段的实现、中文注释、自测、排错和独立审查，再集中带读最终核心文件；人工负责业务决策、风险授权和验收。替代旧“每小片暂停”与“负责人先手写”的前置要求，本人阅读/实践仍须有真实反馈。规范见 [AGENTS](AGENTS.md)及[20](docs/20-development-standard.md)。自动合并与自动关闭未获常态授权。
+还没有做的：正式的用户系统、PostgreSQL、云端部署、完整招标文件的获取，以及真实用户试用。详见 [路线图](docs/roadmap.md)。
 
-## 产品主线
+## 快速开始
 
-确认企业档案 → 找到相关项目 → 查看原文与材料缺口 → 分析条件和证据 → 同项目追问 → 人工记录跟进/放弃 → 跟踪变化并复核。
-
-不是只写摘要或给中标概率。技术相关不等于全部要求满足；没填资质不等于没有资质；没写驻场不等于允许远程。资料不足、取消、失败、预算暂停和旧报告陈旧都要能解释，不自动投标、报价或联系采购方。
-
-## 首批业务、企业档案与数据源
-
-已确认首批中国公开项目、中文优先、不限城市，产品给软件公司/AI服务团队使用；首轮产品闭环目标是“确认档案→真实项目→实际材料→引用与未知项分析→同项目追问→人工决定”，分阶段实施，当前已完成这些功能的本地开发和有限样本验收，待负责人集中阅读及后续部署验证。[23](docs/23-first-market-rag.md)区分RAG、目录检索与业务后端。
-
-企业档案按八类组织，首用先问主体、想接什么、能做什么、交付限制，再按项目补案例/资质/排期/商务信息。[24](docs/24-company-profile-minimum.md)说明事实、证明、偏好和硬限制如何分开。
-
-[25](docs/25-china-source-validation.md)登记中国政府采购网的首源验证方向、采购方/地方补证和三组真实网页样本；已复核正文不等于已接通采集或获得完整文件。江苏原公告与更正作版本走查，河南师大/宿迁原截止已过，仅作历史样本。完整来源许可、附件、API和稳定性仍待验证。
-
-## 已确认方向与待验证方案
-
-| 已确认 | 仍待验证/审核 |
-| --- | --- |
-| 国内软件/系统/AI采购；少源和项目优先；CCGP主源、海南补充、天津接口保留 | 两站有限公开公告本地整链已验；商业再发布/持续生产准入、受限标书和天津成功响应仍待验证 |
-| 微服务；09-30决定将Redis/K8s移至后续服务部署阶段 | 六服务完整边界与部署参数；本地四服务HTTP联调不等于生产部署 |
-| 真实网页/文件清洗、可追溯证据与故障验证 | 真实样本、评测效果、资源容量、具体框架与模型 |
-| 阿里云方向，总月预算约 100–200 元 | 机器、地域、网络、续费、备份与模型费用；预算不是购买授权 |
-| 企业工作台与平台后台分开职责 | 页面细节、具体接口与身份方案 |
-| 复用成熟开源 CMS，中文使用/开发体验优先 | Strapi 5 社区版暂作首选验证对象，未锁定生产选型；中文门槛见 22 |
-| 缓存必须实现并验证 | 命中、失效、撤权、故障回源和容量实测 |
-| Codex连续完成已授权阶段，人工决策/最终验收与集中学习 | 后续阶段授权和时间表；28周仍为容量估计 |
-
-不再恢复四源/六源/六大区作为发布门槛。减少来源不是改回单体、取消清洗或降低权限要求，也不先创建六个空服务。
-
-## 后台、CMS 与缓存
-
-平台后台包含公告材料、来源任务、用户权限、平台原创内容、费用与操作记录五类功能。CMS 只管理帮助、常见问题和站内公告，不改写采购原件、不接管企业私有资料或跨服务业务表。详见 [19](docs/19-admin-cms-cache.md)。
-
-CMS 中文优先新增为明确要求：菜单、表单、验证提示、中文输入法、搜索、媒体与发布/撤下均要验证；“有中文语言包”不等于通过。详见 [22 中文 CMS 验收](docs/22-cms-chinese-acceptance.md)。Strapi/Node 是内容支撑组件，不要求改写 Python 核心业务。
-
-数据库保存事实、任务和报告；redis-cache 只保存可重建副本，与 redis-core 事件/配额进程分开。私有缓存命中也要当前授权，刷新报告不重跑模型，撤下或撤权不能等待长 TTL。CMS、缓存、存储和备份仍计入原总预算。
-
-## 工程执行与证据
-
-任务在独立分支/工作树执行，授权内跨模块修改由 Codex 完成并记录。交付区分契约、模拟、真实联调；最终版本通过必要检查与独立审查后，经人工放行通过 PR 进入 main。发布另有授权、验证与恢复措施。
+需要 Python 3.10 或更高版本，项目只用标准库，不需要安装依赖。
 
 ```bash
-python3 scripts/refresh_project_memory.py --write
-python3 scripts/refresh_project_memory.py --check
-python3 scripts/check_project_memory.py
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+# 启动四个服务（不调用真实模型）
+python scripts/run_research_workbench.py
+
+# 浏览器打开 http://127.0.0.1:8965/
+# 测试账号在 .bidradar-data/r12-workbench/demo-accounts.json
 ```
 
-上述命令检查交接结构及全部离线测试，包含权限、解析、受控传输和本地归档流程；不构成CMS、缓存、真实站点或生产验证。仓库规则是否已生效以GitHub实际配置为准，不能凭本文宣称开启了保护。
+其他常用命令：
 
-## 专题导航（按需读取）
+```bash
+python -m unittest discover -s tests -p 'test_*.py'   # 跑全部测试
+python scripts/run_data_demo.py                        # 离线演示数据链（采集 → 规范化 → 目录）
+python scripts/run_research_workbench.py --enable-model   # 允许调用 DeepSeek（会产生费用，见开发指南）
+```
+
+## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [00 审核指南](docs/00-review-guide.md) | 业务审核关口；旧执行分工以 20 的更新为准 |
-| [01 项目计划书](docs/01-project-plan.md) | 产品阶段和边界；旧手工实施前置条件已被新分工替代 |
-| [02 产品范围](docs/02-product-scope.md) | 用户故事、页面和业务契约 |
-| [03 数据基础](docs/03-data-foundation.md) | 数据、清洗和追溯 |
-| [04 微服务架构](docs/04-system-architecture.md) | 服务、数据所有权与独立发布 |
-| [05 领域模型](docs/05-domain-model.md) | 公告、程序、标段、版本、证据 |
-| [06 Agent 与记忆](docs/06-agent-memory-matching.md) | 产品 Agent 的业务记忆，不是研发代理交接 |
-| [07 可靠性与安全](docs/07-reliability-security-operations.md) | 事务、消息、权限、恢复 |
-| [08 评测验收](docs/08-evaluation-acceptance.md) | 业务用例、基线和阻断测试 |
-| [09 排期](docs/09-roadmap-ownership.md) | 阶段与容量；旧本人手工实现要求按 20 替代 |
-| [10 能力对照](docs/10-jd-alignment.md) | 能力证据；AI 生成不冒称本人手工实现 |
-| [11 决策登记](docs/11-decision-register.md) | 历史需求与提案；最新协作替代项见 20 第 1 节 |
-| [12 来源登记](docs/12-source-register.md) | 带日期的外部依据，不自动刷新有效期 |
-| [13 来源与脏数据](docs/13-source-matrix-and-dirty-data.md) | 按缺口扩源与清洗案例 |
-| [14 服务契约](docs/14-service-event-contracts.md) | 接口、事件、兼容与重放 |
-| [15 K8s 与容量](docs/15-kubernetes-capacity-plan.md) | 发布、压力、故障与恢复 |
-| [16 全球候选与预算](docs/16-global-sources-cloud-budget.md) | 后续来源池与费用边界 |
-| [17 产品蓝图](docs/17-product-delivery-blueprint.md) | 报告、追问、人工决定与跟踪 |
-| [18 交接说明](docs/18-review-handoff.md) | 新审核者入口与历史基线 |
-| [19 后台/CMS/缓存](docs/19-admin-cms-cache.md) | 后台边界与缓存验收 |
-| [20 研发规范](docs/20-development-standard.md) | 最新执行分工、独立审查、验证和恢复 |
-| [21 上下文管理](docs/21-context-management.md) | AGENTS、短状态、按需知识与 Skill |
-| [22 中文 CMS 验收](docs/22-cms-chinese-acceptance.md) | 中文优先、选型证据与下一小流程 |
-| [23 首批市场与RAG](docs/23-first-market-rag.md) | 中国软件公司客户、首闭环和检索/生成分工 |
-| [24 企业档案](docs/24-company-profile-minimum.md) | 八类信息、四组首用问题和逐项补证 |
-| [25 国内来源](docs/25-china-source-validation.md) | 来源验证顺序、官方样本、材料限制和下一走查 |
-| [29 获取阶段](docs/29-acquisition-stage.md) | SOURCE-002本地CLI、接口、运行与真实准入阻塞 |
-| [30 数据链契约](docs/30-r0-data-contract.md) | 三服务JSON边界、天津与旧版本兼容 |
-| [31 公开来源第一层](docs/31-public-source-layer.md) | 两站栏目、门槛、真实验收与运行命令 |
-| [32 本地商机核查工作台](docs/32-r1-workbench.md) | R1-A接口、公司档案/选择、双服务运行与恢复边界 |
-| [33 AI研究与持续跟踪](docs/33-agent-research-tracking.md) | R1/R2工具循环、冻结报告、费用恢复、委托与四服务运行 |
-| [学习索引](docs/learning/INDEX.md) | 按任务恢复有用记录，不等于用户已经掌握 |
+| [架构说明](docs/architecture.md) | 系统由哪几部分组成，一个请求怎么走，代码在哪 |
+| [研究 Agent](docs/agent.md) | AI 研究怎么工作、怎么核验、怎么控制费用，以及实测结果 |
+| [数据模型](docs/data-model.md) | 各服务的表和关键概念 |
+| [开发指南](docs/dev-guide.md) | 本地运行、测试、格式化、提交约定、写注释和文档的规则 |
+| [路线图](docs/roadmap.md) | 当前进度、已知短板、下一步 |
+| [决策记录](docs/decisions/) | 重要的设计决定，每个一页 |
+| [v2 改造蓝图](docs/v2-blueprint.md) | 迁移到模块化单体 + FastAPI/PostgreSQL 的计划 |
+| [历史文档](docs/archive/) | 2026-09 到 10-01 的原始规划和过程记录 |
 
-main、任务分支与 PR 的实际 SHA 以 GitHub 为准。文档合并不等于业务开发、采购或上线获批；当前没有真实用户规模、业务测试成绩或生产 SLA。
+## 目录结构
+
+```text
+services/
+  ingestion/    采集：从公开网站抓取公告，保存原始文件
+  processing/   规范化：把原始内容整理成统一格式
+  catalog/      商机目录：公告、版本、搜索
+  workspace/    工作台：登录、公司、成员、企业档案；也是浏览器入口
+  research/     研究：AI Agent、证据核验、费用账本
+  tracking/     跟踪：跟进决定、关注、变化、提醒、自动复核
+  common/       服务之间通信用的 HTTP 工具
+scripts/        启动、演示、评测脚本
+tests/          自动化测试
+docs/           文档
+third_party/    第三方代码的来源与许可
+```

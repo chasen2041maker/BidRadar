@@ -2,7 +2,7 @@
 
 由 scripts/refresh_project_memory.py 从状态文件和任务笔记生成；不要手工编辑。
 
-先读 [规则](../../AGENTS.md)、[状态](../../PROJECT_STATE.md)、[当前任务](../../CURRENT_TASK.md)，再按需读下列记录。
+先读 [规则](../../../AGENTS.md)、[状态](../handoff/PROJECT_STATE.md)、[当前任务](../handoff/CURRENT_TASK.md)，再按需读下列记录。
 
 来源指纹：`0b1a0ddbf1e18be26e41d2484d9b1cad87920b656a7afe045587dfd0a7fa2b27`
 

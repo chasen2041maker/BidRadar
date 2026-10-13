@@ -12,7 +12,7 @@ AUTH-SOURCE-001：允许本轮文档更新、竞争项目源码/公开官方接�
 
 2026-09-18合并授权更新：负责人明确要求将符合条件的现有改动直接合并到main。本轮先修复审查遗留的HTML复杂度与计数一致性问题，再核对最终CI及独立审查后通过PR #9合并；不沿用旧任务授权，也不授予常态自动合并、联网采集或部署权限。
 
-本次只增加一个核心文件 [ccgp.py](../services/ingestion/sources/ccgp.py) 和对应测试，其他新增内容是规范、来源台账和许可说明。`awaiting_decision`、数据库任务、页面和模型流程仍是待实现设计。
+本次只增加一个核心文件 [ccgp.py](../../services/ingestion/sources/ccgp.py) 和对应测试，其他新增内容是规范、来源台账和许可说明。`awaiting_decision`、数据库任务、页面和模型流程仍是待实现设计。
 
 ## 2. 两阶段状态和数据归属
 
@@ -67,7 +67,7 @@ BidMaster-Pro中AI媒体、公司博客、科技新闻和GitHub仓库搜索是�
 
 ## 5. 实际复用的CCGP小片
 
-上游固定提交 `2e82be5e026b54516d8157700aea94cf1616747c`，策略文件blob `8a57fdbe3d9543361aff5c2edaa100ae3cc13749`。完整MIT和改编范围见 [第三方登记](../third_party/README.md)。
+上游固定提交 `2e82be5e026b54516d8157700aea94cf1616747c`，策略文件blob `8a57fdbe3d9543361aff5c2edaa100ae3cc13749`。完整MIT和改编范围见 [第三方登记](../../third_party/README.md)。
 
 `build_search_params`输入关键词、正整数页码和可选YYYY-MM-DD发布日期区间，输出上游参数映射；日期格式/有效性/前后顺序错误拒绝，不补猜日期，不发请求。
 

@@ -10,9 +10,9 @@
 
 ## 阅读顺序
 
-1. [pipeline.py：execute → _following → parse_capture](../../services/ingestion/pipeline.py)。先读模块注释和execute内部注释：它回答“请求来了，为什么要按这个顺序走”。输入是已登记run_id和传输器，输出是运行状态、获取记录与缺口，不是资格结论。
-2. [archive.py：Store.create_run → Store.record → Store.report](../../services/ingestion/archive.py)。理解三个不同概念：同幂等键不会新建运行；相同字节不会复制原件；同一网页的不同字节创建新内容版本。record的中文注释解释为何“完成当前任务”和“登记后继”必须同一事务。
-3. [transport.py：Transport.fetch → _read → _request](../../services/ingestion/transport.py)。理解来源批准、robots、DNS公网地址、重定向、限频/重试如何串起来。页面中的链接只提供数据，不能赋予自己下载权限；403/429/验证码是停止条件。
+1. [pipeline.py：execute → _following → parse_capture](../../../services/ingestion/pipeline.py)。先读模块注释和execute内部注释：它回答“请求来了，为什么要按这个顺序走”。输入是已登记run_id和传输器，输出是运行状态、获取记录与缺口，不是资格结论。
+2. [archive.py：Store.create_run → Store.record → Store.report](../../../services/ingestion/archive.py)。理解三个不同概念：同幂等键不会新建运行；相同字节不会复制原件；同一网页的不同字节创建新内容版本。record的中文注释解释为何“完成当前任务”和“登记后继”必须同一事务。
+3. [transport.py：Transport.fetch → _read → _request](../../../services/ingestion/transport.py)。理解来源批准、robots、DNS公网地址、重定向、限频/重试如何串起来。页面中的链接只提供数据，不能赋予自己下载权限；403/429/验证码是停止条件。
 
 先看这三个文件中的模块说明、函数docstring和关键分支注释，不必一口气读所有辅助类。遇到模板细节再跳到ccgp.parse_notice_page；CLI只是参数入口。验收问题：能否沿着一个run_id找到它的原字节、版本、解析和未取得原因？
 

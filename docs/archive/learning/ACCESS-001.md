@@ -10,9 +10,9 @@
 
 ## 阅读顺序
 
-1. [access_policy.py](../../services/workspace/domain/access_policy.py)的Membership：先看user_id、workspace_id、role、active分别说明谁、哪家公司、能做什么、成员关系是否有效。
+1. [access_policy.py](../../../services/workspace/domain/access_policy.py)的Membership：先看user_id、workspace_id、role、active分别说明谁、哪家公司、能做什么、成员关系是否有效。
 2. 同文件allows_shared_action：输入成员与资源范围→拒绝缺失/失效→拒绝跨公司/受限资料→按动作和角色判断，输出bool。
-3. [test_workspace_access_policy.py](../../tests/test_workspace_access_policy.py)的test_viewer_can_read_but_cannot_request_analysis：同一个成员，只换动作，看到True与False不同。
+3. [test_workspace_access_policy.py](../../../tests/test_workspace_access_policy.py)的test_viewer_can_read_but_cannot_request_analysis：同一个成员，只换动作，看到True与False不同。
 
 本轮先停在这一组，不要求通读全部设计或测试。下一小片再处理“当前成员信息从哪里取得”，不要把前端自己填的role当作可信事实。
 

@@ -8,9 +8,9 @@
 
 ## 阅读顺序
 
-1. [pipeline.py](../../services/ingestion/pipeline.py)的public_request_spec、execute、replay：有限来源请求如何先登记，再归档、解析、恢复和离线重放；来源模板与传输由独立模块负责。
-2. [normalize.py](../../services/processing/normalize.py)的normalize_bundle、_fact：如何从带位置的证据生成可空/冲突事实，而不是从一段文本猜投标结论。
-3. [store.py](../../services/catalog/store.py)的Catalog.import_bundle/query/detail：事务/幂等、旧观察晚到、快照分页、更正候选关系。
+1. [pipeline.py](../../../services/ingestion/pipeline.py)的public_request_spec、execute、replay：有限来源请求如何先登记，再归档、解析、恢复和离线重放；来源模板与传输由独立模块负责。
+2. [normalize.py](../../../services/processing/normalize.py)的normalize_bundle、_fact：如何从带位置的证据生成可空/冲突事实，而不是从一段文本猜投标结论。
+3. [store.py](../../../services/catalog/store.py)的Catalog.import_bundle/query/detail：事务/幂等、旧观察晚到、快照分页、更正候选关系。
 
 以上三个文件为本阶段集中带读入口；金额/获取窗口的细节从normalize_bundle进入evidence_fields.extract。最终审查/提交见PR，不把合并或AI验证当本人已掌握。
 

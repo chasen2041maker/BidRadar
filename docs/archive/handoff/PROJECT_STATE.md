@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-10-01负责人授权完成R1/R2，以AI为核心。DeepSeek V4 Flash测试预算20–30元，按20元控制；四服务、任务/预算/Agent/追问/跟踪已连接。真实模型已调用，最终5项有限样本通过独立业务审查，工程542项及独审通过；历史失败和漏项保留，最终提交/PR/CI以运行摘要为准。见[33](docs/33-agent-research-tracking.md)。新基线fc68ef51353623c9dd638eb2219dadea99d79042、分支codex/r1-r2-agent；不自行合并/发布或接真实企业。
+10-01负责人授权完成R1/R2，以AI为核心。DeepSeek V4 Flash测试预算20–30元，按20元控制；四服务、任务/预算/Agent/追问/跟踪已连接。真实模型已调用，最终5项有限样本通过独立业务审查，工程542项及独审通过；历史失败和漏项保留，最终提交/PR/CI以运行摘要为准。见[33](../33-agent-research-tracking.md)。新基线fc68ef51353623c9dd638eb2219dadea99d79042、分支codex/r1-r2-agent；不自行合并/发布或接真实企业。
 
-负责人授权继续推进一大段、完成后统一看核心代码。R1-A覆盖本地登录、公司成员三角色、渐进企业档案建议/确认/历史、公共商机目录与证据、私有固定版本选择。输入是两家虚构企业与已有获准公共样本，不新增采购采集、不用真实企业资料、不调模型。契约见[32](docs/32-r1-workbench.md)，不代表完整R1深度研究完成。
+负责人授权继续推进一大段、完成后统一看核心代码。R1-A覆盖本地登录、公司成员三角色、渐进企业档案建议/确认/历史、公共商机目录与证据、私有固定版本选择。输入是两家虚构企业与已有获准公共样本，不新增采购采集、不用真实企业资料、不调模型。契约见[32](../32-r1-workbench.md)，不代表完整R1深度研究完成。
 
 catalog、workspace、research、tracking四个本地HTTP服务各自拥有数据库，固定回环接口通信，不跨库。SQLite/回环HTTP为本阶段开发适配器；已接受的按服务PostgreSQL、workspace_id/当前授权/RLS生产方案保持不变。正式身份、真实企业隔离/备份恢复还须专门实测。
 
@@ -30,4 +30,4 @@ AGENT-001最终代码535f2fc：542项30.324秒通过，独立542项30.278秒通�
 
 ## 证据入口
 
-[AGENTS](AGENTS.md)→[当前任务](CURRENT_TASK.md)→[33研究与跟踪](docs/33-agent-research-tracking.md)与[AGENT-001笔记](docs/learning/AGENT-001.md)。前置工作台见[32](docs/32-r1-workbench.md)，数据基础见[31](docs/31-public-source-layer.md)。
+[AGENTS](../../../AGENTS.md)→[当前任务](CURRENT_TASK.md)→[33研究与跟踪](../33-agent-research-tracking.md)与[AGENT-001笔记](../learning/AGENT-001.md)。前置工作台见[32](../32-r1-workbench.md)，数据基础见[31](../31-public-source-layer.md)。
