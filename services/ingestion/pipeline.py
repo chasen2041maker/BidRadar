@@ -1,7 +1,10 @@
-"""首源获取流程：持久登记→受控获取→原字节归档→解析→登记后继→本地结果。
+"""采集流程：登记运行 → 按队列抓取 → 保存原始文件 → 解析 → 把解析出的新链接加入队列 → 结束。
 
-模块只处理公开材料；不调用模型，也不把线索当资格结论。真实网络取决于当前
-来源准入和robots，离线测试通过不能把来源准入自动置为已批准。
+    列表页 → 解析出公告链接 → 公告页 → 解析出附件链接 → 附件
+每一步的数量都有上限（页数、公告数、附件数），不会无限扩展。
+
+只处理公开资料，不调模型，也不对项目做任何判断。
+能不能真的联网抓取，取决于来源准入文件和网站的 robots.txt；离线测试通过不代表来源已获准。
 """
 from __future__ import annotations
 
@@ -29,10 +32,10 @@ BLOCKING_ERRORS = frozenset({
 
 
 def _canonical_notice_url(url: str) -> str:
-    """入口、列表后继和公告身份共用规则；不合并HTTP/HTTPS或不同查询参数。
+    """把公告 URL 规范化：主机名和协议转小写、去掉 # 后面的片段。
 
-    主机/协议大小写与片段不改变本次获取对象。列表原始链接仍留在解析结果/payload，
-    只用规范链接排队及生成身份，避免同一公告提前耗尽条数上限。
+    同一条公告在列表里可能出现多个写法，规范化后再去重，免得重复的链接占掉公告数量上限。
+    HTTP 和 HTTPS、不同的查询参数仍视为不同的地址，不合并。
     """
     accepted = _notice_url(url) if isinstance(url, str) else None
     if accepted is None:
@@ -44,7 +47,10 @@ def _canonical_notice_url(url: str) -> str:
 def request_spec(*, keyword: str | None = None, notice_urls=(), pages: int = 1,
                  max_notices: int = 10, max_attachments: int = 5,
                  attachments: bool = False, start_date=None, end_date=None) -> dict:
-    """固定v1请求语义：搜索与明确公告二选一，运行参数进入幂等比较。"""
+    """生成 CCGP 搜索采集的请求：按关键词搜索，或者直接给出公告 URL，二选一。
+
+    所有参数都会参与幂等比较：同一个幂等键配不同参数会报冲突。
+    """
     for name, value, limit in (("pages", pages, 5), ("max_notices", max_notices, 20),
                                 ("max_attachments", max_attachments, 10)):
         if type(value) is not int or not 1 <= value <= limit:
@@ -72,10 +78,11 @@ def request_spec(*, keyword: str | None = None, notice_urls=(), pages: int = 1,
 def public_request_spec(*, source_id="cn_ccgp", category=None, notice_urls=(), start_page=1,
                         pages=1, max_notices=10, max_attachments=5, attachments=False,
                         title_terms=(), dns_mode="system"):
-    """v2公开栏目请求：明确来源、页段和可选标题筛选，不伪称全网关键词搜索。
+    """生成按栏目采集的请求（CCGP 或海南）：指定栏目和页码范围，或者直接给出公告 URL。
 
-    标题筛选只决定有限列表中哪些正文入队，不用于推断技术适配或资格满足。
-    DNS/筛选也进入幂等内容；恢复不能悄悄换来源、扩大页段或改变网络模式。
+    title_terms 是标题筛选词：只抓标题里含这些词的公告。它只是缩小抓取范围，
+    不代表"技术相关"之类的判断，也不是全网搜索。
+    DNS 模式和筛选词也参与幂等比较，恢复运行时不能悄悄换来源、扩大页数或改网络模式。
     """
     from services.ingestion.sources.public_notices import build_listing_url, canonical_notice_url
     if source_id not in ("cn_ccgp", "cn_hainan") or dns_mode not in ("system", "google-doh"):
@@ -110,7 +117,10 @@ def public_request_spec(*, source_id="cn_ccgp", category=None, notice_urls=(), s
 
 
 def decode_html(body: bytes, headers: dict[str, str]) -> tuple[str, str]:
-    """严格按BOM/声明解码；乱码不是有效正文，不静默替换字节再作证据。"""
+    """按 BOM 或页面声明的编码解码 HTML，返回 (文本, 编码)。
+
+    解码失败就报错，不用替换字符硬解：乱码不能当作原文证据。
+    """
     content_type = next((v for k, v in headers.items() if k.lower() == "content-type"), "")
     if content_type and content_type.split(";", 1)[0].strip().lower() not in ("text/html", "application/xhtml+xml"):
         raise ValueError("unexpected_html_content_type")
@@ -131,10 +141,13 @@ def decode_html(body: bytes, headers: dict[str, str]) -> tuple[str, str]:
 
 
 def parse_capture(kind: str, body: bytes, headers: dict, url: str, source_id="cn_ccgp") -> dict:
-    """原始字节哈希与解析器的UTF-8文本哈希各自命名，不能混成同一版本。"""
+    """按任务类型（列表、公告、附件）解析一份抓取到的内容。
+
+    原始字节的哈希和解码后文本的哈希分开记录，不混为一谈。
+    """
     if kind == "attachment":
         media = next((v for k, v in headers.items() if k.lower() == "content-type"), "")
-        # HTML错误页常伪装成下载；不保存为“已取得PDF/Office文件”。
+        # 网站常把 HTML 错误页伪装成文件下载，这种情况不能记为"已取得附件"。
         if "html" in media.lower() or body.lstrip()[:32].lower().startswith((b"<!doctype html", b"<html")):
             return {"status": "parse_error", "issues": ["attachment_is_html"], "raw_sha256": sha256(body).hexdigest()}
         extension = urlsplit(url).path.lower().rsplit(".", 1)[-1]
@@ -171,6 +184,7 @@ def parse_capture(kind: str, body: bytes, headers: dict, url: str, source_id="cn
 
 
 def _initial_tasks(request: dict) -> list[dict]:
+    """根据请求生成最初的抓取任务（列表页，或者直接给出的公告页）。"""
     if request.get("discovery") == "public_category":
         from services.ingestion.sources.public_notices import build_listing_url
         if request["notice_urls"]:
@@ -185,6 +199,7 @@ def _initial_tasks(request: dict) -> list[dict]:
 
 
 def _following(store: Store, run_id: str, request: dict, task: dict, parsed: dict, transport) -> list[dict]:
+    """根据解析结果决定接下来要抓什么：列表页 → 公告，公告 → 附件。不超过请求里的数量上限。"""
     tasks = []
     if task["kind"] == "listing":
         known = store.task_urls(run_id, "notice")
@@ -238,7 +253,11 @@ def _following(store: Store, run_id: str, request: dict, task: dict, parsed: dic
 
 
 def execute(store: Store, run_id: str, transport) -> dict:
-    """执行已有run；完成的请求不重复联网。外部访问受限是终态，不能自动绕过。"""
+    """执行（或恢复执行）一次采集运行，返回运行汇总。
+
+    已经抓过的页面不会重新联网。遇到访问受限（来源未获准、robots 禁止、被网站拒绝）就停止整个运行，
+    不会换着法子去绕。
+    """
     run = store.run(run_id)
     if run["status"] in ("succeeded", "partial", "blocked", "failed", "cancelled"):
         return store.report(run_id)
@@ -249,21 +268,21 @@ def execute(store: Store, run_id: str, transport) -> dict:
         while task := store.next_task(run_id):
             store.heartbeat(run_id, token)
             try:
-                # 回调在每个实际HTTP请求前重验持久取消/租约，覆盖内部robots、重试和跳转。
-                # 不仅等整个fetch结束才检查；在途请求无法撤回，但之后不能再发下一次请求。
+                # 每发一个 HTTP 请求（包括读 robots、重试、重定向）之前，都检查运行有没有被取消、租约是否还在。
+                # 已经发出的请求收不回来，但之后不会再发新的。
                 response = transport.fetch(task["url"], max_bytes=(MAX_ATTACHMENT_BYTES if task["kind"] == "attachment"
                                                                   else MAX_HTML_BYTES), kind=task["kind"],
                                            checkpoint=lambda: store.heartbeat(run_id, token))
             except FetchError as exc:
                 store.record(run_id, token, task, error=exc.code, http_status=exc.http_status, attempts=exc.attempts)
-                # 一旦当前来源规则/访问受限，停止后续任务，不把剩余页面逐个再试一遍。
+                # 访问受限：整个运行停下，剩下的页面也不再尝试。
                 if exc.code in BLOCKING_ERRORS:
                     store.finish(run_id, token, "blocked", exc.code)
                     return store.report(run_id)
                 continue
             try:
-                # 中文阅读点：原件先落盘再解析；返回的解析结果始终能回到同一份原字节。
-                # 若此刻进程崩溃，恢复可能重复一次HTTP读取，但同字节不会覆盖/复制原件。
+                # 先把原始文件存盘，再解析。这样每个解析结果都能追溯到同一份原始字节。
+                # 如果在这里崩溃，恢复时可能重新下载一次，但相同的内容不会重复存储。
                 store.heartbeat(run_id, token)
                 archived_body = store.read_blob(store.put_blob(response.body))
                 parsed = parse_capture(task["kind"], archived_body, response.headers, response.final_url,
@@ -291,7 +310,7 @@ def execute(store: Store, run_id: str, transport) -> dict:
         store.release(run_id, token)
         raise
     except StoreError:
-        # 取消/失效租约不可改回运行态；其他存储失败释放租约，供同run恢复。
+        # 被取消或租约失效：保持原状。其他存储错误：释放租约，之后可以用同一个 run_id 恢复。
         store.release(run_id, token)
         if store.run(run_id)["status"] == "cancelled":
             return store.report(run_id)
@@ -302,7 +321,7 @@ def execute(store: Store, run_id: str, transport) -> dict:
 
 
 def replay(store: Store, capture_id: str) -> dict:
-    """仅从校验过的已归档字节重解析；离线重放不请求网站、不覆盖旧结论。"""
+    """用当前解析器重新解析一份已归档的原始文件。不联网，结果另存一条，不覆盖当初的结论。"""
     capture = store.capture(capture_id)
     if not capture["sha256"]:
         raise StoreError("capture_has_no_body")

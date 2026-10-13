@@ -1,4 +1,17 @@
-"""数据获取阶段统一CLI；运行日志是JSON行，原文只写入本地专属归档目录。"""
+"""采集服务的命令行工具。
+
+常用命令：
+    demo            用虚构数据离线演示整条采集流程（不联网）
+    collect         按 CCGP 搜索采集（需要准入文件）
+    collect-public  按栏目采集 CCGP 或海南（需要 --allow-network 和准入文件）
+    collect-tianjin 采集天津开放接口（需要自己注册的令牌）
+    resume          恢复中断的运行
+    show / cancel   查看、取消运行
+    replay          用当前解析器重新解析已归档的原件
+    export          导出给 processing 的证据包 JSON
+    verify          校验所有已归档原件的 SHA-256
+每行输出一个 JSON 事件。原始文件只保存在本地的采集数据目录里。
+"""
 from __future__ import annotations
 
 import argparse
@@ -13,10 +26,12 @@ from services.ingestion.transport import FetchError, SourcePolicy, Transport
 
 
 def emit(value):
+    """输出一行 JSON 事件。"""
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
 
 def main(argv=None) -> int:
+    """解析命令行并执行。退出码：0 成功，2 部分成功，3 被拦截，4 失败，5 已取消，6 未完成。"""
     parser = argparse.ArgumentParser(description="BidRadar首源获取：先登记运行，再归档/解析；默认不联网。")
     parser.add_argument("--store", type=Path, default=Path(".bidradar-data"), help="ingestion专属本地目录")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -75,7 +90,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     store = None
     try:
-        # 必须先校验请求；参数错误不会留下半个运行或隐式开始联网。
+        # 先检查参数。参数有误时直接退出，不会登记半个运行，更不会开始联网。
         request = request_spec(keyword=args.keyword, notice_urls=args.notice_url, pages=args.pages,
                                max_notices=args.max_notices, max_attachments=args.max_attachments,
                                attachments=args.attachments, start_date=args.start_date, end_date=args.end_date
@@ -101,7 +116,7 @@ def main(argv=None) -> int:
             if args.command == "demo":
                 from services.ingestion.demo import DemoTransport, demo_request
                 request = demo_request()
-                # 演示与真实请求使用不同幂等内容，不能把演示成绩当真实采集。
+                # 演示请求带上 simulation 标记，和真实请求永远不会被当成同一个运行。
                 request["simulation"] = True
                 transport = DemoTransport()
             else:
@@ -161,7 +176,7 @@ def main(argv=None) -> int:
         emit({"event": "interrupted", "message": "运行已释放，可按同一run_id恢复"})
         return 130
     except sqlite3.DatabaseError:
-        # 数据库损坏/锁冲突不是零结果；给稳定错误码，原目录留给检查与恢复。
+        # 数据库出错不等于"没抓到东西"。返回固定错误码，数据目录保持原样，方便检查和恢复。
         emit({"event": "error", "code": "storage_database_error"})
         return 4
     except (StoreError, FetchError, ValueError, OSError) as exc:

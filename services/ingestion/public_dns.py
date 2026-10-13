@@ -1,7 +1,10 @@
-"""固定公开采购域名的显式 DoH；只解决本机 DNS 兼容，不改变访问权限。
+"""通过 DNS-over-HTTPS（Google 公共 DNS）解析采购网站的域名。
 
-解析结果可含有界 CNAME 链；只接受由问题域名连通到的公网 A 记录。连接仍由
-transport 固定数字 IP 并按原网站域名校验证书，不能由网页指定解析器或目标。
+为什么需要：有些本机网络环境的 DNS 会返回假地址（比如某些代理软件的 fake-IP），导致连不上。
+这只是换一种方式查 IP，不改变任何访问权限。
+
+只解析固定的几个采购网站域名；允许有限长度的 CNAME 链，最终只接受公网 IPv4 地址。
+连接时仍按原域名校验 HTTPS 证书。
 """
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ HOSTS = frozenset({"www.ccgp.gov.cn", "ccgp.gov.cn", "search.ccgp.gov.cn", "ggzy
 
 
 def _unique(pairs):
+    """json.loads 的钩子：遇到重复键就报错。"""
     result = {}
     for key, value in pairs:
         if key in result:
@@ -25,6 +29,7 @@ def _unique(pairs):
 
 
 def _name(value):
+    """检查并规范化 DNS 名称（转小写、去掉结尾的点）。"""
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.?", value):
         raise ValueError("invalid_dns_name")
     if len(value) > 254:
@@ -33,7 +38,10 @@ def _name(value):
 
 
 def resolve_public_dns(host, port, timeout=10, *, exchange=None):
-    """一次有界查询，不缓存、不跳转、不自动切换；失败返回固定错误码。"""
+    """查询一个采购网站域名的 IPv4 地址列表。
+
+    只查一次，不缓存，不自动换别的 DNS；失败抛 FetchError（固定错误码）。
+    """
     if host not in HOSTS or port not in (80, 443):
         raise FetchError("dns_target_not_allowed")
     url = "https://dns.google/resolve?" + urlencode(
@@ -71,7 +79,7 @@ def resolve_public_dns(host, port, timeout=10, *, exchange=None):
             else:
                 value = _name(record["data"])
             records.setdefault(owner, []).append((record["type"], value))
-        # 不接受额外不连通记录、循环、CNAME/A混搭或多个别名目标。
+        # 沿着 CNAME 链走到 A 记录。出现循环、无关记录、CNAME 和 A 混在一起、或指向多个别名，都拒绝。
         current, visited = host, set()
         for _ in range(9):
             if current in visited or current not in records:

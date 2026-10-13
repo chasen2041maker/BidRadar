@@ -1,10 +1,13 @@
-"""中国政府采购网离线适配：构造参数、解析列表/正文及附件引用，不联网。
+"""中国政府采购网（CCGP）的解析器：构造搜索参数、解析搜索列表页和公告正文页。
 
-参数映射、列表选择器和元数据拆分改编自 bidding-ai-analyzer（MIT）：
+这个模块不联网。下载由 transport 负责，抓取顺序由 pipeline 安排。
+
+搜索参数映射、列表选择器和元数据拆分的思路改编自 bidding-ai-analyzer（MIT 许可）：
 Copyright (c) 2026 ichthyoplanktonzyh
-上游提交/文件及完整许可见 third_party/README.md。
-正文只认约定模板；附件只提取引用、不解析文件内容，也不推断投标资格。
-来源准入与下载由transport负责，获取/归档顺序由pipeline编排。
+上游提交、文件和完整许可见 third_party/README.md。
+
+只认识约定好的页面模板，模板变了就明确报错。
+附件只记下链接和名称，不解析文件内容，也不推断任何投标资格。
 """
 from __future__ import annotations
 
@@ -17,16 +20,16 @@ import re
 from urllib.parse import urljoin, urlsplit
 
 SOURCE_ID = "cn_ccgp"
-SEARCH_URL = "http://search.ccgp.gov.cn/bxsearch"  # 保留上游入口，不声称HTTPS已验证。
-MAX_HTML_BYTES = 2 * 1024 * 1024  # 本片的防护上限，不是生产容量测量结果。
-# 限制树深与节点数，避免小体积畸形HTML触发长栈扫描或大量对象分配。
+SEARCH_URL = "http://search.ccgp.gov.cn/bxsearch"  # 沿用上游的搜索入口（HTTP）。
+MAX_HTML_BYTES = 2 * 1024 * 1024  # 单个页面最大 2 MB。
+# 限制 HTML 的嵌套深度和节点数：防止一个很小但结构畸形的页面让解析器耗尽内存或变得极慢。
 MAX_HTML_DEPTH = 128
-MAX_HTML_NODES = 10_000  # 元素及文本片段计数，不含内部document根节点。
+MAX_HTML_NODES = 10_000  # 元素和文本片段的总数上限。
 _VOID_TAGS = frozenset("area base br col embed hr img input link meta param source track wbr".split())
 
 
 class ParseStatus(str, Enum):
-    """仅描述这份HTML的解析结果，不代表商机状态或来源全量覆盖。"""
+    """这一页的解析结果：成功、部分成功、空、被拦截（验证码/限流）、格式不认识等。只描述这一页。"""
 
     OK = "ok"
     EMPTY = "empty"
@@ -37,7 +40,7 @@ class ParseStatus(str, Enum):
 
 @dataclass(frozen=True)
 class NoticeCandidate:
-    """目录线索；保留元数据原文，不猜预算、截止、地区、资格或在招状态。"""
+    """列表页上的一条公告线索：标题、链接、元数据原文。不推测预算、截止时间、地区或是否还在招标。"""
 
     title: str
     url: str
@@ -51,19 +54,19 @@ class NoticeCandidate:
 
 @dataclass(frozen=True)
 class ListingResult:
-    """内容指纹用于关联输入；真正归档、获取时间和版本持久化由后续采集链负责。"""
+    """一个列表页的解析结果：状态、公告线索、下一页链接、内容指纹。"""
 
     status: ParseStatus
     items: tuple[NoticeCandidate, ...]
     issues: tuple[str, ...]
     input_sha256: str
-    # 静态栏目可提供已核实的下一页；旧搜索适配器四参数构造保持兼容。
+    # next_url：栏目列表页能解析出下一页时填上；旧的搜索列表不填。
     next_url: str | None = None
 
 
 @dataclass(frozen=True)
 class NoticePage:
-    """正文文本与附件线索；链接可见不代表文件已获取，也不解释资格/预算。"""
+    """一个公告页的解析结果：标题、正文段落、元数据、附件链接。看到附件链接不代表已经下载了附件。"""
 
     status: ParseStatus
     title: str | None
@@ -78,10 +81,10 @@ class NoticePage:
 
 def build_search_params(keyword: str, page: int = 1, *, start_date: str | None = None,
                         end_date: str | None = None) -> dict[str, str]:
-    """复用上游查询映射；校验关键词、页码和自然日期，输出参数但不发送请求。
+    """生成 CCGP 搜索的查询参数（只生成，不发请求）。
 
-    起止是列表发布日期过滤，不是投标截止。未知日期不自动补当前日期。
-    bidType=0保留各类公告，目录层须另行区分更正、意向、结果和潜在在招线索。
+    start_date / end_date 是按发布日期筛选，不是投标截止日期；不传就不限，不会自动填今天。
+    bidType=0 表示所有类型的公告都要，更正、意向、结果等类型由目录层再区分。
     """
     if not isinstance(keyword, str) or not keyword.strip() or len(keyword) > 200:
         raise ValueError("keyword须为1–200字符的非空文本")
@@ -107,12 +110,14 @@ def build_search_params(keyword: str, page: int = 1, *, start_date: str | None =
 
 @dataclass
 class _Node:
+    """简化的 HTML 节点：标签、属性、子节点、在原文中的位置。"""
+
     tag: str
     attrs: dict[str, str | None] = field(default_factory=dict)
     children: list[_Node | str] = field(default_factory=list)
 
     def walk(self):
-        """迭代遍历避免恶意深层嵌套耗尽Python调用栈。"""
+        """遍历所有子孙节点。用循环而不是递归，嵌套再深也不会栈溢出。"""
         pending = [self]
         while pending:
             node = pending.pop()
@@ -141,11 +146,11 @@ class _Node:
 
 
 class _HTMLResourceLimit(ValueError):
-    """内部资源边界异常；整页失败，不交付已经解析出的部分条目。"""
+    """页面超出大小、深度或节点数限制。整页解析失败，不返回已经解析出的一部分。"""
 
 
 class _Document(HTMLParser):
-    """标准库有界HTML树；上层选择已知列表/正文模板，不加载图片、脚本或外链。"""
+    """用标准库 HTMLParser 构建节点树，有深度和节点数上限。不加载图片、脚本或外部链接。"""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -159,7 +164,7 @@ class _Document(HTMLParser):
         self.node_count += 1
 
     def _append_element(self, tag, attrs, *, push):
-        # stack包含内部根；其长度恰为待插入元素的深度。先检查，再分配节点。
+        # 先检查深度和节点数，再创建节点。
         if len(self.stack) > MAX_HTML_DEPTH:
             raise _HTMLResourceLimit("html_depth_limit")
         self._reserve_node()
@@ -175,7 +180,7 @@ class _Document(HTMLParser):
         self._append_element(tag, attrs, push=False)
 
     def handle_endtag(self, tag):
-        # 栈深已受限；不匹配结束标签最多扫描MAX_HTML_DEPTH层。
+        # 找对应的开始标签。栈的深度有上限，所以这里的查找不会太慢。
         for index in range(len(self.stack) - 1, 0, -1):
             if self.stack[index].tag == tag:
                 del self.stack[index:]
@@ -187,12 +192,11 @@ class _Document(HTMLParser):
 
 
 def _notice_url(href: str | None) -> str | None:
-    """只接受CCGP公告链接；此校验不代替未来联网时的DNS/重定向/SSRF检查。"""
+    """检查并规范化 CCGP 公告链接，不是 CCGP 的链接返回 None。真正联网时 transport 还会再查一遍。"""
     if not href or any(ord(char) <= 32 for char in href) or "\\" in href:
         return None
     try:
-        # 合并相对链接也会拒绝畸形主机（如未闭合IPv6括号）；与后续拆分一起隔离坏行。
-        # 不擅自改域名修补不明确的链接，也不让单个坏链接中断整页解析。
+        # 链接格式有问题就跳过这一条，不尝试修补，也不因为一个坏链接让整页解析失败。
         url = urljoin(SEARCH_URL, href)
         parts = urlsplit(url)
         if (parts.scheme not in ("http", "https") or parts.hostname not in ("www.ccgp.gov.cn", "ccgp.gov.cn")
@@ -206,11 +210,11 @@ def _notice_url(href: str | None) -> str | None:
 
 
 def parse_search_page(html: str) -> ListingResult:
-    """从上游ul.vT-srch-result-list-bid提取线索；失败不能伪装成零条结果。
+    """解析 CCGP 搜索结果页（ul.vT-srch-result-list-bid），返回公告线索。
 
-    列表和带标签的元数据拆分沿用上游思路；不沿用静默吞异常、固定20条分页、
-    最后一段必是地区等假设。原HTML归档后才可把locator作为可追查的位置。
-    空结果仅在约定列表容器存在且显式“共0条”时成立，DOM变化时保守报错。
+    "没有结果"只在列表容器存在、并且页面明确写着"共0条"时才成立；页面结构变了就报错，
+    不会把"解析失败"当成"零条结果"。
+    改编自上游思路，但去掉了上游"出错静默跳过""固定每页 20 条""最后一段一定是地区"这些假设。
     """
     if not isinstance(html, str):
         raise TypeError("html须为已解码文本")
@@ -225,12 +229,12 @@ def parse_search_page(html: str) -> ListingResult:
     except _HTMLResourceLimit as exc:
         return ListingResult(ParseStatus.PARSE_ERROR, (), (str(exc),), fingerprint)
     except (ValueError, AssertionError):
-        # 畸形声明或不支持的HTML必须暴露为解析失败，不能当作零结果。
+        # 页面格式不对就明确报解析失败，不能当成零条结果。
         return ListingResult(ParseStatus.PARSE_ERROR, (), ("malformed_html",), fingerprint)
     containers = [node for node in document.root.walk()
                   if node.tag == "ul" and "vT-srch-result-list-bid" in (node.attrs.get("class") or "").split()]
-    # 验证码/限流页可能仍带空列表或旧行；必须先检查页面级挑战，再接受空结果或条目。
-    # 排除约定列表中的li正文，避免正常采购标题含“验证码”时误报访问失败。
+    # 先检查是不是验证码或限流页（这种页面可能也带着空列表），再处理结果。
+    # 检查时跳过列表条目本身：采购标题里出现"验证码"（比如"验证码系统采购"）是正常的。
     challenge_text = document.root.text(skip_listing_rows=True)
     if any(word in challenge_text for word in ("访问受限", "访问过于频繁", "验证码", "访问频繁")):
         return ListingResult(ParseStatus.BLOCKED, (), ("access_challenge",), fingerprint)
@@ -248,7 +252,7 @@ def parse_search_page(html: str) -> ListingResult:
             issues.append(f"row_{index}:nested_or_unclosed_listing_item")
             continue
         anchor = next((node for node in row.walk() if node.tag == "a"), None)
-        # 仅用li的直接span，避免把标题内高亮span误作发布时间。
+        # 只取 li 直接下面的 span，标题里用来高亮关键词的 span 不算。
         metadata = next((node for node in row.children if isinstance(node, _Node) and node.tag == "span"), None)
         url = _notice_url(anchor.attrs.get("href")) if anchor else None
         if anchor is None or not anchor.text() or url is None or metadata is None or not metadata.text():
@@ -261,7 +265,7 @@ def parse_search_page(html: str) -> ListingResult:
             match = re.fullmatch(r"(采购人|代理机构)[：:]\s*(.+)", part)
             if match:
                 fields[match[1]] = match[2].strip()
-        # 只保留具有日期外形的第一段原文，既不填时区，也不当作响应截止。
+        # 只取第一段长得像日期的原文。不补时区，也不把它当成投标截止时间。
         published = parts[0] if re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\s|$)", parts[0]) else None
         items.append(NoticeCandidate(anchor.text(), url, raw, published,
                                      fields.get("采购人"), fields.get("代理机构"),
@@ -271,10 +275,11 @@ def parse_search_page(html: str) -> ListingResult:
 
 
 def parse_notice_page(html: str, url: str) -> NoticePage:
-    """约定正文模板的保守提取；保留原件中的位置，不把整页导航当采购条件。
+    """解析 CCGP 公告正文页，返回标题、正文段落（带位置）、元数据和附件链接。
 
-    附件只登记URL/显示名称，是否可下载由当前来源准入及传输层逐项判断。
-    当前模板需要真实站点回归；未知模板明确失败，不用<title>冒充已取得正文。
+    只取约定的正文区域，不把整页的导航、页脚当成采购内容。
+    附件只记下链接和显示名称，能不能下载由准入规则和 transport 决定。
+    模板不认识就明确失败，不会拿 <title> 冒充正文。
     """
     if not isinstance(html, str):
         raise TypeError("html须为已解码文本")
@@ -296,8 +301,8 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
                        and {"title", "tc"}.intersection((node.attrs.get("class") or "").split())), None)
     if title_node is None:
         title_node = next((node for node in nodes if node.tag == "h1"), None)
-    # 公告标题允许“验证码系统采购”，但明确访问提示必须优先于残留正文/标题模板。
-    # 否则挑战页复用h2.tc或留下旧正文时，会被标题豁免误当作有效公告。
+    # 先检查有没有验证码或访问限制提示。标题里出现"验证码"不算，但页面上有明确的访问提示时，
+    # 即使页面上还残留着标题或旧正文，也要按"被拦截"处理。
     title = title_node.text() if title_node else None
     title_challenge = bool(title and (any(word in title for word in (
         "请输入验证码", "请填写验证码", "请完成验证", "请通过验证", "访问频繁", "访问过于频繁", "访问受限"))
@@ -329,7 +334,7 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
             seen.add(link)
             attachments.append({"url": link, "name": anchor.text(), "locator": "div.vF_detail_content a",
                                 "status": "not_fetched"})
-    # 保留段落/表格行边界，供processing定位字段；不能把整页拼成一句再猜日期角色。
+    # 按段落和表格行分段，每段记下位置，processing 才能准确找到"预算金额""截止时间"这些字段。
     segments = []
     pending = [(body[0], "div.vF_detail_content")]
     while pending:
@@ -338,7 +343,7 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
             if node.strip():
                 segments.append({"text": node.strip(), "locator": locator})
             continue
-        # 富文本可能把table嵌进p；此时须继续下钻到tr，避免预算单位/列值失去对应。
+        # 有些页面把表格嵌在段落里，要继续往下拆到表格行，否则表头单位和行里的数值就对不上了。
         if node.tag in ("p", "li", "tr", "h1", "h2", "h3", "h4") and not any(
                 child is not node and child.tag == "table" for child in node.walk()):
             cells = [child.text() for child in node.children if isinstance(child, _Node) and child.tag in ("td", "th")]
@@ -367,7 +372,7 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
         pending.extend(reversed(children))
     if not segments:
         segments.append({"text": body[0].text(), "locator": "div.vF_detail_content"})
-    # 页面摘要表只输出允许的业务标签；电话/地址等联系信息不进入字段索引。
+    # 页面顶部的摘要表只取白名单里的字段；电话、地址等联系信息不收录。
     labels = {"采购项目名称", "品目", "采购单位", "采购人", "行政区域", "公告时间", "公告发布时间", "预算金额", "公告类型"}
     metadata = []
     for index, node in enumerate((n for n in nodes if n.tag == "tr"), 1):

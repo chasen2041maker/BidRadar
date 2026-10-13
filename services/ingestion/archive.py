@@ -1,8 +1,18 @@
-"""ingestion本地运行账本：原字节不可变，获取记录、解析和业务版本分别保存。
+"""采集服务的本地存储：采集运行、待抓取队列、抓取记录、原始文件。
 
-仅供公共资料开发阶段使用；其他服务不能直读此库，也不是公司资料/RLS后端。
-文件先落盘、数据库后提交；进程中断可能留下未引用文件。读取时验证文件及指纹，
-不承诺未经实测的断电恢复或生产RPO/RTO。
+存什么：
+    runs      一次采集运行（请求参数、状态、租约）
+    tasks     这次运行要抓的页面队列（列表页、公告页、附件）
+    captures  每次抓取的结果：状态码、响应头、原始文件的 SHA-256、当时的解析结果
+    versions  同一个 URL 的内容版本：内容变了就是新版本
+    replays   之后用新解析器重新解析的结果（不覆盖当初的结论）
+    blobs/    原始文件，按 SHA-256 命名，写入后不再修改
+
+顺序上先写文件、再提交数据库。进程中途退出可能留下没被引用的文件，但不会出现"数据库有记录、文件却不存在"。
+读取文件时会重新校验 SHA-256。
+
+这是采集服务私有的存储，其他服务只能拿到导出的 JSON，不能直接读这里。
+只用于公开资料的本地开发，没有做过断电恢复测试。
 """
 from __future__ import annotations
 
@@ -20,22 +30,26 @@ from uuid import uuid4
 
 
 def utc_now() -> str:
-    """实际获取/记账时间，UTC秒精度；不当作来源发布日期。"""
+    """当前 UTC 时间（精确到秒），用作抓取和记账时间。注意：这不是公告的发布日期。"""
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def encode_json(value) -> str:
+    """固定格式的 JSON 序列化。"""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 class StoreError(RuntimeError):
+    """存储层的错误，带错误码 code。"""
+
     pass
 
 
 class Store:
-    """每个目录只有一个ingestion账本；租约防止同一运行被两个执行者重复提交。
+    """采集存储。一个数据目录对应一个账本。
 
-    目录由可信本地用户控制，不能把外部网页字段当作路径；这里不提供多用户沙盒。
+    同一次运行同时只能有一个执行者：执行前要先拿租约（acquire），执行中定期续期（heartbeat）。
+    文件路径只由 SHA-256 决定，网页上的任何内容都不会被拿来当路径。
     """
 
     def __init__(self, root: str | Path):
@@ -55,7 +69,7 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
-        # 运行请求与队列先持久化；分析任务仍属于未来research自己的数据库。
+        # 先把运行请求和抓取队列存下来，中断后可以接着跑。
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS runs(
                 id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL,
@@ -86,10 +100,12 @@ class Store:
         """)
 
     def close(self):
+        """关闭数据库连接。"""
         self.db.close()
 
     @contextmanager
     def transaction(self):
+        """开启写事务。"""
         self.db.execute("BEGIN IMMEDIATE")
         try:
             yield
@@ -99,6 +115,7 @@ class Store:
             raise
 
     def create_run(self, request: dict, key: str) -> tuple[str, bool]:
+        """登记一次采集运行，返回 (run_id, 是否新建)。同一个幂等键重复登记会返回原来的运行。"""
         if not isinstance(key, str) or not key.strip() or len(key) > 128:
             raise StoreError("invalid_idempotency_key")
         serialized = encode_json(request)
@@ -115,6 +132,7 @@ class Store:
         return run_id, True
 
     def run(self, run_id: str) -> dict:
+        """读取运行记录。"""
         row = self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if row is None:
             raise StoreError("run_not_found")
@@ -124,7 +142,10 @@ class Store:
         return result
 
     def acquire(self, run_id: str) -> str:
-        """恢复仅接管失效租约；取消是持久终态，不能靠resume绕过。"""
+        """拿到这次运行的执行租约，返回租约令牌。
+
+        别人的租约还有效时拿不到；已取消或已结束的运行也不能再执行。
+        """
         with self.transaction():
             row = self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
             if row is None:
@@ -139,30 +160,37 @@ class Store:
         return token
 
     def _check_lease(self, run_id: str, token: str):
+        """确认租约仍属于这个令牌且没过期。"""
         row = self.db.execute("SELECT status,lease_token,lease_until FROM runs WHERE id=?", (run_id,)).fetchone()
         if (row is None or row["status"] != "running" or row["lease_token"] != token
                 or row["lease_until"] <= time.time()):
             raise StoreError("lease_lost_or_cancelled")
 
     def heartbeat(self, run_id: str, token: str):
+        """续期租约，同时确认运行没被取消。"""
         with self.transaction():
             self._check_lease(run_id, token)
             self.db.execute("UPDATE runs SET lease_until=?,updated_at=? WHERE id=?",
                             (time.time() + 120, utc_now(), run_id))
 
     def release(self, run_id: str, token: str):
-        """进程正常中断时立即释放；硬崩溃后由租约超时恢复，已提交队列不重做。"""
+        """主动释放租约（比如按了 Ctrl+C）。
+
+        进程崩溃来不及释放时，等租约过期后别人就能接手；已经完成的抓取不会重做。
+        """
         with self.db:
             self.db.execute("UPDATE runs SET status='queued',lease_token=NULL,lease_until=NULL,updated_at=? "
                             "WHERE id=? AND lease_token=? AND status='running'", (utc_now(), run_id, token))
 
     def cancel(self, run_id: str):
+        """取消运行。取消是终态，之后不能再恢复执行。"""
         self.run(run_id)
         with self.db:
             self.db.execute("UPDATE runs SET status='cancelled',lease_token=NULL,lease_until=NULL,updated_at=? "
                             "WHERE id=? AND status IN ('queued','running')", (utc_now(), run_id))
 
     def finish(self, run_id: str, token: str, status: str, error: str | None = None):
+        """把运行标为结束状态并释放租约。"""
         if status not in ("succeeded", "partial", "blocked", "failed"):
             raise StoreError("invalid_terminal_status")
         with self.transaction():
@@ -171,6 +199,7 @@ class Store:
                             (status, error, utc_now(), run_id))
 
     def enqueue(self, run_id: str, token: str, tasks: list[dict]):
+        """往抓取队列里加任务（需要持有租约）。"""
         with self.transaction():
             self._check_lease(run_id, token)
             self._enqueue(run_id, tasks)
@@ -182,6 +211,7 @@ class Store:
                             (run_id, task["kind"], task["url"], task.get("parent_url"), encode_json(task.get("payload", {}))))
 
     def next_task(self, run_id: str) -> dict | None:
+        """取下一个还没完成的抓取任务；没有了就返回 None。"""
         row = self.db.execute("SELECT * FROM tasks WHERE run_id=? AND state='pending' ORDER BY id LIMIT 1", (run_id,)).fetchone()
         if row is None:
             return None
@@ -190,12 +220,15 @@ class Store:
         return result
 
     def task_count(self, run_id: str, kind: str) -> int:
+        """某类任务（列表页、公告、附件）一共有多少个。"""
         return self.db.execute("SELECT count(*) FROM tasks WHERE run_id=? AND kind=?", (run_id, kind)).fetchone()[0]
 
     def task_urls(self, run_id: str, kind: str) -> set[str]:
+        """某类任务的全部 URL。"""
         return {row[0] for row in self.db.execute("SELECT url FROM tasks WHERE run_id=? AND kind=?", (run_id, kind))}
 
     def put_blob(self, data: bytes) -> str:
+        """保存原始文件，返回它的 SHA-256。同样的内容只存一份，已存在的文件不会被覆盖。"""
         digest = sha256(data).hexdigest()
         target = self.blobs / (digest + ".bin")
         if target.exists():
@@ -207,7 +240,8 @@ class Store:
             file.flush()
             os.fsync(file.fileno())
         try:
-            # 硬链接提供“仅创建不覆盖”；并发写同一哈希时校验已有内容。
+            # 先写临时文件，再用硬链接放到正式位置：目标已存在时链接会失败，不会覆盖。
+            # 如果别的进程同时写了同一个文件，就核对已有内容是否一致。
             try:
                 os.link(temporary, target)
             except FileExistsError:
@@ -217,6 +251,7 @@ class Store:
         return digest
 
     def read_blob(self, digest: str) -> bytes:
+        """按 SHA-256 读取原始文件，并重新校验内容没有被改过。"""
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise StoreError("invalid_blob_id")
         path = self.blobs / (digest + ".bin")
@@ -234,7 +269,11 @@ class Store:
                parsed: dict | None = None, parser_version: str | None = None,
                error: str | None = None, http_status: int | None = None, attempts: int = 0,
                following: list[dict] = ()) -> str:
-        """获取记录、队列完成与后继登记同事务；恢复不会漏掉已解析出的后继任务。"""
+        """记录一次抓取的结果。
+
+        "保存抓取记录""把任务标为完成""把解析出的新链接加入队列"在同一个事务里完成，
+        所以中断后恢复时，不会出现任务已完成、但它解析出的后续页面没进队列的情况。
+        """
         self._check_lease(run_id, token)
         digest = self.put_blob(response.body) if response is not None else None
         capture_id = uuid4().hex
@@ -245,11 +284,11 @@ class Store:
                                      (task["id"], run_id)).fetchone()
             if stored is None:
                 raise StoreError("task_not_pending_in_run")
-            # 只接受账本中的URL/类型，调用方的字典不能伪造另一运行的任务。
+            # URL 和任务类型以数据库里的为准，调用方传进来的值只用来定位任务。
             task = dict(stored)
             version_id = None
             if digest is not None:
-                # 来源归属取自已持久化运行，不让新接入的数据混入CCGP的版本命名空间。
+                # 来源以运行记录里的为准，不同来源的版本记录互不混淆。
                 source = self.run(run_id)["request"].get("source_id", "cn_ccgp")
                 version_id = sha256((source + "\n" + task["url"] + "\n" + digest).encode()).hexdigest()
                 latest = self.db.execute("SELECT max(version) FROM versions WHERE source_id=? AND url=?",
@@ -257,7 +296,7 @@ class Store:
                 self.db.execute("INSERT INTO versions VALUES(?,?,?,?,?,?) "
                                 "ON CONFLICT(source_id,url,sha256) DO NOTHING",
                                 (version_id, source, task["url"], digest, latest + 1, captured_at))
-            # 只记录无凭据、无Set-Cookie的必要响应头；原URL仅来自受控入口。
+            # 只保存必要的响应头，不保存 Set-Cookie 之类可能含凭据的头。
             headers = ({key: val for key, val in response.headers.items()
                         if key.lower() in ("content-type", "etag", "last-modified", "content-length")}
                        if response is not None else {})
@@ -274,6 +313,7 @@ class Store:
         return capture_id
 
     def capture(self, capture_id: str) -> dict:
+        """读取一条抓取记录。"""
         row = self.db.execute("SELECT * FROM captures WHERE id=?", (capture_id,)).fetchone()
         if row is None:
             raise StoreError("capture_not_found")
@@ -283,7 +323,7 @@ class Store:
         return result
 
     def report(self, run_id: str) -> dict:
-        """这是本地公共材料结果，不把获取成功解释为资格满足或产品覆盖率。"""
+        """一次运行的汇总：运行状态、每次抓取的结果。只说明抓到了什么，不说明这些项目适不适合谁。"""
         run = self.run(run_id)
         captures = [self.capture(row[0]) for row in self.db.execute("SELECT id FROM captures WHERE run_id=? ORDER BY rowid", (run_id,))]
         attachments = {item["url"]: item for item in captures if item["kind"] == "attachment"}
@@ -293,7 +333,7 @@ class Store:
             for link in capture["parsed"].get("attachments", ()):
                 fetched = attachments.get(link["url"])
                 if fetched:
-                    # 展示投影组合当前附件获取结果，数据库里的历史解析记录不回写。
+                    # 在返回结果里补上附件的最新抓取状态；数据库里当初的解析结果保持不变。
                     link["fetch_status"] = "failed" if fetched["error_code"] else "fetched"
                     link["capture_id"] = fetched["id"]
                     link["error_code"] = fetched["error_code"]
@@ -303,7 +343,7 @@ class Store:
                 "pending": self.db.execute("SELECT count(*) FROM tasks WHERE run_id=? AND state='pending'", (run_id,)).fetchone()[0]}
 
     def save_replay(self, capture_id: str, parser_version: str, parsed: dict) -> dict:
-        """重解析生成独立记录，原获取和当时的解析结论保持不变。"""
+        """保存一次重新解析的结果。新结果单独存一条，当初的抓取记录和解析结论不变。"""
         self.capture(capture_id)
         record = {"id": uuid4().hex, "capture_id": capture_id, "parser_version": parser_version,
                   "created_at": utc_now(), "parsed": parsed}

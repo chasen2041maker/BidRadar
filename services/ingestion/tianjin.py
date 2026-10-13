@@ -1,8 +1,11 @@
-"""天津官方开放接口：固定资源、显式联网、令牌只在请求内存中短暂使用。
+"""天津政府采购开放接口的采集适配器。
 
-page是每页条数，pageNum才是页码；官方接口没有已确认的关键词/排序参数。
-仅采样指定的有限页，软件关键词在目录端筛选，不能声称全量或最新覆盖。
-响应结构尚须真实账号验收；预览的截断行绝不补空后冒充完整数据。
+几个要点：
+    - 只访问三个固定的官方资源（谈判、磋商、更正），默认不联网，必须显式开启。
+    - 开发者令牌从本地文件读取，只在发请求时短暂放在内存里，不写进日志、URL 记录或错误信息。
+    - 接口参数里 page 是每页条数，pageNum 才是页码。接口没有关键词和排序参数，
+      所以只能取指定的几页，软件相关的筛选放在目录端做。这不是全量数据。
+    - 目前令牌仍被平台拒绝，响应格式还没用真实账号验证过。
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ from services.ingestion.transport import FetchError, FetchResult, _exchange, _re
 
 SOURCE_ID = "tj_procurement_negotiation"
 RESOURCE_ID = "addbe9f2805346c28d4b639311e6e68a"
-# 白名单来自官方公开资源定义；资源彼此独立，不能由外部响应提供任意接口地址。
+# 允许访问的官方资源。接口地址是写死的，不会因为响应内容而访问别的地址。
 RESOURCE_KEYS = {"negotiation": SOURCE_ID, "consultation": "tj_procurement_consultation",
                  "correction": "tj_procurement_correction"}
 SOURCE_RESOURCES = {SOURCE_ID: RESOURCE_ID,
@@ -36,7 +39,10 @@ MAX_BYTES = 4 * 1024 * 1024
 
 
 def _unique_object(pairs):
-    """拒绝重复JSON键，避免解码器丢弃早值，导致早值中的转义令牌漏检。"""
+    """json.loads 的钩子：遇到重复键就报错。
+
+    否则前一个值会被后一个覆盖，如果前一个值里藏着令牌，就检查不到了。
+    """
     result = {}
     for key, value in pairs:
         if key in result:
@@ -46,10 +52,9 @@ def _unique_object(pairs):
 
 
 def resolve_public_dns(host, port, timeout, *, exchange=None):
-    """显式DoH兼容本机fake-IP DNS；只解析官方公开域名，绝不携带API令牌。
+    """用 DNS-over-HTTPS 解析天津接口的域名（应对本机 DNS 返回假地址的情况）。
 
-    Google端连接固定公网IP并校验dns.google证书；返回值仍须通过官方域名/
-    公网检查。当前只接收直接A记录，不追踪CNAME或重定向，不缓存临时IP。
+    只接受直接的 A 记录，不跟踪 CNAME，不缓存。这个请求里绝不会带上 API 令牌。
     """
     if host != HOST or port != 443:
         raise FetchError("dns_target_not_allowed")
@@ -94,6 +99,7 @@ def resolve_public_dns(host, port, timeout, *, exchange=None):
 
 
 def request_spec(*, start_page=1, pages=1, page_size=10, dns_mode="system", source_id=SOURCE_ID):
+    """生成天津接口的采集请求：哪个资源、从第几页开始、取几页、每页几条。"""
     for name, value, maximum in (("start_page", start_page, 10000), ("pages", pages, 5),
                                   ("page_size", page_size, 20)):
         if type(value) is not int or not 1 <= value <= maximum:
@@ -106,24 +112,25 @@ def request_spec(*, start_page=1, pages=1, page_size=10, dns_mode="system", sour
         raise ValueError("invalid_tianjin_source")
     request = {"schema_version": 1, "source_id": source_id, "start_page": start_page,
             "pages": pages, "page_size": page_size, "simulation": False}
-    # 缺省system保持v1旧请求的幂等内容；启用DoH才加入新选项，恢复不静默换模式。
+    # 用默认 DNS 时不写入 dns_mode，保持和旧版本请求的幂等内容一致；用 DoH 时才写入。
     if dns_mode != "system":
         request["dns_mode"] = dns_mode
     return request
 
 
 def page_url(page_number, page_size, source_id=SOURCE_ID):
-    """账本只存不含令牌的定位；实际认证参数不能进入URL日志、幂等键或异常。"""
+    """生成某一页的 URL（不含令牌）。令牌在真正发请求时才加上，所以不会出现在任何记录里。"""
     request_spec(start_page=page_number, page_size=page_size, source_id=source_id)
     endpoint = f"https://{HOST}/api/invoke/{SOURCE_RESOURCES[source_id]}"
     return endpoint + "?" + urlencode({"page": page_size, "pageNum": page_number})
 
 
 class TianjinTransport:
-    """2026-09-30已核对无条件开放/免费使用条款，当前用途限本地开发。
+    """天津接口的抓取器。
 
-    固定资源API的明确调用契约为访问依据，不把通用网页robots许可冒充API授权。
-    用户仍须自行注册开发者。联网默认关闭；不跳转、不代理、不自动重试认证失败。
+    2026-09-30 核对过开放和免费使用条款，目前只用于本地开发。访问依据是接口自己的调用说明，
+    不是网站的 robots.txt。需要自己注册开发者账号。
+    默认不联网；不跟随重定向、不走代理，认证失败不会自动重试。
     """
     def __init__(self, *, allow_network=False, token_file=DEFAULT_TOKEN_FILE,
                  exchange=None, resolver=None, dns_mode="system", source_id=SOURCE_ID):
@@ -139,11 +146,12 @@ class TianjinTransport:
         self.last_request = None
 
     def fetch_page(self, page_number, page_size, *, checkpoint):
+        """抓取一页数据，返回 FetchResult。"""
         request_spec(start_page=page_number, page_size=page_size)
         checkpoint()
         if not self.allow_network:
             raise FetchError("network_opt_in_required")
-        # 有效期只作为重新核查提醒；过期不能凭旧条款和旧令牌继续自动访问。
+        # 条款核对有有效期，过期了就要重新核对，不能拿旧的核对结果继续访问。
         if not "2026-09-30" <= utc_now()[:10] < "2026-10-30":
             raise FetchError("source_terms_review_required")
         if self.calls >= 5 or time.monotonic() - self.started > 180:
@@ -156,7 +164,7 @@ class TianjinTransport:
                 raise ValueError()
         except (OSError, UnicodeError, ValueError):
             raise FetchError("credential_missing_or_invalid") from None
-        # 所有DNS地址都必须为公网；TLS仍校验官方域名，连接固定已验证IP。
+        # 解析出的地址都必须是公网地址；连接时用这个 IP，证书仍按官方域名校验。
         addresses = self.resolver(HOST, 443, 10)
         try:
             if not addresses or any(not _public_unicast(ipaddress.ip_address(ip)) for ip in addresses):
@@ -177,7 +185,7 @@ class TianjinTransport:
             status, headers, body = self.exchange(safe_url + "&" + urlencode({"authToken": token}),
                                                    addresses[0], 20, MAX_BYTES)
         except FetchError:
-            # 不传播可注入URL的异常消息；固定本地错误码，调用者不得打印认证请求。
+            # 异常信息里可能带着完整 URL（含令牌），所以只返回固定的错误码。
             raise FetchError("api_transport_error", attempts=1) from None
         except Exception:
             raise FetchError("api_transport_error", attempts=1) from None
@@ -188,7 +196,7 @@ class TianjinTransport:
         media = headers.get("content-type", "").split(";", 1)[0].strip().lower()
         if media not in ("application/json", "text/json"):
             raise FetchError("api_not_json", status, 1)
-        # 错误页或服务端回显可能包含凭据。宁可拒绝保留此响应，也不污染原件库。
+        # 错误页或服务器回显里可能带着令牌。只要发现令牌，就宁可丢掉这个响应，也不把它存进原件库。
         forbidden = (token.encode(), urlencode({"authToken": token}).split("=", 1)[1].encode(),
                      json.dumps(token)[1:-1].encode())
         if any(secret in body for secret in forbidden) or b'"authToken"' in body:
@@ -197,8 +205,7 @@ class TianjinTransport:
             decoded = json.loads(body.decode("utf-8-sig"), object_pairs_hook=_unique_object)
         except (UnicodeError, ValueError, RecursionError):
             raise FetchError("api_invalid_json", status, 1) from None
-        # JSON的\u转义在字节里看不到原token；按消费者实际解码后的字符串/键再次核查。
-        # 迭代遍历不增加Python递归深度；未通过检查前不把字节交给Store。
+        # 令牌可能被 JSON 的 \u 转义藏起来，直接搜字节找不到，所以要解码后再逐个字符串检查一遍。
         pending = [decoded]
         while pending:
             value = pending.pop()
@@ -215,10 +222,12 @@ class TianjinTransport:
 
 
 def parse_page(body: bytes, page_size: int) -> dict:
-    """只接受完整等宽表；零行、业务拒绝、预览截断和未知契约明确区分。
+    """解析接口返回的一页数据。
 
-    columnNames/list形状来自公开预览。真实API若形状不同，保留原件、拒绝猜字段，
-    待核实真实契约后升级解析版本。msg不进入日志，避免错误消息夹带私人数据。
+    期望的格式是 columnNames（列名）加 list（每行的值），每行列数必须一致。
+    零条数据、接口业务拒绝、预览截断、格式看不懂，会分别返回不同的状态。
+    这个格式来自公开的预览页面；真实接口如果不一样，就保留原件、报错，不去猜字段。
+    接口返回的 msg 不写进日志，里面可能有个人信息。
     """
     try:
         value = json.loads(body.decode("utf-8-sig"), object_pairs_hook=_unique_object)
@@ -227,7 +236,7 @@ def parse_page(body: bytes, page_size: int) -> dict:
     if not isinstance(value, dict) or type(value.get("code")) is not int:
         return {"status": "parse_error", "issues": ["api_schema_unverified"]}
     if value["code"] != 200:
-        # 只映射已实测的精确错误；不把未知500猜成令牌失效，也不输出任意msg。
+        # 只识别实测过的错误类型。不认识的 500 不会被猜成"令牌失效"。
         issue = ("api_credential_rejected" if value["code"] == 500
                  and value.get("msg") == "令牌不合法【失效或被禁用】" else "api_business_error")
         return {"status": "blocked", "issues": [issue]}
@@ -245,7 +254,7 @@ def parse_page(body: bytes, page_size: int) -> dict:
                 or any(isinstance(item, str) and (len(item) > 200000 or "该字段不支持预览" in item) for item in row)):
             return {"status": "parse_error", "issues": ["incomplete_or_invalid_row"]}
         fields = dict(zip(columns, row))
-        # 没有官方唯一记录号：内容哈希只标识一个快照，不伪造跨变更稳定的公告ID。
+        # 接口没有唯一的记录编号，只能用内容哈希标识这条记录的这个版本；内容一变，ID 也会变。
         try:
             digest = sha256(encode_json(fields).encode()).hexdigest()
         except UnicodeError:
@@ -256,9 +265,10 @@ def parse_page(body: bytes, page_size: int) -> dict:
 
 
 def execute(store, run_id, transport):
-    """每页原件和后继页同事务登记；中断可接管，失败/取消必须显式新任务。
+    """执行一次天津接口采集。
 
-    单次取样的页顺序由来源决定，没有快照令牌时不承诺翻页期间数据不移动。
+    每一页的原件和下一页任务在同一个事务里登记，中断后可以接着跑；失败或取消的运行要重新发起。
+    接口没有快照机制，翻页期间数据可能移动（比如有新记录插到前面），所以不保证不重不漏。
     """
     run = store.run(run_id)
     source_id = run["request"].get("source_id")
@@ -266,7 +276,7 @@ def execute(store, run_id, transport):
         raise StoreError("wrong_source_executor")
     if run["status"] in ("succeeded", "partial", "failed", "blocked", "cancelled"):
         return store.report(run_id)
-    # 同站点不等于同资源；不能把谈判响应写进更正运行的证据身份。
+    # 同一个网站的不同资源（谈判、更正）要分开，不能把谈判的数据记到更正的运行里。
     if getattr(transport, "source_id", None) != source_id:
         raise StoreError("transport_source_mismatch")
     token = store.acquire(run_id)
@@ -288,7 +298,7 @@ def execute(store, run_id, transport):
             page = item["payload"]["page"]
             if (parsed["status"] in ("ok", "empty") and len(parsed["rows"]) < req["page_size"]
                     and (page - 1) * req["page_size"] + len(parsed["rows"]) < parsed["total_count"]):
-                # “总数还有记录但本页提前空/短”不是成功零结果；不盲目向后补抓掩盖问题。
+                # 总数说还有记录，这一页却是空的或不满：这是异常，不能当"已经取完"，也不往后多抓来掩盖。
                 parsed.update(status="parse_error", issues=["inconsistent_pagination"])
             more = (parsed["status"] == "ok" and page * req["page_size"] < parsed["total_count"])
             within_limit = page + 1 < req["start_page"] + req["pages"]

@@ -1,7 +1,11 @@
-"""将公开证据转换为目录观察；纯函数，不联网、不调用模型、不访问原件库。
+"""规范化：把采集导出的证据包转换成目录能导入的"观察"（observation）。
 
-阅读重点：先验证包 → 按标签取证 → 保留未知/冲突 → 生成不可变观察身份。
-金额和日期只做有依据的规范化，不把采购需求、资格或截止状态变成投标结论。
+流程：检查证据包格式 → 按字段标签（"项目编号""预算金额""投标截止时间"等）从原文取值
+→ 取不到记为 missing、取到多个不同的值记为 conflicting → 计算观察 ID 和公告 ID。
+
+每个字段都保留原文证据和位置。金额和日期只在有明确依据时才转换成结构化的值，
+范围、约数、没写时区的时刻都保留原文、不强行解析。
+这里不判断项目适不适合谁，也不判断还能不能投。纯函数，不联网、不调模型。
 """
 from __future__ import annotations
 
@@ -24,7 +28,7 @@ LABELS = {
     "budget": ("预算（万元）", "预算(万元)", "预算金额", "项目预算", "采购预算", "预算金额（元）", "预算金额（万元）"),
     "response_deadline": ("响应文件提交的截止时间", "响应文件提交截止时间", "投标截止时间", "提交投标文件截止时间"),
     "lot_identifier": ("包号", "标段编号"),
-    # 首次公告属于被引用的原公告；不能写进本次更正的published_at。
+    # 更正公告里提到的"首次公告日期"是原公告的发布日期，不能当成这条更正的发布日期。
     "original_published_at": ("首次公告日期",),
     "original_contract_reference": ("原合同公告链接",),
 }
@@ -33,20 +37,24 @@ MATERIAL_LABELS = {"其他附件文件下载链接", "更正附件链接"}
 
 
 def canonical(value):
+    """固定格式的 JSON 序列化。"""
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def fingerprint(value):
+    """对象的 SHA-256。"""
     return sha256(canonical(value).encode()).hexdigest()
 
 
 def require_string(value, name, limit=4096, *, empty=False):
+    """检查是不超长的字符串，否则抛 ValueError(name)。"""
     if not isinstance(value, str) or len(value) > limit or (not empty and not value.strip()):
         raise ValueError("invalid_" + name)
     return value
 
 
 def timestamp(value):
+    """检查是带时区的 ISO 8601 时间。"""
     require_string(value, "timestamp", 40)
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -58,7 +66,7 @@ def timestamp(value):
 
 
 def public_url(value):
-    """这里只验证证据定位，不发起请求；正文中的URL永远不能指挥传输层。"""
+    """检查是合法的 http/https 地址。只做检查，不发请求。"""
     require_string(value, "url")
     try:
         parts = urlsplit(value)
@@ -72,6 +80,7 @@ def public_url(value):
 
 
 def _entries(content):
+    """把一个文档的元数据和正文段落整理成 {label, text, locator} 列表。"""
     entries = []
     for field in ("metadata", "segments"):
         values = content.get(field, [])
@@ -92,7 +101,10 @@ def _entries(content):
 
 
 def _date(text):
-    """自然日期不补零点；无时区的时刻不暗中升级成北京时间/UTC。"""
+    """解析日期文本，返回 {local, precision, timezone, timezone_basis}，解析不了返回 None。
+
+    只有日期就记日期精度，不补成零点；原文没写"北京时间"就不加时区。
+    """
     match = re.fullmatch(r"\s*(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})日?"
                          r"(?:[ T\s]*(\d{1,2})[:时点](\d{1,2})(?:[:分](\d{1,2})秒?)?分?)?"
                          r"\s*(?:[（(]?(北京时间)[）)]?)?\s*", text)
@@ -110,7 +122,8 @@ def _date(text):
 
 
 def _money(text, label):
-    # 不接受区间、约数、最高限价、多币种或一段多金额；保持原文供人工核对。
+    """解析金额，返回 {amount（单位元）, currency, source_unit, scope}，不是明确的单一金额就返回 None。"""
+    # 区间、约数、最高限价、外币、一段里有多个金额，都不解析，保留原文让人看。
     match = re.fullmatch(r"\s*(?:人民币\s*)?[￥¥]?\s*((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?)\s*(万元|元)?(?:\s*[（(]人民币[）)])?\s*", text)
     if not match:
         return None
@@ -128,6 +141,7 @@ def _money(text, label):
 
 
 def _fact(entries, name):
+    """从条目里取某个字段：返回 {status, value, evidence}，状态是 known / missing / unparsed / conflicting。"""
     evidence = [entry for entry in entries if entry["label"] in LABELS[name]]
     if not evidence:
         return {"status": "missing", "value": None, "evidence": []}
@@ -139,7 +153,7 @@ def _fact(entries, name):
             values.append(value)
     if len(values) > 1:
         return {"status": "conflicting", "value": None, "evidence": evidence}
-    # 一条可解析、另一条不可解析仍不是已确认值；不能抛掉不利证据。
+    # 一条能解析、另一条解析不了，也不算确定：不能只挑对自己有利的那条。
     if not values or any((_date(e["text"]) if name in DATE_FIELDS else
                          _money(e["text"], e["label"]) if name == "budget" else e["text"]) is None for e in evidence):
         return {"status": "unparsed", "value": None, "evidence": evidence}
@@ -147,6 +161,7 @@ def _fact(entries, name):
 
 
 def _notice_kind(title, source=None):
+    """根据标题（以及来源）判断公告类型：采购、更正、结果、终止、意向或未知。"""
     kind = "unknown"
     for pattern, kind in ((r"(更正|变更|澄清)公告", "correction"), (r"(废标|终止|中止)公告", "termination"),
                           (r"(中标|成交)(结果)?公告", "award"), (r"采购意向", "intention"),
@@ -155,7 +170,7 @@ def _notice_kind(title, source=None):
             break
     else:
         kind = "unknown"
-    # 固定资源本身有分类依据；来源与明确标题相互矛盾时不猜哪个正确。
+    # 天津的资源本身就说明了类型；如果和标题明显矛盾，就记为 unknown，不去猜。
     if source == "tj_procurement_correction":
         return "correction" if kind in ("unknown", "correction") else "unknown"
     if kind == "unknown" and source in ("tj_procurement_negotiation", "tj_procurement_consultation"):
@@ -164,7 +179,7 @@ def _notice_kind(title, source=None):
 
 
 def normalize_bundle(bundle):
-    """每次输出完整规范包；一个文档类型错误导致整包拒绝，目录写入不会半成功。"""
+    """把一个证据包整体规范化。任何一个文档格式不对，整个包都拒绝，目录不会导入半个包。"""
     if (not isinstance(bundle, dict) or type(bundle.get("schema_version")) is not int or bundle["schema_version"] != 1
             or bundle.get("kind") != "raw_evidence_bundle" or not isinstance(bundle.get("source_id"), str)
             or bundle.get("source_id") not in SOURCES
@@ -211,14 +226,14 @@ def normalize_bundle(bundle):
                                "source_unit": claim["source_unit"], "scope": "unspecified"},
                                "evidence": assessment["evidence"]}
         if assessment["status"] in ("conflicting", "context_required", "unparsed"):
-            # v2客户端也不能把按人次限价/多包总额/摘要冲突当成可用项目预算。
+            # 金额证据有冲突、需要结合上下文、或解析不了时，不输出项目预算。
             proof = assessment["evidence"] or [entry for claim in extra["money"] for entry in claim["evidence"]]
             if proof:
                 facts["budget"] = {"status": "conflicting" if assessment["status"] == "conflicting" else "unparsed",
                                    "value": None, "evidence": proof}
         if notice_type == "correction":
-            # 更正正文可能同时引用旧/新日期金额；未有明确作用域契约前只保留证据。
-            # 项目号/采购方仍可支持候选关联，但不让旧截止或更正前预算进入当前值。
+            # 更正公告里常常同时出现旧的和新的日期、金额，分不清哪个是现在的值，所以只保留证据、不填值。
+            # 项目编号和采购人仍然保留，用来和原公告建立关联。
             for name in ("published_at", "response_deadline", "budget"):
                 if facts[name]["evidence"]:
                     facts[name].update(status="unparsed", value=None)
@@ -233,7 +248,7 @@ def normalize_bundle(bundle):
             locator = require_string(link.get("locator"), "locator", 512)
             if any(word in name for word in ("原公告", "首次公告", "原采购公告")):
                 references.append({"url": public_url(link.get("url")), "text": name, "locator": locator})
-        # 来源、模拟标记都进入身份，演示不能与真实公告共享当前指针。
+        # 公告 ID 由来源、是否演示、来源里的记录键共同决定：演示数据和真实数据永远不会混成同一条公告。
         notice_id = fingerprint([bundle["source_id"], bundle["simulation"], key])
         observation = {"notice_id": notice_id, "source_id": bundle["source_id"], "simulation": bundle["simulation"],
             "source_record_key": key, "identity_kind": identity, "source_url": url,
@@ -241,11 +256,11 @@ def normalize_bundle(bundle):
             "normalizer_version": VERSION, "observed_at": observed, "title": title,
             "notice_type": notice_type, "facts": facts, "references": references,
             "evidence_fields": extra,
-            # 只保留引用字段原文和位置；没有请求外部地址，也没有生成“下载成功”。
+            # 只记下附件引用的原文和位置，不访问链接，也不会把"有链接"写成"已下载"。
             "material_reference_evidence": [entry for entry in entries if entry["label"] in MATERIAL_LABELS],
             "material_status": content.get("material_status", "see_ingestion_evidence"),
             "attribution": content.get("attribution"), "run_id": run_id}
-        # 观察绑定同一获取+解析内容；新解析不能冒用旧ID。目录会再次校验哈希。
+        # 观察 ID 是整个观察内容的哈希：内容（包括解析结果）一变，ID 就变。目录导入时会重新核对。
         observation["observation_id"] = fingerprint(observation)
         observations.append(observation)
     return {"schema_version": 3, "kind": "normalized_observations", "normalizer_version": VERSION,

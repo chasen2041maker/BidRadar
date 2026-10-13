@@ -1,4 +1,7 @@
-"""纯虚构、无网络的阶段演示；只证明本地链路，不替代真实来源验收。"""
+"""离线演示用的假网络：返回写死的虚构列表页、公告页和附件。
+
+用来在不联网的情况下跑通整条采集流程。演示成功只说明本地流程是通的，不代表真实来源能用。
+"""
 from services.ingestion.archive import utc_now
 from services.ingestion.pipeline import request_spec
 from services.ingestion.transport import FetchError, FetchResult
@@ -8,6 +11,8 @@ ATTACHMENT_URL = "https://www.ccgp.gov.cn/cggg/zygg/gkzb/202609/demo.pdf"
 
 
 class DemoPolicy:
+    """演示用的准入规则：只允许那一个虚构附件。"""
+
     attachments_allowed = True
 
     def authorize(self, url, kind):
@@ -16,7 +21,7 @@ class DemoPolicy:
 
 
 class DemoTransport:
-    """与真实Transport共享返回契约；没有socket、HTTP或读取外部文件的路径。"""
+    """假的抓取器，返回格式和真实的 Transport 一样，但完全不碰网络。"""
     policy = DemoPolicy()
 
     def __init__(self):
@@ -48,4 +53,5 @@ class DemoTransport:
 
 
 def demo_request():
+    """演示用的采集请求：搜索“虚构软件”，最多 2 页、2 条公告，抓附件。"""
     return request_spec(keyword="虚构软件", pages=2, max_notices=2, attachments=True)

@@ -1,7 +1,10 @@
-"""原件拥有者输出版本化证据包；其他服务只收JSON，不能打开本服务数据库。
+"""把一次采集运行导出成证据包（raw_evidence_bundle），交给 processing 做规范化。
 
-导出时验证原字节并重解析，固定解析版本；不覆盖获取当时的结果。解析失败仍有
-失败记录，空包不能被解释为“没有商机”。未完成运行拒绝导出，避免半页目录。
+其他服务只能拿到这个 JSON，不能直接读采集服务的数据库。
+
+导出时会重新读取原始文件、校验 SHA-256，再用当前解析器解析一遍；当初保存的解析结果不受影响。
+解析失败的页面会列在 failures 里，所以"导出为空"能和"没有商机"区分开。
+还没跑完的运行不能导出，免得导出半截数据。
 """
 from services.ingestion.archive import StoreError
 from services.ingestion.pipeline import PARSER_VERSION, parse_capture
@@ -9,6 +12,7 @@ from services.ingestion import tianjin
 
 
 def export_bundle(store, run_id: str) -> dict:
+    """导出一次已结束运行的证据包。"""
     report = store.report(run_id)
     run = report["run"]
     if run["status"] in ("queued", "running"):
@@ -55,10 +59,10 @@ def export_bundle(store, run_id: str) -> dict:
                 identity = "snapshot:" + row["record_sha256"]
                 fields = row["fields"]
                 material_fields = tianjin.MATERIAL_FIELDS[source]
-                # 公开定义确认了附件字段，但字段内容不是下载许可，也不是已取得文件。
+                # 接口里有附件字段，只说明"提到了附件"，不代表可以下载，更不代表已经拿到。
                 material_status = ("reference_only" if any((fields.get(k) or "").strip() for k in material_fields)
                                    else "attachment_reference_missing" if material_fields else "not_provided_by_api")
-                # API记录快照不是采购网站全文；无附件/原公告URL时保留明确缺口。
+                # 接口返回的是一条记录，不是公告网页全文；没有附件或原公告链接时，如实标出缺口。
                 documents.append({**common, "parser_version": tianjin.PARSER_VERSION,
                     "source_record_key": identity, "identity_kind": "content_snapshot",
                     "content": {"status": "ok", "title": fields.get("公告标题"),
@@ -92,8 +96,8 @@ def export_bundle(store, run_id: str) -> dict:
             if identity is None:
                 raise StoreError("notice_url_outside_source")
             if discovery.get(identity):
-                # 海南详情不显示发布日期；日期来自已归档列表而非本次获取时间。
-                # 明确写跨原件定位并冻结列表哈希，直接URL入口无列表时保持日期缺失。
+                # 海南的公告详情页不显示发布日期，日期只能从列表页取。
+                # 这里注明日期来自哪个列表页（含它的哈希），可以追溯；直接给公告 URL 抓取时没有列表页，日期就保持缺失。
                 content["discovery_evidence"] = discovery[identity]
                 content["metadata"] = list(content.get("metadata", ())) + [
                     {"label": "公告发布时间", "text": evidence["published_text"],

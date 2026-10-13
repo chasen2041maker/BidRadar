@@ -1,8 +1,10 @@
-"""两个官方静态栏目的离线适配器；解析页面不授予联网或持续采集许可。
+"""两个官方网站的栏目页解析器：中国政府采购网（CCGP）的公告栏目，和海南省公共资源交易平台。
 
-2026-09-30 核实 CCGP c_list_bid/Pager 与海南 newtable/newsCon 模板。
-这里只生成固定栏目路径、提取原文与未获取的附件引用；DNS、robots、授权、
-请求配额及原件保留由传输/存储层负责。不会执行页面 JavaScript 或访问链接。
+做三件事：生成栏目列表页的 URL、解析列表页、解析公告正文页。
+页面模板在 2026-09-30 核对过（CCGP 的 c_list_bid/Pager，海南的 newtable/newsCon）。
+
+这个模块不联网，也不执行页面里的 JavaScript。DNS、robots、准入、请求限额、原件保存由 transport 和 archive 负责。
+能解析页面不代表获准持续采集。
 """
 from __future__ import annotations
 
@@ -15,8 +17,8 @@ from .ccgp import (
     _Document, _HTMLResourceLimit, _Node, _notice_url, parse_notice_page,
 )
 
-# 2026-09-30 按官方中央/地方栏目 URL 核对；谈判栏目实际是 jzxtpgg，不能由简称猜路径。
-# 此枚举核对不代表每个栏目都完成本机实时模板或持续可采集验证。
+# 栏目代码 → 路径，2026-09-30 按官方网站核对（例如竞争性谈判栏目的路径是 jzxtpgg，不能按简称猜）。
+# 列在这里只说明路径对，不代表每个栏目都实际抓取验证过。
 _CCGP_CATEGORIES = frozenset(
     f"{area}/{kind}" for area in ("zygg", "dfgg")
     for kind in ("gkzb", "jzxcs", "jzxtpgg", "gzgg", "zbgg", "cjgg")
@@ -30,7 +32,7 @@ _CHALLENGE_WORDS = ("验证码", "访问频繁", "访问过于频繁", "访问�
 
 
 def _parts(source: str, url: str, *, strict: bool = True):
-    """仅认官方主机与标准端口；URL 语法约束不代替实际请求的 SSRF 防线。"""
+    """拆分并检查 URL：只接受官方主机和标准端口。真正联网时 transport 还会再做一遍安全检查。"""
     if (source not in _HOSTS or not isinstance(url, str) or not url
             or any(ord(c) <= 32 or ord(c) == 127 for c in url) or "\\" in url):
         return None
@@ -48,10 +50,10 @@ def _parts(source: str, url: str, *, strict: bool = True):
 
 
 def build_listing_url(source: str, category: str, page: int = 1) -> str:
-    """页码从 1 开始；仅生成已核实模板，不接受任意路径或查询参数。
+    """生成栏目列表页的 URL。page 从 1 开始。
 
-    CCGP Pager 的 current 从 0 开始；海南 select/下一页链接使用自然页码。
-    路径模式已核实不代表任意大页存在，实际请求仍受任务页数和请求预算限制。
+    CCGP 的分页参数从 0 开始计数，海南从 1 开始，这里统一换算。
+    只生成核对过的路径格式，不接受任意路径或参数。
     """
     if type(page) is not int or not 1 <= page <= 100_000:
         raise ValueError("page须为1–100000的整数")
@@ -65,7 +67,7 @@ def build_listing_url(source: str, category: str, page: int = 1) -> str:
 
 
 def listing_identity(source: str, url: str) -> tuple[str, int] | None:
-    """供 parser 和 policy 共用的纯校验；拒绝 query/fragment/凭据/编码路径。"""
+    """判断一个 URL 是不是某个栏目的列表页，是的话返回 (栏目, 页码)，否则返回 None。"""
     parts = _parts(source, url)
     if parts is None:
         return None
@@ -87,10 +89,10 @@ def listing_identity(source: str, url: str) -> tuple[str, int] | None:
 
 
 def canonical_notice_url(source: str, url: str) -> str | None:
-    """公告身份不跟随重定向；兼容 v1 CCGP query，去 fragment 后用于去重。
+    """把公告 URL 规范化成"公告身份"，用来去重；不是这个来源的公告链接就返回 None。
 
-    CCGP 旧搜索已归档的路径/查询须保持身份稳定；静态栏目仍通过更窄的
-    listing_identity 校验。海南仅认三个公告目录的数字 ID，不猜其它站点模板。
+    规范化不跟随重定向，只去掉 # 片段等。CCGP 旧版搜索采集时用过的 URL 格式仍然认，
+    保证老数据的身份不变。海南只认三个公告目录下的数字 ID。
     """
     if source == "cn_ccgp":
         accepted = _notice_url(url) if isinstance(url, str) else None
@@ -104,12 +106,13 @@ def canonical_notice_url(source: str, url: str) -> str | None:
     match = re.fullmatch(r"/ggzy/ggzy/([a-z]+)/[1-9][0-9]*\.jhtml", parts.path)
     if match is None or match[1] not in _HAINAN_CATEGORIES:
         return None
-    # 实际列表含 http:80；2026-09-30 已核实同路径官方 301 到 HTTPS:443。
-    # 海南专属规范统一身份，避免目录线索与手工 HTTPS 捕获生成两份公告。
+    # 海南列表里的链接是 http，官方会 301 跳到同路径的 https（2026-09-30 核实）。
+    # 统一成 https，免得从列表发现的和手动给的链接被当成两条公告。
     return urlunsplit(("https", parts.hostname, parts.path, "", ""))
 
 
 def _read(html: str) -> tuple[_Document | None, str, tuple[str, ...]]:
+    """解析 HTML，返回 (节点树或 None, 状态, 问题列表)。"""
     if not isinstance(html, str):
         raise TypeError("html须为已解码文本")
     data = html.encode("utf-8")
@@ -128,17 +131,20 @@ def _read(html: str) -> tuple[_Document | None, str, tuple[str, ...]]:
 
 
 def _class(node: _Node, name: str) -> bool:
+    """节点的 class 里是否包含 name。"""
     return name in (node.attrs.get("class") or "").split()
 
 
 def _hainan_footer(node: _Node) -> bool:
+    """是不是海南列表表格里最后那一行分页控件。"""
     cells = [n for n in node.children if isinstance(n, _Node) and n.tag == "td"]
-    # 真实分页在表格最后的跨四列单元格中；只跳过这个已识别的控制行。
+    # 分页控件在表格最后一行、横跨四列的单元格里。只跳过这一行。
     return (len(cells) == 1 and cells[0].attrs.get("colspan") == "4"
             and re.match(r"共\s*[0-9]+\s*条记录", cells[0].text()) is not None)
 
 
 def _outside_text(root: _Node, omit: list[_Node]) -> str:
+    """取页面上除了 omit 这些节点以外的文字（用来检查验证码提示）。"""
     omitted = {id(node) for node in omit}
     pending: list[_Node | str] = [root]
     text = []
@@ -157,7 +163,7 @@ def _next_page(document: _Document, source: str, url: str,
     found = []
     issues = []
     nodes = list(document.root.walk())
-    # 只读取已核实 Pager 配置，绝不执行或泛化解释任意脚本。
+    # 只按核对过的固定格式读取分页配置，不执行页面脚本。
     if source == "cn_ccgp":
         pattern = re.compile(r"\s*Pager\(\{size:([0-9]{1,6}),\s*current:([0-9]{1,6}),\s*prefix:'index',\s*suffix:'htm'\}\);?\s*")
         for node in nodes:
@@ -178,7 +184,7 @@ def _next_page(document: _Document, source: str, url: str,
             continue
         href = node.attrs.get("href") or ""
         if source == "cn_hainan" and href == "#":
-            # 海南模板把相对路径放在 onclick；限定整句文法并再次校验目录与页码。
+            # 海南的下一页链接写在 onclick 里。只接受固定格式，并再次检查栏目和页码。
             match = re.fullmatch(r"\s*location\.href=encodeURI\('([^']+)'\);?\s*", node.attrs.get("onclick") or "")
             href = match[1] if match else ""
         try:
@@ -197,7 +203,10 @@ def _next_page(document: _Document, source: str, url: str,
 
 
 def parse_listing(html: str, url: str, source: str) -> ListingResult:
-    """列表输出发现线索；显式零条才 EMPTY，模板变化、坏行与挑战分别表达。"""
+    """解析栏目列表页，返回公告线索和下一页链接。
+
+    页面明确是零条时才返回 EMPTY；模板变了、有坏行、遇到验证码，会分别用不同的状态表示。
+    """
     document, fingerprint, issues = _read(html)
     if document is None:
         return ListingResult(ParseStatus.PARSE_ERROR, (), issues, fingerprint)
@@ -234,7 +243,7 @@ def parse_listing(html: str, url: str, source: str) -> ListingResult:
             target = canonical_notice_url(source, urljoin(url, anchor.attrs.get("href") or "")) if anchor else None
         except ValueError:
             target = None
-        # 即使域名正确，也不把相邻栏目/不相关路径混进本次栏目发现结果。
+        # 只收本栏目下的公告链接，同域名下其他栏目的链接不要。
         prefix = f"/cggg/{identity[0]}/" if source == "cn_ccgp" else f"/ggzy/ggzy/{identity[0]}/"
         if not title or not target or not urlsplit(target).path.startswith(prefix):
             errors.append(f"row_{index}:invalid_title_or_url")
@@ -244,7 +253,7 @@ def parse_listing(html: str, url: str, source: str) -> ListingResult:
             ems = [n.text() for n in row.children if isinstance(n, _Node) and n.tag == "em"]
             raw = row.text(omit=anchor)
             published = ems[0] if ems and _DATE.fullmatch(ems[0]) else None
-            # em 的位置须有实际标签配合；缺标签时保持未知，不能误将地域当采购人。
+            # 只有带明确标签的字段才取值；没有标签时留空，免得把地区误当成采购人。
             match = re.search(r"采购人[：:]\s*(.+)$", raw)
             purchaser = match[1].strip() if match else None
             locator = f"ul.c_list_bid > li:nth-of-type({index})"
@@ -269,7 +278,7 @@ def parse_listing(html: str, url: str, source: str) -> ListingResult:
 
 
 def _segments(body: _Node, selector: str) -> tuple[dict[str, str], ...]:
-    """海南正文以嵌套 div 排版；保留段落/表格行与内联文字，不重复父子正文。"""
+    """把海南公告正文拆成段落（海南用嵌套的 div 排版）。保留段落和表格行，父子节点的文字不重复计入。"""
     segments = []
     pending = [(body, selector)]
     while pending:
@@ -311,7 +320,10 @@ def _segments(body: _Node, selector: str) -> tuple[dict[str, str], ...]:
 
 
 def _references(root: _Node, url: str, source: str, selector: str):
-    """只发现引用；完整文件名不意味着有下载地址，非 ASCII 路径/query 编码后交传输层。"""
+    """找出正文里的附件引用（链接和文件名）。
+
+    有文件名不代表有下载地址。路径里的中文会先编码，再交给 transport。
+    """
     attachments, links, issues, seen = [], [], [], set()
     for index, node in enumerate((n for n in root.walk() if n.tag == "a"), 1):
         href = node.attrs.get("href") or ""
@@ -334,7 +346,7 @@ def _references(root: _Node, url: str, source: str, selector: str):
         if not valid:
             issues.append("malformed_attachment_link")
             continue
-        # 保留原协议和 query 分隔符/已有转义；避免中文 attname 导致 HTTP 客户端编码错误。
+        # 只编码中文等非 ASCII 字符，原有的协议、参数分隔符和已有的转义保持不变。
         target = urlunsplit((parts.scheme, parts.netloc, quote(parts.path, safe="/%:@!$&'()*+,;=-._~"),
                              quote(parts.query, safe="%=&?/:@!$'()*+,;~-._"), ""))
         original = canonical_notice_url(source, target)
@@ -347,14 +359,14 @@ def _references(root: _Node, url: str, source: str, selector: str):
 
 
 def parse_notice(html: str, url: str, source: str) -> NoticePage:
-    """同一 NoticePage 契约保留正文段落与引用，不猜发布日期、截止或关联项目。"""
+    """解析公告正文页，返回和 CCGP 相同结构的 NoticePage。不推测发布日期、截止时间或关联项目。"""
     document, fingerprint, issues = _read(html)
     if document is None:
         return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), issues, fingerprint)
     if canonical_notice_url(source, url) is None:
         return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("invalid_notice_url",), fingerprint)
     if source == "cn_ccgp":
-        # v1 的正文、字段位置与挑战边界保持兼容；补摘要表内的附件以及安全引用编码。
+        # CCGP 的正文解析沿用 v1 的逻辑，只是额外收集摘要表里的附件，并对链接做安全编码。
         result = parse_notice_page(html, url)
         if result.status not in (ParseStatus.OK, ParseStatus.PARTIAL):
             return result
@@ -375,7 +387,7 @@ def parse_notice(html: str, url: str, source: str) -> NoticePage:
     title = title_node.text() if title_node else None
     title_challenge = bool(title and (title in ("验证码", "安全验证", "人机验证") or any(
         word in title for word in ("请输入验证码", "请填写验证码", "请完成验证", "请通过验证", "访问受限", "访问频繁", "访问过于频繁"))))
-    # 标题/摘要含“验证码系统采购”是业务内容；页面额外的验证提示仍必须阻断。
+    # 标题里有"验证码"是正常的业务内容；但页面上另有验证提示时，仍按"被拦截"处理。
     summaries = [n for n in wrappers[0].children if isinstance(n, _Node) and _class(n, "summary")] if len(wrappers) == 1 else []
     omit = bodies + ([title_node] if title_node and len(bodies) == 1 else [])
     omit += [n for n in summaries if title and n.text() == title]
@@ -388,6 +400,6 @@ def parse_notice(html: str, url: str, source: str) -> NoticePage:
     if not title:
         errors.append("missing_notice_title")
     segments = _segments(bodies[0], "div.newsCon")
-    # msgbar 没有发布时间；不拿正文中的截止/公告期限来补发布日期，交给列表证据。
+    # 海南详情页的信息栏里没有发布时间。不拿正文里的截止日期来充数，发布时间从列表页取。
     return NoticePage(ParseStatus.PARTIAL if errors else ParseStatus.OK, title, bodies[0].text(),
                       attachments, tuple(errors), fingerprint, segments, (), links)

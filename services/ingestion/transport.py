@@ -1,7 +1,13 @@
-"""单进程、限量公开资料传输：准入 → robots → 公网DNS → 固定IP连接 → 字节上限。
+"""抓取网页的网络层。每个请求都按顺序过这几道关：
 
-准入文件是经过人工核验的本地记录，不是网站许可证明；本模块不替人批准用途。
-不读取环境代理、Cookie、账号或关闭TLS的选项，不自动取得外站附件。
+    1. 来源准入：URL 必须在准入文件允许的域名和路径范围内，准入文件也不能过期。
+    2. robots.txt：网站禁止抓取的路径不抓。
+    3. DNS：只连公网地址，内网、回环、组播地址一律拒绝。
+    4. 固定 IP 连接：用解析出的 IP 直接连，HTTPS 证书仍按原域名验证，避免两次 DNS 解析结果不同。
+    5. 限额：请求次数、下载字节数、总时长都有上限，请求之间有最小间隔。
+
+准入文件是人工核验后写的本地记录，不是网站给的许可证明，这个模块也不替人做批准。
+不读取系统代理、不带 Cookie 或账号、不关闭 TLS 校验，不会自动去别的网站取附件。
 """
 from __future__ import annotations
 
@@ -30,7 +36,7 @@ MAX_TOTAL_BYTES = 64 * 1024 * 1024
 
 
 class FetchError(Exception):
-    """可持久化的非敏感故障；attempts含本次fetch的robots、重定向和失败请求。"""
+    """抓取失败。code 是错误码；attempts 是这次抓取一共发了几个请求（含 robots、重定向和失败的请求）。"""
 
     def __init__(self, code: str, http_status: int | None = None, attempts: int = 0):
         self.code, self.http_status, self.attempts = code, http_status, attempts
@@ -38,23 +44,26 @@ class FetchError(Exception):
 
 
 class _CheckpointFailure(Exception):
-    """只在传输内部穿过重试/robots包装；fetch边界恢复回调抛出的原异常。"""
+    """包装检查回调（checkpoint）抛出的异常，让它穿过内部的重试逻辑，在 fetch 出口处再还原成原异常。"""
 
     def __init__(self, error):
         self.error, self.traceback = error, error.__traceback__
 
 
 def _checkpoint(callback):
+    """调用检查回调；回调抛出的异常包装成 _CheckpointFailure。"""
     if callback is not None:
         try:
             callback()
         except Exception as error:
-            # StoreError等属于任务控制；即使其继承OSError/FetchError，也不得误当网络故障。
+            # 回调抛出的是"任务被取消"之类的控制信号，不能被当成网络故障去重试。
             raise _CheckpointFailure(error) from None
 
 
 @dataclass(frozen=True)
 class FetchResult:
+    """一次成功抓取的结果：请求 URL、最终 URL、状态码、响应头、正文、时间、请求次数。"""
+
     url: str
     final_url: str
     http_status: int
@@ -78,7 +87,11 @@ def _timestamp(value):
 
 
 def _url_parts(url):
-    """拒绝URL解析器/服务器解释不同的路径，不修补外部网页给出的可疑链接。"""
+    """拆分并检查 URL。
+
+    拒绝那些不同程序可能理解成不同地址的写法（反斜杠、奇怪的转义等）。
+    网页给出的可疑链接直接拒绝，不尝试修补。
+    """
     try:
         if (not isinstance(url, str) or not 1 <= len(url) <= 4096
                 or any(ord(c) < 33 or ord(c) > 126 for c in url) or "\\" in url):
@@ -102,7 +115,10 @@ def _url_parts(url):
 
 @dataclass(frozen=True)
 class SourcePolicy:
-    """固定域内再缩小到批准用途/路径；过期在每次动作前检查，不以缓存续期。"""
+    """来源准入规则：允许访问哪些域名、哪些路径、哪类内容（列表、公告、附件），有效期到什么时候。
+
+    每次请求前都检查一遍有效期，过期了就拒绝，不会因为之前检查过就放行。
+    """
 
     purpose: str
     reviewed_at: datetime
@@ -115,6 +131,7 @@ class SourcePolicy:
 
     @classmethod
     def from_file(cls, path):
+        """从 JSON 文件读取准入规则。"""
         try:
             with Path(path).open("rb") as stream:
                 raw = stream.read(64 * 1024 + 1)
@@ -126,6 +143,7 @@ class SourcePolicy:
 
     @classmethod
     def from_dict(cls, data):
+        """从字典构造准入规则，并检查格式。"""
         try:
             if (not isinstance(data, dict) or type(data.get("schema_version")) is not int or data.get("schema_version") not in (1, 2)
                     or data.get("approved") is not True):
@@ -161,6 +179,7 @@ class SourcePolicy:
             raise FetchError("policy_invalid") from None
 
     def authorize(self, url, kind):
+        """检查这个 URL 和内容类型是否在准入范围内，不在就抛 FetchError。"""
         self._authorize(url, kind, _utcnow())
 
     def _authorize(self, url, kind, now):
@@ -188,7 +207,7 @@ class SourcePolicy:
         if kind == "attachment" and not self.attachments_allowed:
             raise FetchError("attachment_not_approved")
         for host, prefix, kinds in self.allowed:
-            # 目录前缀必须以/结束；否则只匹配精确路径，防止/bxsearch-evil混入。
+            # 路径前缀必须以 / 结尾，否则只做精确匹配。不然 /bxsearch 会把 /bxsearch-evil 也放进来。
             if (host == parts.hostname and kind in kinds
                     and (path.startswith(prefix) if prefix.endswith("/") else path == prefix)):
                 return
@@ -197,10 +216,13 @@ class SourcePolicy:
 
 @dataclass(frozen=True)
 class _Robots:
+    """解析好的 robots.txt 规则。"""
+
     rules: tuple[tuple[bool, str], ...]
     delay: float
 
     def permits(self, url):
+        """按 robots 规则判断这个 URL 能不能抓：最长匹配的规则说了算。"""
         parts = urlsplit(url)
         target = _robot_normalize(parts.path + ("?" + parts.query if parts.query else ""))
         matches = []
@@ -216,7 +238,8 @@ class _Robots:
 
 
 def _robot_normalize(value):
-    # robots匹配需把%63和c视为同一非保留字符，避免编码路径绕过Disallow。
+    """把路径里的百分号编码统一一下，方便和 robots 规则比较。"""
+    # 例如 %63 和 c 是同一个字符，不统一的话，编码过的路径就能绕过 Disallow 规则。
     def replace(match):
         char = chr(int(match.group()[1:], 16))
         return char if char.isascii() and (char.isalnum() or char in "-._~") else match.group().upper()
@@ -224,7 +247,10 @@ def _robot_normalize(value):
 
 
 def _robots_match(pattern, target, end):
-    """按*分段顺序查找，避免把外部robots编成可能指数回溯的正则表达式。"""
+    """判断路径是否匹配一条 robots 规则（支持 * 通配和结尾的 $）。
+
+    用分段查找实现，而不是把规则转成正则：外部写的规则转成正则可能非常慢。
+    """
     segments = pattern.split("*")
     if not target.startswith(segments[0]):
         return False
@@ -243,7 +269,10 @@ def _robots_match(pattern, target, end):
 
 
 def _parse_robots(body):
-    """只接受可识别UTF-8规则，HTML挑战页/空页/未知语法失败关闭。支持*和$路径。"""
+    """解析 robots.txt。
+
+    只接受能识别的 UTF-8 规则；拿到的是 HTML 验证页、空页面或看不懂的语法时，按"禁止抓取"处理。
+    """
     try:
         if len(body) > MAX_ROBOTS_BYTES:
             raise ValueError()
@@ -270,7 +299,7 @@ def _parse_robots(body):
                     raise ValueError()
                 agents.append(value.lower())
             elif field == "sitemap":
-                continue  # 仅记录规则，不取站点地图或递归扩展来源。
+                continue  # 只读规则，不去抓 Sitemap 里列出的地址。
             elif field in ("allow", "disallow", "crawl-delay", "request-rate") and agents:
                 started = True
                 if field in ("allow", "disallow"):
@@ -310,7 +339,10 @@ def _parse_robots(body):
 
 
 def _resolve(host, port, timeout):
-    """系统DNS也受运行期限约束；超时的只读解析线程为daemon，不继续网络请求。"""
+    """用系统 DNS 解析主机名，并且受超时限制。
+
+    系统 DNS 调用本身不能中途取消，所以放在后台线程里跑；超时就不再等它，它也不会再发起别的请求。
+    """
     result = queue.Queue(maxsize=1)
     def work():
         try:
@@ -328,13 +360,16 @@ def _resolve(host, port, timeout):
 
 
 def _public_unicast(address):
-    """is_global单独不足以表示公网服务器：多播/旧IPv6站点本地也可能返回True。"""
+    """这个 IP 是不是普通的公网单播地址。
+
+    只看 is_global 不够：组播地址、旧的 IPv6 站点本地地址也可能被判成 global。
+    """
     if (not address.is_global or address.is_multicast or address.is_unspecified
             or address.is_loopback or address.is_link_local or address.is_reserved
             or address.is_private):
         return False
     if isinstance(address, ipaddress.IPv6Address):
-        # 不将带接口作用域或隧道/映射地址交给OS另作路由解释；首源只需普通公网单播。
+        # 带接口作用域的地址、隧道地址、IPv4 映射地址也拒绝：操作系统可能把它们路由到别处。
         return not (address.is_site_local or address.scope_id is not None
                     or address.ipv4_mapped is not None or address.sixtofour is not None
                     or address.teredo is not None)
@@ -342,7 +377,10 @@ def _public_unicast(address):
 
 
 class _PinnedConnection(http.client.HTTPConnection):
-    """连接核验后的数字IP；HTTPS证书仍针对原域名验证，杜绝第二次DNS解析。"""
+    """直接连接已经核验过的 IP。HTTPS 证书仍按原来的域名验证。
+
+    这样就不会发生"检查时解析到公网地址、真正连接时又解析到内网地址"的情况。
+    """
 
     def __init__(self, host, ip, secure, timeout):
         self.default_port = 443 if secure else 80
@@ -363,7 +401,7 @@ class _PinnedConnection(http.client.HTTPConnection):
 
 
 def _exchange(url, ip, timeout, max_bytes):
-    """返回(status,headers,body)。不自动重定向；原始字节不解压、不执行HTML。"""
+    """发一个 GET 请求，返回 (状态码, 响应头, 正文)。不跟随重定向；正文按原始字节返回，不解压。"""
     parts = urlsplit(url)
     connection = _PinnedConnection(parts.hostname, ip, parts.scheme == "https", timeout)
     def expire():
@@ -382,7 +420,7 @@ def _exchange(url, ip, timeout, max_bytes):
         connection.request("GET", target, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity", "Connection": "close"})
         response = connection.getresponse()
         headers = {k.lower(): v for k, v in response.getheaders()}
-        # 拒绝/重定向/临时故障响应不用下载正文，更不能因错误页体积遮掉403/429。
+        # 状态码不是 200 时不下载正文。否则一个很大的错误页可能触发大小超限，把真正的 403/429 掩盖掉。
         if response.status != 200:
             return response.status, headers, b""
         if headers.get("content-encoding", "identity").lower() != "identity":
@@ -414,10 +452,9 @@ def _exchange(url, ip, timeout, max_bytes):
 
 
 class Transport:
-    """一次CLI运行复用同一实例以共享robots、限频、请求/字节/时长预算。
+    """抓取器。一次命令行运行只用一个实例，这样 robots 缓存、限频和各项限额在整个运行中共享。
 
-    exchange(url,ip,timeout,max_bytes)和resolver(host,port)仅供可信代码注入模拟；
-    clock为单调秒，utcnow为带时区datetime。不是可从外部JSON指定的插件入口。
+    exchange、resolver、clock、utcnow 这几个参数只给测试用，用来替换网络、DNS 和时钟。
     """
 
     def __init__(self, policy, *, timeout=10, max_attempts=2, min_interval=2,
@@ -476,7 +513,7 @@ class Transport:
         if self.last_request is not None:
             self._wait(max(0, max(self.min_interval, delay) - (self.clock() - self.last_request)), checkpoint)
         _checkpoint(checkpoint)
-        self._authorize(url, kind)  # 限频等待后可能已过期，不能沿用等待前的批准。
+        self._authorize(url, kind)  # 等待限频间隔期间准入可能过期了，所以等完再检查一次。
         parts = urlsplit(url)
         port = 443 if parts.scheme == "https" else 80
         try:
@@ -497,17 +534,17 @@ class Transport:
                 raise ValueError()
         except ValueError:
             raise FetchError("dns_not_public") from None
-        # 等待与DNS期间可能已取消或丢失租约；不能让开始fetch时的检查覆盖后续请求。
+        # 等待和 DNS 解析期间运行可能被取消，所以发请求前再检查一次。
         _checkpoint(checkpoint)
         self._authorize(url, kind)
         timeout = min(self.timeout, self._remaining())
         self.last_request = self.clock()
-        self.requests += 1  # 真正调用exchange前计数；超时和失败请求也消耗预算。
+        self.requests += 1  # 发请求前就计数：超时和失败的请求也算次数。
         allowance = min(max_bytes, MAX_TOTAL_BYTES - self.bytes_received)
         try:
             status, headers, body = self.exchange(url, str(addresses[0]), timeout, allowance)
         except (FetchError, OSError, http.client.HTTPException):
-            # 无完整响应时无法得知已读字节，按本次上限保守扣预算，防失败重试绕过累计上限。
+            # 请求失败时不知道读了多少字节，按这次的上限扣，免得靠反复失败重试绕过总字节限额。
             self.bytes_received += allowance
             raise
         self._remaining()
@@ -531,8 +568,8 @@ class Transport:
                 _, status, _, body = self._read(origin + "/robots.txt", "robots", MAX_ROBOTS_BYTES, checkpoint)
                 self.robots[origin] = _parse_robots(body)
             except FetchError as exc:
-                # RFC9309允许404时视为没有robots规则；它不是使用许可。只有新版
-                # 准入明确选择时生效，旧policy、403/429、5xx和网络失败仍失败关闭。
+                # 按 RFC 9309，robots.txt 返回 404 可以视为"没有限制"（但这不等于获得了使用许可）。
+                # 只有准入文件明确开启这个选项才这样处理；403、429、5xx 和网络错误一律按"禁止"处理。
                 if exc.code == "http_error" and exc.http_status == 404 and self.policy.robots_missing == "allow_404":
                     self.robots[origin] = _Robots((), 0)
                     return self.robots[origin]
@@ -605,10 +642,11 @@ class Transport:
         raise FetchError("redirect_limit")
 
     def fetch(self, url, *, max_bytes, kind, checkpoint=None):
-        """完整响应或故障；checkpoint在每次后续网络动作前重验持久取消/租约。
+        """抓取一个 URL，返回 FetchResult；失败抛 FetchError。
 
-        回调来自可信编排代码，不来自policy或网页；其异常原样返回。不强行中断已在途
-        HTTP，而在它结束以及等待/DNS后检查，阻止后续robots、材料、重试或重定向请求。
+        会自动处理 robots、有限次数的重试和重定向（重定向目标也要通过准入检查）。
+        checkpoint 是调用方传入的检查函数，在每次网络动作之前调用，用来检查运行是否被取消。
+        它抛出的异常会原样传出。已经发出的请求不会被强行中断，但之后不会再发新的。
         """
         before = self.requests
         try:
