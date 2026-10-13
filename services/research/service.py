@@ -1,4 +1,11 @@
-"""研究业务边界：当前权限→冻结输入→持久受理；不在HTTP请求中调用模型。"""
+"""研究服务的业务规则。
+
+受理一次研究的顺序：检查当前权限 → 取固定版本的企业档案和公告 → 冻结成 manifest → 存为排队任务。
+HTTP 请求里只做到"存为排队任务"，不调模型；模型调用全部在 worker 里进行。
+
+guard() 是 worker 每个动作前都要调用的检查：任务没被取消、租约还在、
+成员权限和档案版本都没变、配置没被换掉。任何一项不满足就停止。
+"""
 from copy import deepcopy
 from hashlib import sha256
 import re
@@ -9,19 +16,31 @@ from .store import ResearchError
 
 
 def text(value, limit=128):
+    """检查是非空字符串、不超过 limit 个字符、不含空字符，否则报 invalid_input。"""
     if not isinstance(value, str) or not 1 <= len(value.strip()) <= limit or "\x00" in value:
         raise ResearchError("invalid_input", 400)
     return value
 
 
 class ResearchService:
+    """研究服务的业务入口。
+
+    依赖都从外面传入：
+        store     ResearchStore，本服务自己的数据库
+        access    workspace 服务的客户端：检查权限、读取档案和选择
+        catalog   catalog 服务的客户端：读取公告及其版本
+        tracking  tracking 服务的客户端：核对自动复核的授权（委托）
+        identity  当前调用方是谁，决定能用哪些操作
+    """
+
     def __init__(self, store, access, catalog, tracking, *, identity="workspace", config=None):
         self.store, self.access, self.catalog, self.tracking = store, access, catalog, tracking
         self.identity = identity
         from .agent import VERSION as agent_version, PROMPT_VERSION
         from .evidence import VERSION as evidence_version
         from .provider import EGRESS_VERSION, REQUESTED_MODEL, OFFICIAL_RESOLUTION, PRICE_VERSION, VERSION as provider_version, TEMPERATURE
-        # 冻结的是实际运行代码/提示词/出口版本；可信部署配置也不得伪报另一个实现版本。
+        # 记录当前实际运行的代码版本、提示词版本和模型参数，冻结进每个任务。
+        # 外部传入的配置如果和实际版本对不上，直接拒绝，不能谎报自己是另一个版本。
         actual = {"version": "research-v3", "agent_version": agent_version, "prompt_version": PROMPT_VERSION,
                   "evidence_version": evidence_version, "egress_version": EGRESS_VERSION,
                   "requested_model": REQUESTED_MODEL, "official_resolution": OFFICIAL_RESOLUTION,
@@ -33,6 +52,7 @@ class ResearchService:
         self.config = {**deepcopy(config or {}), **actual}
 
     def _authorize(self, actor, wid, action="read"):
+        """向 workspace 查询此人当前在这家公司能否执行 action，返回成员版本和当前档案版本。"""
         text(actor)
         text(wid)
         grant = self.access.authorize(actor, wid, action)
@@ -42,11 +62,20 @@ class ResearchService:
         return grant
 
     def _tracking_only(self, run, actor):
+        """tracking 服务只能看到和操作它自己发起的复核任务。"""
         if self.identity == "tracking" and (run["kind"] != "reassessment" or run["actor_id"] != actor):
             raise ResearchError("service_forbidden", 403)
 
     def create_analysis(self, request):
-        """幂等重放先于远程目录获取，已受理任务不会因为目录离线再创建一次。"""
+        """受理一次研究请求，返回任务信息（状态为 queued）。
+
+        kind 有三种：
+            analysis      用户对选定的公告发起研究
+            question      在已有报告上追问，沿用父报告的冻结输入
+            reassessment  tracking 发现变化后自动发起的复核，必须带有效的委托
+        同一个幂等键（key）重复提交时直接返回原任务。这一步放在读取目录之前，
+        所以即使目录服务暂时不可用，重复提交也不会多建一个任务。
+        """
         request = deepcopy(request)
         if not isinstance(request, dict) or request.get("schema_version") != 1 or type(request["schema_version"]) is not int:
             raise ResearchError("invalid_request", 400)
@@ -110,7 +139,7 @@ class ResearchService:
         if manifest["profile"]["revision"] != grant["current_profile_revision"]:
             raise ResearchError("profile_revision_changed")
         from .evidence import EvidenceIndex
-        EvidenceIndex(manifest)  # 所属服务响应也要验证，不能把结构错误当正常冻结输入。
+        EvidenceIndex(manifest)  # 其他服务返回的数据也要检查一遍，结构不对就不受理。
         latest = self._authorize(actor, wid, "analyze")
         if latest != grant:
             raise ResearchError("authorization_changed")
@@ -119,6 +148,7 @@ class ResearchService:
         return self.store.create(request, request_hash, manifest, grant["membership_version"])
 
     def run(self, run_id, workspace_id, actor_id):
+        """查看一个任务及其报告，并标明报告是否还是最新：档案或公告变了就是 changed。"""
         self._authorize(actor_id, workspace_id)
         result = self.store.public(workspace_id, text(run_id))
         self._tracking_only(result, actor_id)
@@ -129,7 +159,7 @@ class ResearchService:
             if ids and all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in ids):
                 catalog_state = "current" if ids == result["scope"]["observation_ids"] else "changed"
         except (LocalHTTPError, KeyError, TypeError, ValueError):
-            # 目录离线时仍可查看已获准的历史报告，但不能把“无法检查”冒充最新。
+            # 目录服务暂时不可用时，报告照样能看，只是新鲜度显示为 unavailable，而不是假装"最新"。
             pass
         grant = self._authorize(actor_id, workspace_id)
         result["freshness"] = {"profile": "current" if grant["current_profile_revision"] == result["profile_revision"] else "changed",
@@ -137,6 +167,7 @@ class ResearchService:
         return result
 
     def command(self, workspace_id, actor_id, key):
+        """按幂等键查找之前提交的任务。用于"提交后没收到响应"时找回结果。"""
         self._authorize(actor_id, workspace_id)
         result = self.store.command(workspace_id, actor_id, text(key))
         if result is None:
@@ -145,6 +176,7 @@ class ResearchService:
         return result
 
     def cancel(self, run_id, workspace_id, actor_id, key):
+        """取消任务。取消会持久保存，worker 在下一个动作前就会停下。"""
         text(key)
         self._authorize(actor_id, workspace_id, "analyze")
         result = self.store.public(workspace_id, text(run_id))
@@ -152,13 +184,22 @@ class ResearchService:
         return self.store.cancel(workspace_id, run_id, actor_id=actor_id, key=key)
 
     def list_runs(self, actor_id, workspace_id, before=None, limit=30):
+        """按创建时间倒序列出本公司的研究任务，before 是上一页最后一个任务的 ID。"""
         if self.identity != "workspace":
             raise ResearchError("service_forbidden", 403)
         self._authorize(actor_id, workspace_id)
         return self.store.list_runs(workspace_id, before=before, limit=limit)
 
     def guard(self, run, action):
-        """动作前检查任务取消、原授权代数、正式档案及有限跟踪委托；失败关闭动作。"""
+        """worker 在每个动作前调用：任何一项检查不通过就抛异常，任务停下。
+
+        检查项：
+            - 租约还在、任务没被取消（查数据库，不看内存）
+            - 运行配置和任务冻结时一致
+            - 发起人仍有分析权限，且成员版本没变（被移除再加回来也算变了）
+            - 公司的正式档案版本没变
+            - 如果是自动复核，委托仍然有效
+        """
         self.store.check_lease(run)
         if run["manifest"]["config"] != self.config:
             raise ResearchError("configuration_changed")
@@ -169,5 +210,5 @@ class ResearchService:
             raise ResearchError("profile_revision_changed")
         if run["request"]["kind"] == "reassessment":
             self.tracking.check_delegation(run["actor_id"], run["workspace_id"], run["request"]["delegation"])
-        # 当前权限远程检查期间也可能发生取消；再查本任务，缩小迟到响应窗口。
+        # 远程检查权限需要时间，期间任务可能被取消，所以最后再查一次。
         self.store.check_lease(run)

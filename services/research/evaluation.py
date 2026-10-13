@@ -1,6 +1,8 @@
-"""同一冻结输入上的规则/Agent对照；机器可验证引用范围，语义效果仍需人工标签。
+"""评测：在同一份冻结输入上，对比规则基线和 Agent 的报告。
 
-本模块不运行真实模型、不造人工真值。没有标签时指标保持None，不以自评分冒充质量。
+程序能自动检查的只有"引用对不对得上"。结论对不对，需要人工标注的标准答案（labels）。
+没有标签时，所有质量指标都返回 None，不拿模型给自己打的分冒充质量。
+这个模块不调真实模型，也不会自己生成标准答案。
 """
 from __future__ import annotations
 
@@ -8,16 +10,23 @@ from .evidence import EvidenceIndex, EvidenceError, STATUSES, baseline_report, v
 
 
 def run_baseline(manifest):
+    """跑规则基线，返回和 Agent 相同格式的结果。"""
     return {"report": baseline_report(manifest), "trace": [], "state": "partial",
             "quality": {"verified": False, "verification": "rule_baseline", "model_calls": 0,
                         "human_reviewed": False}}
 
 
 def evaluate_report(manifest, report, *, labels=None):
-    """labels={provenance,requirements:[{evidence_id,status}]}，标签来源由评测主持人记录。
+    """评估一份报告。
 
-    status_match仅是固定标签对照，citation_reference_valid只代表引用身份/原片段正确；
-    两者均不自动证明中文语义被支持。真实/合成样本标记来自冻结观察。
+    labels 是人工标注的标准答案：
+        {"provenance": "谁标注的、怎么标的", "requirements": [{"evidence_id": ..., "status": ...}]}
+    返回的主要指标：
+        citation_reference_valid  报告引用的片段是否都真实存在且未被改动
+        condition_covered_count   标准答案里的要求，报告覆盖了几条
+        status_match_count        状态和标准答案一致的有几条
+        unknown_as_known_count    应该是"未知"却被判成满足或不满足的条数（最严重的错误）
+    这些都是和固定标签的机械对照，不等于中文语义层面的正确。
     """
     index = EvidenceIndex(manifest)
     if not isinstance(report, dict):
@@ -74,7 +83,7 @@ def evaluate_report(manifest, report, *, labels=None):
 
 
 def compare_reports(manifest, baseline, agent, *, labels=None):
-    """保证两份报告使用同一manifest；耗时/费用由真实调用账本另附，不在这里猜测。"""
+    """在同一份输入上评估基线和 Agent 两份报告。耗时和费用以真实运行的账本为准，这里不估算。"""
     index = EvidenceIndex(manifest)
     if any(report.get("scope") != index.scope for report in (baseline, agent) if isinstance(report, dict)):
         raise EvidenceError("evaluation_scope_mismatch")

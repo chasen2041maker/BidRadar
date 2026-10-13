@@ -1,7 +1,11 @@
-"""DeepSeek 文本工具调用适配器。密钥由宿主传入；本模块不建任务、不扣费、不重试。
+"""DeepSeek 接口适配：把消息和工具发给 DeepSeek，把回复整理成统一格式。
 
-requested_model 保留用户选定的 deepseek-v4-flash。官方 2026-10-01 文档说明
-该旧名已路由到 DeepSeek-V4.1-Flash；每次保存实际 model，不隐瞒供应商升级。
+这个模块只管"发请求、收响应"，不建任务、不记账、不重试。密钥由调用方传进来。
+
+关于模型名：请求里写的是选定的 deepseek-v4-flash。按 DeepSeek 2026-10-01 的文档，
+这个名字已被路由到 DeepSeek-V4.1-Flash，所以每次都会记下响应里实际返回的模型名。
+
+prepare_egress 负责在外发前去掉联系方式；usage_cost 和 estimate_reservation 负责算钱。
 """
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import time
 
 from .evidence import canonical, strict_json, redact, EvidenceError
 
+# 这些值会冻结进任务配置，任何一个变了，旧任务都不能用新参数续跑。
 REQUESTED_MODEL = "deepseek-v4-flash"
 OFFICIAL_RESOLUTION = "DeepSeek-V4.1-Flash"
 PRICE_VERSION = "deepseek-flash-cny-2026-10-01-peak-estimate"
@@ -23,7 +28,11 @@ MAX_REQUEST_BYTES = 256 * 1024
 
 
 class ProviderError(Exception):
-    """仅稳定错误码；usage_unknown=True 时调用方必须保留费用预留并停止自动重试。"""
+    """调用模型出错。code 是错误码。
+
+    usage_unknown=True 表示请求可能已经被处理并计费，但不知道花了多少：
+    调用方必须保留预留的费用，并且不能自动重试。
+    """
     def __init__(self, code, usage_unknown=False):
         super().__init__(code)
         self.code, self.usage_unknown = code, bool(usage_unknown)
@@ -34,11 +43,11 @@ def _count(value):
 
 
 def prepare_egress(messages, tools):
-    """返回脱敏深副本，供宿主在hash/预留/保存attempt之前调用，供应商出口再次兜底。
+    """返回去掉联系方式后的消息和工具副本，原对象不变。
 
-    覆盖整个消息历史和工具schema，而非仅首次证据。JSON内容/arguments先解析再递归
-    处理，避免邮箱/联系标签的正则吞掉JSON分隔符；工具协议标识与原始引用ID不变。
-    本函数不接受额外的外发内容通道；未知结构/重复JSON键均在请求前拒绝。
+    处理范围是整段对话历史和工具定义，不只是第一条消息。
+    消息内容如果本身是 JSON，先解析再逐个字段处理，免得正则把 JSON 的引号、逗号一起删掉。
+    工具调用的 ID、证据 ID 这类标识保持原样。结构不认识或有重复键时直接拒绝。
     """
     try:
         value = strict_json(canonical({"messages": messages, "tools": tools}), limit=MAX_REQUEST_BYTES)
@@ -49,8 +58,8 @@ def prepare_egress(messages, tools):
             if isinstance(item, dict):
                 result = {}
                 for name, child in item.items():
-                    # 用户/工具的嵌入JSON也可能把联系方式放在属性名里；值脱敏不够。
-                    # 两个键清理后重名则拒绝请求，不能静默覆盖采购字段或改变工具语义。
+                    # 联系方式也可能出现在键名里，所以键名也要处理。
+                    # 处理后两个键重名就拒绝请求，不能悄悄覆盖掉其中一个。
                     clean_name = redact(name)
                     if clean_name in result:
                         raise ValueError()
@@ -65,7 +74,7 @@ def prepare_egress(messages, tools):
                         raise ValueError()
                     return canonical(clean(parsed))
                 if key == "content" and item.lstrip().startswith(("{", "[")):
-                    # 普通自然语言允许以括号开头；真正JSON必须按结构脱敏，保持工具结果可读。
+                    # 以括号开头的内容先试着按 JSON 解析；解析不了就当普通文本处理。
                     try:
                         parsed = strict_json(item, limit=MAX_REQUEST_BYTES)
                     except EvidenceError:
@@ -81,10 +90,11 @@ def prepare_egress(messages, tools):
 
 
 def usage_cost(usage, peak=True):
-    """返回估算 micro-CNY（向上取整），无可用完整用量返回 None；不重复加思考token。
+    """按用量估算费用，单位 micro-CNY，向上取整。用量不完整时返回 None。
 
-    output_tokens 对应 completion_tokens，已含 reasoning_tokens。缓存仅按供应商
-    usage 实报结算；预留时不假定命中。价目页：https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+    价格（峰时，每百万 token）：未命中缓存的输入 2 元，命中缓存的输入 0.04 元，输出 8 元。
+    价目页：https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
+    预留时假设缓存全部未命中；结算时按供应商实际报告的命中数算。
     """
     if (not isinstance(usage, dict) or set(usage) != {"input_tokens", "output_tokens", "cached_tokens"}
             or any(not _count(v) for v in usage.values()) or usage["cached_tokens"] > usage["input_tokens"]):
@@ -95,7 +105,7 @@ def usage_cost(usage, peak=True):
 
 
 def estimate_tokens(messages, tools):
-    """UTF-8字节数加协议余量的保守估计，不宣称是供应商 tokenizer 的精确计数。"""
+    """粗略估计输入 token 数：按 UTF-8 字节数再加一些余量。宁可多估，不是精确值。"""
     try:
         size = len(canonical({"messages": messages, "tools": tools}).encode("utf-8"))
     except (ValueError, TypeError, RecursionError):
@@ -106,6 +116,7 @@ def estimate_tokens(messages, tools):
 
 
 def estimate_reservation(messages, tools, max_output_tokens=4096):
+    """一次调用需要预留多少钱：输入按估计值、输出按上限、缓存按全部未命中来算。"""
     if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 4096:
         raise ProviderError("invalid_output_limit")
     return usage_cost({"input_tokens": estimate_tokens(messages, tools), "output_tokens": max_output_tokens,
@@ -113,6 +124,7 @@ def estimate_reservation(messages, tools, max_output_tokens=4096):
 
 
 def _usage(value):
+    """把 DeepSeek 返回的 usage 转成 {input_tokens, output_tokens, cached_tokens}；数字对不上就返回 None。"""
     if not isinstance(value, dict):
         return None
     keys = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "total_tokens")
@@ -125,10 +137,13 @@ def _usage(value):
 
 
 class DeepSeekProvider:
-    """固定 HTTPS 主机、禁代理/重定向、非思考模式、总截止；exchange 仅供可信测试注入。
+    """DeepSeek 客户端。
 
-    exchange(payload: bytes, timeout: float) -> (status: int, headers: dict, body: bytes)
-    注入器本身属于受信程序，不能从请求/模型/配置JSON加载。默认实现只访问官方端点。
+    安全上的约束：只连接 api.deepseek.com，不走代理、不跟随重定向；关闭思考模式；
+    整个请求有总的超时时间；响应大小有上限。
+
+    exchange 参数只给测试用，用来注入假的网络层：
+        exchange(payload: bytes, timeout: float) -> (status, headers, body)
     """
     def __init__(self, api_key, *, requested_model=REQUESTED_MODEL, timeout=60, max_output_tokens=4096, exchange=None):
         if not isinstance(api_key, str) or not 8 <= len(api_key) <= 512 or any(ord(c) <= 32 or ord(c) >= 127 for c in api_key):
@@ -143,12 +158,14 @@ class DeepSeekProvider:
 
     @property
     def metadata(self):
+        """当前的模型参数。会参与请求指纹的计算，也会冻结进任务配置。"""
         return {"provider": "deepseek", "requested_model": self.requested_model,
                 "official_resolution": OFFICIAL_RESOLUTION, "price_version": PRICE_VERSION,
                 "provider_version": VERSION, "temperature": TEMPERATURE,
                 "thinking": "disabled", "max_output_tokens": self.max_output_tokens}
 
     def _https_exchange(self, payload, timeout):
+        """真正发 HTTPS 请求。每次读数据前都按剩余时间重设超时，保证总耗时不超过 timeout。"""
         deadline = time.monotonic() + timeout
         connection = HTTPSConnection("api.deepseek.com", 443, timeout=timeout, context=ssl.create_default_context())
         response = None
@@ -183,7 +200,7 @@ class DeepSeekProvider:
                 if not 0 <= length <= MAX_RESPONSE_BYTES:
                     raise ProviderError("provider_response_too_large", True)
             chunks, size = [], 0
-            # DeepSeek的非流式keep-alive可能不断返回空行；每次读仍使用同一总截止。
+            # DeepSeek 在生成期间可能不断发送空行保持连接，所以每次读之前都要检查总截止时间。
             while True:
                 remaining()
                 chunk = response.read1(min(65536, MAX_RESPONSE_BYTES + 1 - size))
@@ -202,16 +219,21 @@ class DeepSeekProvider:
             connection.close()
 
     def complete(self, messages, tools):
+        """发送一次对话请求，返回 {message, usage, model, provider_request_id, finish_reason, ...}。
+
+        有工具时开放工具调用；没有工具时（语义核验）要求模型只返回 JSON。
+        出错时抛 ProviderError，并标明费用是否可能已经发生。
+        """
         messages, tools = prepare_egress(messages, tools)
         estimate_tokens(messages, tools)
         payload = {"model": self.requested_model, "messages": messages, "stream": False,
                    "thinking": {"type": "disabled"}, "max_tokens": self.max_output_tokens,
                    "temperature": TEMPERATURE}
-        # 温度只降低非思考模式的采样随机性，不保证确定性或事实正确；metadata同值参与计费身份。
+        # 温度设为 0 只是降低随机性，同样的输入仍可能得到不同输出，也不保证正确。
         if tools:
             payload.update(tools=tools, tool_choice="auto")
         else:
-            # 语义审查节点只需JSON，不开放工具；system须包含JSON字样。
+            # 语义核验只要 JSON，不需要工具。（DeepSeek 要求此时系统提示词里出现"JSON"字样。）
             payload["response_format"] = {"type": "json_object"}
         raw = canonical(payload).encode("utf-8")
         if len(raw) > MAX_REQUEST_BYTES:
@@ -223,7 +245,8 @@ class DeepSeekProvider:
         except (OSError, HTTPException, TimeoutError):
             raise ProviderError("provider_network_error", True) from None
         if status != 200:
-            # 服务器拒绝与结果不明分别记录；不把上游错误正文/密钥拼进异常。
+            # 400/401/402/403/404/429 是明确的拒绝，请求没被处理；其他状态码说明结果不确定。
+            # 异常里只放错误码，不放供应商返回的正文，更不会带上密钥。
             code = {400: "provider_bad_request", 401: "provider_unauthorized", 402: "provider_insufficient_balance",
                     403: "provider_forbidden", 404: "provider_model_unavailable", 429: "provider_rate_limited"}.get(status, "provider_unavailable")
             raise ProviderError(code, status not in (400, 401, 402, 403, 404, 429))
@@ -249,7 +272,7 @@ class DeepSeekProvider:
             safe_message = {"role": "assistant", "content": message.get("content")}
             if calls:
                 safe_message["tool_calls"] = calls
-            # 非思考模式出现思考内容是协议偏离，不能悄悄持久化或送下一轮。
+            # 已经关闭思考模式，如果还返回了思考内容，说明协议出了问题，按异常处理。
             if message.get("reasoning_content"):
                 raise ValueError()
         except (ValueError, KeyError, TypeError, UnicodeError, EvidenceError):
