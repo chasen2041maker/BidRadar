@@ -3,6 +3,7 @@
 浏览器路径 /api/workspaces/{公司}/research/... 和 /tracking/... 在这里映射成内部接口。
 发起人和公司 ID 由工作台从会话里取出后加上去，浏览器的请求体里不能指定这两样。
 """
+
 import re
 
 from services.common.query import parse_query_pairs
@@ -80,13 +81,21 @@ def dispatch(method, action, query, body, actor, wid, server, current_member):
         fields(body, "parent_run_id question key")
         parent = client.run(body["parent_run_id"], wid, actor)
         current_member(write=True)
-        path, arguments = "/internal/v1/analyses", {**body, "kind": "question", "mode": "agent", "notice_id": parent["notice_id"]}
+        path, arguments = (
+            "/internal/v1/analyses",
+            {**body, "kind": "question", "mode": "agent", "notice_id": parent["notice_id"]},
+        )
     elif re.fullmatch(r"research/runs/[a-f0-9]{32}/cancel", action):
         fields(body, "key")
         path, arguments = "/internal/v1/runs/cancel", {**body, "run_id": action.split("/")[2]}
     elif re.fullmatch(r"tracking/(decisions|watches)/[a-f0-9]{64}", action):
         _, entity, nid = action.split("/")
-        fields(body, "state reason expected_version key" if entity == "decisions" else "active auto_reassess expected_version key expires_at scope")
+        fields(
+            body,
+            "state reason expected_version key"
+            if entity == "decisions"
+            else "active auto_reassess expected_version key expires_at scope",
+        )
         path, arguments = f"/internal/v1/{entity}/set", {**body, "notice_id": nid}
     elif re.fullmatch(r"tracking/notifications/[A-Za-z0-9_-]+/read", action):
         fields(body, "")

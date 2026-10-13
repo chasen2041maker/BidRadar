@@ -1,4 +1,5 @@
 """真实 loopback HTTP 的契约/安全测试；采购数据由虚构 ingestion→processing 链生成。"""
+
 from contextlib import closing, contextmanager
 from dataclasses import replace
 from http.client import HTTPConnection, HTTPResponse
@@ -34,8 +35,13 @@ class _FixtureTransport(DemoTransport):
 
     def fetch(self, url, **kwargs):
         result = super().fetch(NOTICE_URL if kwargs["kind"] == "notice" else url, **kwargs)
-        return replace(result, url=url, final_url=url, fetched_at=self.observed,
-                       body=result.body.replace(NOTICE_URL.encode(), self.url.encode()))
+        return replace(
+            result,
+            url=url,
+            final_url=url,
+            fetched_at=self.observed,
+            body=result.body.replace(NOTICE_URL.encode(), self.url.encode()),
+        )
 
 
 @contextmanager
@@ -53,6 +59,7 @@ def _running(server):
 @contextmanager
 def _bad_upstream(body, *, status=200, extra_headers=None, delay=0):
     """可控坏服务只接本地请求，用真实线缆响应检验客户端 fail closed。"""
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -71,6 +78,7 @@ def _bad_upstream(body, *, status=200, extra_headers=None, delay=0):
                 self.wfile.write(response_body)
             except OSError:
                 pass
+
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = False  # 测试结束等待故意延迟的响应收尾，不能把 socket 留给下一例。
     server.calls = 0
@@ -126,6 +134,7 @@ class CatalogHTTPTests(unittest.TestCase):
 
     def test_research_history_and_incremental_contract(self):
         from services.common.owner_clients import CatalogEvidenceClient
+
         client = CatalogEvidenceClient(self.address, self.token)
         frozen = client.bundle(self.one["notice_id"])
         change_page = client.changes(0, 1)
@@ -137,8 +146,12 @@ class CatalogHTTPTests(unittest.TestCase):
         self.assertEqual(client.observation(self.one["notice_id"], self.one["observation_id"]), self.one)
         # 存在的观察不能借另一个公告身份读取，旧版本仍可按原身份核验。
         self.assertEqual(self.request(f"/v1/observations/{self.two['notice_id']}/{self.one['observation_id']}")[0], 404)
-        for route in ("/v1/changes?after=0&after=1", "/v1/changes?limit=0",
-                      "/v1/changes?after=-1", f"/v1/bundles/{self.one['notice_id']}?snapshot=true"):
+        for route in (
+            "/v1/changes?after=0&after=1",
+            "/v1/changes?limit=0",
+            "/v1/changes?after=-1",
+            f"/v1/bundles/{self.one['notice_id']}?snapshot=true",
+        ):
             self.assertEqual(self.request(route)[0], 400, route)
 
     def test_health_and_queries_are_json_with_no_browser_cors(self):
@@ -154,8 +167,13 @@ class CatalogHTTPTests(unittest.TestCase):
         self.assertEqual(self.client.detail(self.one["notice_id"])["current"], self.one)
 
     def test_exact_host_and_service_token_required(self):
-        for host in ("localhost", "localhost:" + str(self.server.server_port), "127.0.0.1",
-                     "evil.test:" + str(self.server.server_port), "127.0.0.1:1"):
+        for host in (
+            "localhost",
+            "localhost:" + str(self.server.server_port),
+            "127.0.0.1",
+            "evil.test:" + str(self.server.server_port),
+            "127.0.0.1:1",
+        ):
             self.assertEqual(self.request(headers={"Host": host})[0], 403)
         for token in ("", "Bearer wrong", "Basic wrong"):
             status, _, body = self.request(headers={"Authorization": token})
@@ -165,8 +183,10 @@ class CatalogHTTPTests(unittest.TestCase):
 
     def test_duplicate_host_or_auth_is_rejected(self):
         for duplicate in (f"Host: 127.0.0.1:{self.server.server_port}", "Authorization: Bearer " + self.token):
-            raw = (f"GET /v1/notices HTTP/1.1\r\nHost: 127.0.0.1:{self.server.server_port}\r\n"
-                   f"Authorization: Bearer {self.token}\r\n{duplicate}\r\n\r\n").encode()
+            raw = (
+                f"GET /v1/notices HTTP/1.1\r\nHost: 127.0.0.1:{self.server.server_port}\r\n"
+                f"Authorization: Bearer {self.token}\r\n{duplicate}\r\n\r\n"
+            ).encode()
             with socket.create_connection(("127.0.0.1", self.server.server_port), timeout=2) as sock:
                 sock.sendall(raw)
                 response = HTTPResponse(sock)
@@ -179,8 +199,13 @@ class CatalogHTTPTests(unittest.TestCase):
             self.assertEqual(self.request(method=method)[0], 405)
         self.assertEqual(self.request(method="POST", body="never read")[0], 405)
         self.assertEqual(self.request(method="BREW", headers={"Authorization": ""})[0], 401)
-        for path in ("/import", "/raw/file", "/v1/notices/../../secret", "/v1/notices/" + "a" * 63,
-                     "/v1/notices/" + self.one["notice_id"] + "?download=true"):
+        for path in (
+            "/import",
+            "/raw/file",
+            "/v1/notices/../../secret",
+            "/v1/notices/" + "a" * 63,
+            "/v1/notices/" + self.one["notice_id"] + "?download=true",
+        ):
             status, headers, result = self.request(path)
             self.assertEqual(status, 404)
             self.assertIn("application/json", headers["Content-Type"])
@@ -190,9 +215,21 @@ class CatalogHTTPTests(unittest.TestCase):
         self.assertEqual(self.request(headers={"Expect": "100-continue", "Content-Length": "100"})[0], 400)
 
     def test_request_target_and_query_limits(self):
-        bad = ("?unknown=x", "?keyword=x&keyword=y", "?simulation=1", "?page_size=0", "?page_size=101",
-               "?kind=made_up", "?keyword=%FF", "?keyword=%GG", "?keyword=%00", "?keyword=" + "a" * 201,
-               "?keyword", "?cursor=" + "a" * 5001, "?page_size=1&simulation=true&cursor=bogus")
+        bad = (
+            "?unknown=x",
+            "?keyword=x&keyword=y",
+            "?simulation=1",
+            "?page_size=0",
+            "?page_size=101",
+            "?kind=made_up",
+            "?keyword=%FF",
+            "?keyword=%GG",
+            "?keyword=%00",
+            "?keyword=" + "a" * 201,
+            "?keyword",
+            "?cursor=" + "a" * 5001,
+            "?page_size=1&simulation=true&cursor=bogus",
+        )
         for query in bad:
             with self.subTest(query=query[:60]):
                 self.assertEqual(self.request("/v1/notices" + query)[0], 400)
@@ -208,13 +245,18 @@ class CatalogHTTPTests(unittest.TestCase):
         self.assertEqual((first["total"], second["total"]), (2, 2))
         self.assertEqual(first["as_of"], second["as_of"])
         self.assertEqual(second["items"][0]["observation_id"], self.two["observation_id"])
-        self.assert_catalog_error("cursor_query_mismatch", 400,
-            lambda: self.client.query(simulation=True, page_size=2, cursor=first["next_cursor"]))
+        self.assert_catalog_error(
+            "cursor_query_mismatch",
+            400,
+            lambda: self.client.query(simulation=True, page_size=2, cursor=first["next_cursor"]),
+        )
 
     def test_selection_freezes_only_confirmed_fields_and_detects_new_current_version(self):
         selected = [{"notice_id": self.one["notice_id"], "observation_id": self.one["observation_id"]}]
         snapshots = self.client.validate_selection(selected)
-        self.assertEqual(snapshots, [{k: self.one[k] for k in ("notice_id", "observation_id", "title", "source_url", "simulation")}])
+        self.assertEqual(
+            snapshots, [{k: self.one[k] for k in ("notice_id", "observation_id", "title", "source_url", "simulation")}]
+        )
         changed = self.add(1, "2026-10-01T12:00:00Z")
         self.assertNotEqual(changed["observation_id"], self.one["observation_id"])
         self.assert_catalog_error("catalog_version_changed", 409, lambda: self.client.validate_selection(selected))
@@ -224,10 +266,14 @@ class CatalogHTTPTests(unittest.TestCase):
     def test_selection_shares_total_deadline_across_actual_http_requests(self):
         # 单请求 1 秒仍足够，但两个详情各 0.2 秒超过整次选择 0.3 秒；不能重置预算。
         selected = [{k: item[k] for k in ("notice_id", "observation_id")} for item in (self.one, self.two)]
-        payloads = {item["notice_id"]: json.dumps(self.catalog.detail(item["notice_id"])).encode()
-                    for item in (self.one, self.two)}
+        payloads = {
+            item["notice_id"]: json.dumps(self.catalog.detail(item["notice_id"])).encode()
+            for item in (self.one, self.two)
+        }
         with _bad_upstream(lambda path: payloads[path.rsplit("/", 1)[1]], delay=0.2) as server:
-            client = CatalogClient(f"http://127.0.0.1:{server.server_port}", self.token, timeout=1, selection_timeout=0.3)
+            client = CatalogClient(
+                f"http://127.0.0.1:{server.server_port}", self.token, timeout=1, selection_timeout=0.3
+            )
             started = time.monotonic()
             self.assert_catalog_error("catalog_unavailable", 503, lambda: client.validate_selection(selected))
             self.assertLess(time.monotonic() - started, 0.8)
@@ -237,20 +283,32 @@ class CatalogHTTPTests(unittest.TestCase):
 
     def test_empty_duplicate_invalid_or_extra_selection_never_means_all(self):
         item = {"notice_id": self.one["notice_id"], "observation_id": self.one["observation_id"]}
-        for items in (None, [], [item] * 21, [item, item], [{**item, "title": "untrusted"}],
-                      [{**item, "notice_id": "../file"}], [{"notice_id": self.one["notice_id"]}]):
+        for items in (
+            None,
+            [],
+            [item] * 21,
+            [item, item],
+            [{**item, "title": "untrusted"}],
+            [{**item, "notice_id": "../file"}],
+            [{"notice_id": self.one["notice_id"]}],
+        ):
             self.assert_catalog_error("invalid_selection", 400, lambda: self.client.validate_selection(items))
-        self.assert_catalog_error("catalog_version_changed", 409,
-            lambda: self.client.validate_selection([{"notice_id": "a" * 64, "observation_id": "b" * 64}]))
+        self.assert_catalog_error(
+            "catalog_version_changed",
+            409,
+            lambda: self.client.validate_selection([{"notice_id": "a" * 64, "observation_id": "b" * 64}]),
+        )
 
     def test_each_request_has_its_own_read_only_connection(self):
         # 同时从多个真实 socket 查询，不能复用主线程 SQLite 连接。
         errors, results = [], []
+
         def query():
             try:
                 results.append(self.client.query(simulation=True)["total"])
             except Exception as exc:
                 errors.append(type(exc).__name__)
+
         threads = [threading.Thread(target=query) for _ in range(5)]
         for thread in threads:
             thread.start()
@@ -271,7 +329,9 @@ class CatalogHTTPTests(unittest.TestCase):
             self.assert_catalog_error("catalog_unavailable", 503, self.client.query)
 
     def test_client_ignores_environment_proxy(self):
-        with patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:1", "ALL_PROXY": "http://127.0.0.1:1", "NO_PROXY": ""}):
+        with patch.dict(
+            os.environ, {"HTTP_PROXY": "http://127.0.0.1:1", "ALL_PROXY": "http://127.0.0.1:1", "NO_PROXY": ""}
+        ):
             self.assertEqual(self.client.query(simulation=True)["total"], 2)
 
     def test_client_rejects_wrong_identity_and_unsafe_source_reference_in_observation(self):
@@ -292,7 +352,9 @@ class CatalogHTTPTests(unittest.TestCase):
         token_file.write_text(secret)
         output = io.StringIO()
         with patch("sys.stdout", output):
-            self.assertEqual(main(["--store", str(self.catalog_path), "--port", "0", "--token-file", str(token_file)]), 4)
+            self.assertEqual(
+                main(["--store", str(self.catalog_path), "--port", "0", "--token-file", str(token_file)]), 4
+            )
         self.assertNotIn(secret, output.getvalue())
         self.assertEqual(json.loads(output.getvalue())["error"]["code"], "catalog_start_failed")
 
@@ -307,24 +369,45 @@ class CatalogClientBoundaryTests(unittest.TestCase):
         self.assertEqual((raised.exception.code, raised.exception.status), ("catalog_unavailable", 503))
 
     def test_only_literal_fixed_loopback_base_is_allowed(self):
-        for url in ("http://localhost:8766", "http://127.0.0.1", "http://127.0.0.1:0", "http://127.0.0.1:65536",
-                    "http://127.1:8766", "http://2130706433:8766", "https://127.0.0.1:8766", "http://127.0.0.1:8766/",
-                    "http://user@127.0.0.1:8766", "http://127.0.0.1:8766?x=1", "http://127.0.0.1:8766#x",
-                    "http://127.0.0.1.evil.test:8766", "http://[::1]:8766"):
+        for url in (
+            "http://localhost:8766",
+            "http://127.0.0.1",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:65536",
+            "http://127.1:8766",
+            "http://2130706433:8766",
+            "https://127.0.0.1:8766",
+            "http://127.0.0.1:8766/",
+            "http://user@127.0.0.1:8766",
+            "http://127.0.0.1:8766?x=1",
+            "http://127.0.0.1:8766#x",
+            "http://127.0.0.1.evil.test:8766",
+            "http://[::1]:8766",
+        ):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 CatalogClient(url, self.token)
 
     def test_json_shape_duplicate_keys_nan_infinity_and_response_size_fail_closed(self):
-        for body in (b'[]', b'{"items":[]}', b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":Infinity}',
-                     b'{"x":1e999}', b'not json', b'{"x":' + b'[' * 1000 + b'0' + b']' * 1000 + b'}'):
+        for body in (
+            b"[]",
+            b'{"items":[]}',
+            b'{"x":1,"x":2}',
+            b'{"x":NaN}',
+            b'{"x":Infinity}',
+            b'{"x":1e999}',
+            b"not json",
+            b'{"x":' + b"[" * 1000 + b"0" + b"]" * 1000 + b"}",
+        ):
             with self.subTest(body=body[:40]), _bad_upstream(body) as server:
                 self.fail_query(CatalogClient(f"http://127.0.0.1:{server.server_port}", self.token))
-        with _bad_upstream(b'{"padding":"' + b'x' * 500 + b'"}') as server:
+        with _bad_upstream(b'{"padding":"' + b"x" * 500 + b'"}') as server:
             self.fail_query(CatalogClient(f"http://127.0.0.1:{server.server_port}", self.token, max_bytes=100))
 
     def test_redirect_is_not_followed_even_to_another_loopback_server(self):
-        with _bad_upstream(b'{}') as target:
-            with _bad_upstream(b'{}', status=302, extra_headers=[("Location", f"http://127.0.0.1:{target.server_port}/v1/notices")]) as source:
+        with _bad_upstream(b"{}") as target:
+            with _bad_upstream(
+                b"{}", status=302, extra_headers=[("Location", f"http://127.0.0.1:{target.server_port}/v1/notices")]
+            ) as source:
                 self.fail_query(CatalogClient(f"http://127.0.0.1:{source.server_port}", self.token))
             self.assertEqual(target.calls, 0)
 
@@ -335,11 +418,11 @@ class CatalogClientBoundaryTests(unittest.TestCase):
         self.fail_query(client)
 
     def test_duplicate_content_length_is_rejected(self):
-        with _bad_upstream(b'{}', extra_headers=[("Content-Length", "2")]) as server:
+        with _bad_upstream(b"{}", extra_headers=[("Content-Length", "2")]) as server:
             self.fail_query(CatalogClient(f"http://127.0.0.1:{server.server_port}", self.token))
 
     def test_slow_body_timeout_is_503_and_bounded(self):
-        with _bad_upstream(b'{}', delay=0.3) as server:
+        with _bad_upstream(b"{}", delay=0.3) as server:
             start = time.monotonic()
             self.fail_query(CatalogClient(f"http://127.0.0.1:{server.server_port}", self.token, timeout=0.05))
             self.assertLess(time.monotonic() - start, 1)

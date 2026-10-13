@@ -14,6 +14,7 @@
 这是采集服务私有的存储，其他服务只能拿到导出的 JSON，不能直接读这里。
 只用于公开资料的本地开发，没有做过断电恢复测试。
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -127,8 +128,9 @@ class Store:
                 return old["id"], False
             run_id = uuid4().hex
             now = utc_now()
-            self.db.execute("INSERT INTO runs VALUES(?,?,?,'queued',?,?,NULL,NULL,NULL)",
-                            (run_id, key, serialized, now, now))
+            self.db.execute(
+                "INSERT INTO runs VALUES(?,?,?,'queued',?,?,NULL,NULL,NULL)", (run_id, key, serialized, now, now)
+            )
         return run_id, True
 
     def run(self, run_id: str) -> dict:
@@ -155,23 +157,30 @@ class Store:
             if row["lease_until"] and row["lease_until"] > time.time():
                 raise StoreError("run_busy")
             token = uuid4().hex
-            self.db.execute("UPDATE runs SET status='running',lease_token=?,lease_until=?,updated_at=? WHERE id=?",
-                            (token, time.time() + 120, utc_now(), run_id))
+            self.db.execute(
+                "UPDATE runs SET status='running',lease_token=?,lease_until=?,updated_at=? WHERE id=?",
+                (token, time.time() + 120, utc_now(), run_id),
+            )
         return token
 
     def _check_lease(self, run_id: str, token: str):
         """确认租约仍属于这个令牌且没过期。"""
         row = self.db.execute("SELECT status,lease_token,lease_until FROM runs WHERE id=?", (run_id,)).fetchone()
-        if (row is None or row["status"] != "running" or row["lease_token"] != token
-                or row["lease_until"] <= time.time()):
+        if (
+            row is None
+            or row["status"] != "running"
+            or row["lease_token"] != token
+            or row["lease_until"] <= time.time()
+        ):
             raise StoreError("lease_lost_or_cancelled")
 
     def heartbeat(self, run_id: str, token: str):
         """续期租约，同时确认运行没被取消。"""
         with self.transaction():
             self._check_lease(run_id, token)
-            self.db.execute("UPDATE runs SET lease_until=?,updated_at=? WHERE id=?",
-                            (time.time() + 120, utc_now(), run_id))
+            self.db.execute(
+                "UPDATE runs SET lease_until=?,updated_at=? WHERE id=?", (time.time() + 120, utc_now(), run_id)
+            )
 
     def release(self, run_id: str, token: str):
         """主动释放租约（比如按了 Ctrl+C）。
@@ -179,15 +188,21 @@ class Store:
         进程崩溃来不及释放时，等租约过期后别人就能接手；已经完成的抓取不会重做。
         """
         with self.db:
-            self.db.execute("UPDATE runs SET status='queued',lease_token=NULL,lease_until=NULL,updated_at=? "
-                            "WHERE id=? AND lease_token=? AND status='running'", (utc_now(), run_id, token))
+            self.db.execute(
+                "UPDATE runs SET status='queued',lease_token=NULL,lease_until=NULL,updated_at=? "
+                "WHERE id=? AND lease_token=? AND status='running'",
+                (utc_now(), run_id, token),
+            )
 
     def cancel(self, run_id: str):
         """取消运行。取消是终态，之后不能再恢复执行。"""
         self.run(run_id)
         with self.db:
-            self.db.execute("UPDATE runs SET status='cancelled',lease_token=NULL,lease_until=NULL,updated_at=? "
-                            "WHERE id=? AND status IN ('queued','running')", (utc_now(), run_id))
+            self.db.execute(
+                "UPDATE runs SET status='cancelled',lease_token=NULL,lease_until=NULL,updated_at=? "
+                "WHERE id=? AND status IN ('queued','running')",
+                (utc_now(), run_id),
+            )
 
     def finish(self, run_id: str, token: str, status: str, error: str | None = None):
         """把运行标为结束状态并释放租约。"""
@@ -195,8 +210,10 @@ class Store:
             raise StoreError("invalid_terminal_status")
         with self.transaction():
             self._check_lease(run_id, token)
-            self.db.execute("UPDATE runs SET status=?,error_code=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
-                            (status, error, utc_now(), run_id))
+            self.db.execute(
+                "UPDATE runs SET status=?,error_code=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",
+                (status, error, utc_now(), run_id),
+            )
 
     def enqueue(self, run_id: str, token: str, tasks: list[dict]):
         """往抓取队列里加任务（需要持有租约）。"""
@@ -206,13 +223,17 @@ class Store:
 
     def _enqueue(self, run_id, tasks):
         for task in tasks:
-            self.db.execute("INSERT INTO tasks(run_id,kind,url,parent_url,payload_json) VALUES(?,?,?,?,?) "
-                            "ON CONFLICT(run_id,kind,url) DO NOTHING",
-                            (run_id, task["kind"], task["url"], task.get("parent_url"), encode_json(task.get("payload", {}))))
+            self.db.execute(
+                "INSERT INTO tasks(run_id,kind,url,parent_url,payload_json) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(run_id,kind,url) DO NOTHING",
+                (run_id, task["kind"], task["url"], task.get("parent_url"), encode_json(task.get("payload", {}))),
+            )
 
     def next_task(self, run_id: str) -> dict | None:
         """取下一个还没完成的抓取任务；没有了就返回 None。"""
-        row = self.db.execute("SELECT * FROM tasks WHERE run_id=? AND state='pending' ORDER BY id LIMIT 1", (run_id,)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM tasks WHERE run_id=? AND state='pending' ORDER BY id LIMIT 1", (run_id,)
+        ).fetchone()
         if row is None:
             return None
         result = dict(row)
@@ -265,10 +286,20 @@ class Store:
             raise StoreError("blob_corrupt")
         return data
 
-    def record(self, run_id: str, token: str, task: dict, *, response=None,
-               parsed: dict | None = None, parser_version: str | None = None,
-               error: str | None = None, http_status: int | None = None, attempts: int = 0,
-               following: list[dict] = ()) -> str:
+    def record(
+        self,
+        run_id: str,
+        token: str,
+        task: dict,
+        *,
+        response=None,
+        parsed: dict | None = None,
+        parser_version: str | None = None,
+        error: str | None = None,
+        http_status: int | None = None,
+        attempts: int = 0,
+        following: list[dict] = (),
+    ) -> str:
         """记录一次抓取的结果。
 
         "保存抓取记录""把任务标为完成""把解析出的新链接加入队列"在同一个事务里完成，
@@ -280,8 +311,9 @@ class Store:
         captured_at = response.fetched_at if response is not None else utc_now()
         with self.transaction():
             self._check_lease(run_id, token)
-            stored = self.db.execute("SELECT * FROM tasks WHERE id=? AND run_id=? AND state='pending'",
-                                     (task["id"], run_id)).fetchone()
+            stored = self.db.execute(
+                "SELECT * FROM tasks WHERE id=? AND run_id=? AND state='pending'", (task["id"], run_id)
+            ).fetchone()
             if stored is None:
                 raise StoreError("task_not_pending_in_run")
             # URL 和任务类型以数据库里的为准，调用方传进来的值只用来定位任务。
@@ -291,24 +323,50 @@ class Store:
                 # 来源以运行记录里的为准，不同来源的版本记录互不混淆。
                 source = self.run(run_id)["request"].get("source_id", "cn_ccgp")
                 version_id = sha256((source + "\n" + task["url"] + "\n" + digest).encode()).hexdigest()
-                latest = self.db.execute("SELECT max(version) FROM versions WHERE source_id=? AND url=?",
-                                         (source, task["url"])).fetchone()[0] or 0
-                self.db.execute("INSERT INTO versions VALUES(?,?,?,?,?,?) "
-                                "ON CONFLICT(source_id,url,sha256) DO NOTHING",
-                                (version_id, source, task["url"], digest, latest + 1, captured_at))
+                latest = (
+                    self.db.execute(
+                        "SELECT max(version) FROM versions WHERE source_id=? AND url=?", (source, task["url"])
+                    ).fetchone()[0]
+                    or 0
+                )
+                self.db.execute(
+                    "INSERT INTO versions VALUES(?,?,?,?,?,?) ON CONFLICT(source_id,url,sha256) DO NOTHING",
+                    (version_id, source, task["url"], digest, latest + 1, captured_at),
+                )
             # 只保存必要的响应头，不保存 Set-Cookie 之类可能含凭据的头。
-            headers = ({key: val for key, val in response.headers.items()
-                        if key.lower() in ("content-type", "etag", "last-modified", "content-length")}
-                       if response is not None else {})
-            self.db.execute("INSERT INTO captures VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (capture_id, run_id, task["id"], task["kind"], task["url"],
-                             response.final_url if response else None, captured_at,
-                             response.http_status if response else http_status, digest,
-                             len(response.body) if response else None, version_id, encode_json(headers),
-                             response.attempts if response else attempts, error, parser_version,
-                             encode_json(parsed) if parsed is not None else None))
-            self.db.execute("UPDATE tasks SET state=? WHERE id=? AND run_id=?",
-                            ("error" if error else "done", task["id"], run_id))
+            headers = (
+                {
+                    key: val
+                    for key, val in response.headers.items()
+                    if key.lower() in ("content-type", "etag", "last-modified", "content-length")
+                }
+                if response is not None
+                else {}
+            )
+            self.db.execute(
+                "INSERT INTO captures VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    capture_id,
+                    run_id,
+                    task["id"],
+                    task["kind"],
+                    task["url"],
+                    response.final_url if response else None,
+                    captured_at,
+                    response.http_status if response else http_status,
+                    digest,
+                    len(response.body) if response else None,
+                    version_id,
+                    encode_json(headers),
+                    response.attempts if response else attempts,
+                    error,
+                    parser_version,
+                    encode_json(parsed) if parsed is not None else None,
+                ),
+            )
+            self.db.execute(
+                "UPDATE tasks SET state=? WHERE id=? AND run_id=?", ("error" if error else "done", task["id"], run_id)
+            )
             self._enqueue(run_id, following)
         return capture_id
 
@@ -325,7 +383,10 @@ class Store:
     def report(self, run_id: str) -> dict:
         """一次运行的汇总：运行状态、每次抓取的结果。只说明抓到了什么，不说明这些项目适不适合谁。"""
         run = self.run(run_id)
-        captures = [self.capture(row[0]) for row in self.db.execute("SELECT id FROM captures WHERE run_id=? ORDER BY rowid", (run_id,))]
+        captures = [
+            self.capture(row[0])
+            for row in self.db.execute("SELECT id FROM captures WHERE run_id=? ORDER BY rowid", (run_id,))
+        ]
         attachments = {item["url"]: item for item in captures if item["kind"] == "attachment"}
         for capture in captures:
             if not capture["parsed"]:
@@ -339,15 +400,28 @@ class Store:
                     link["error_code"] = fetched["error_code"]
                 else:
                     link["fetch_status"] = link["status"]
-        return {"schema_version": 1, "run": run, "captures": captures,
-                "pending": self.db.execute("SELECT count(*) FROM tasks WHERE run_id=? AND state='pending'", (run_id,)).fetchone()[0]}
+        return {
+            "schema_version": 1,
+            "run": run,
+            "captures": captures,
+            "pending": self.db.execute(
+                "SELECT count(*) FROM tasks WHERE run_id=? AND state='pending'", (run_id,)
+            ).fetchone()[0],
+        }
 
     def save_replay(self, capture_id: str, parser_version: str, parsed: dict) -> dict:
         """保存一次重新解析的结果。新结果单独存一条，当初的抓取记录和解析结论不变。"""
         self.capture(capture_id)
-        record = {"id": uuid4().hex, "capture_id": capture_id, "parser_version": parser_version,
-                  "created_at": utc_now(), "parsed": parsed}
+        record = {
+            "id": uuid4().hex,
+            "capture_id": capture_id,
+            "parser_version": parser_version,
+            "created_at": utc_now(),
+            "parsed": parsed,
+        }
         with self.db:
-            self.db.execute("INSERT INTO replays VALUES(?,?,?,?,?)", (record["id"], capture_id,
-                            parser_version, record["created_at"], encode_json(parsed)))
+            self.db.execute(
+                "INSERT INTO replays VALUES(?,?,?,?,?)",
+                (record["id"], capture_id, parser_version, record["created_at"], encode_json(parsed)),
+            )
         return record

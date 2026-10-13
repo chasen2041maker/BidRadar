@@ -9,6 +9,7 @@
 准入文件是人工核验后写的本地记录，不是网站给的许可证明，这个模块也不替人做批准。
 不读取系统代理、不带 Cookie 或账号、不关闭 TLS 校验，不会自动去别的网站取附件。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -93,20 +94,36 @@ def _url_parts(url):
     网页给出的可疑链接直接拒绝，不尝试修补。
     """
     try:
-        if (not isinstance(url, str) or not 1 <= len(url) <= 4096
-                or any(ord(c) < 33 or ord(c) > 126 for c in url) or "\\" in url):
+        if (
+            not isinstance(url, str)
+            or not 1 <= len(url) <= 4096
+            or any(ord(c) < 33 or ord(c) > 126 for c in url)
+            or "\\" in url
+        ):
             raise ValueError()
         parts = urlsplit(url)
-        if (parts.scheme not in ("http", "https") or parts.hostname not in HOSTS
-                or parts.username is not None or parts.password is not None
-                or (parts.port is not None and not (parts.hostname == "ggzy.hainan.gov.cn"
-                    and parts.port == (443 if parts.scheme == "https" else 80)))
-                or parts.fragment or not parts.path.startswith("/")):
+        if (
+            parts.scheme not in ("http", "https")
+            or parts.hostname not in HOSTS
+            or parts.username is not None
+            or parts.password is not None
+            or (
+                parts.port is not None
+                and not (
+                    parts.hostname == "ggzy.hainan.gov.cn" and parts.port == (443 if parts.scheme == "https" else 80)
+                )
+            )
+            or parts.fragment
+            or not parts.path.startswith("/")
+        ):
             raise ValueError()
         path = unquote(parts.path, errors="strict")
-        if (any(c in path for c in "\\%?#") or any(ord(c) < 32 for c in path)
-                or any(segment in (".", "..") for segment in path.split("/"))
-                or re.search(r"%(?:2f|5c)", parts.path, re.I)):
+        if (
+            any(c in path for c in "\\%?#")
+            or any(ord(c) < 32 for c in path)
+            or any(segment in (".", "..") for segment in path.split("/"))
+            or re.search(r"%(?:2f|5c)", parts.path, re.I)
+        ):
             raise ValueError()
         return parts, path
     except (ValueError, UnicodeError):
@@ -145,8 +162,12 @@ class SourcePolicy:
     def from_dict(cls, data):
         """从字典构造准入规则，并检查格式。"""
         try:
-            if (not isinstance(data, dict) or type(data.get("schema_version")) is not int or data.get("schema_version") not in (1, 2)
-                    or data.get("approved") is not True):
+            if (
+                not isinstance(data, dict)
+                or type(data.get("schema_version")) is not int
+                or data.get("schema_version") not in (1, 2)
+                or data.get("approved") is not True
+            ):
                 raise ValueError()
             version = data["schema_version"]
             missing = data.get("robots_missing", "deny")
@@ -156,22 +177,33 @@ class SourcePolicy:
             evidence = data["evidence"]
             attachments = data["attachments_allowed"]
             reviewed, expires = _timestamp(data["reviewed_at"]), _timestamp(data["expires_at"])
-            if (not isinstance(purpose, str) or not purpose.strip()
-                    or not isinstance(evidence, list) or not evidence
-                    or any(not isinstance(e, str) or not e.strip() for e in evidence)
-                    or type(attachments) is not bool or reviewed >= expires):
+            if (
+                not isinstance(purpose, str)
+                or not purpose.strip()
+                or not isinstance(evidence, list)
+                or not evidence
+                or any(not isinstance(e, str) or not e.strip() for e in evidence)
+                or type(attachments) is not bool
+                or reviewed >= expires
+            ):
                 raise ValueError()
             rules = []
             if not isinstance(data["allowed"], list) or not 1 <= len(data["allowed"]) <= 32:
                 raise ValueError()
             for rule in data["allowed"]:
                 host, prefix, kinds = rule["host"], rule["path_prefix"], rule["kinds"]
-                if (host not in HOSTS or (version == 1 and host == "ggzy.hainan.gov.cn")
-                        or not isinstance(prefix, str) or not prefix.startswith("/")
-                        or any(c in prefix for c in "\\%?#") or any(ord(c) < 33 or ord(c) > 126 for c in prefix)
-                        or any(s in (".", "..") for s in prefix.split("/"))
-                        or not isinstance(kinds, list) or not kinds
-                        or any(k not in KINDS - {"robots"} for k in kinds)):
+                if (
+                    host not in HOSTS
+                    or (version == 1 and host == "ggzy.hainan.gov.cn")
+                    or not isinstance(prefix, str)
+                    or not prefix.startswith("/")
+                    or any(c in prefix for c in "\\%?#")
+                    or any(ord(c) < 33 or ord(c) > 126 for c in prefix)
+                    or any(s in (".", "..") for s in prefix.split("/"))
+                    or not isinstance(kinds, list)
+                    or not kinds
+                    or any(k not in KINDS - {"robots"} for k in kinds)
+                ):
                     raise ValueError()
                 rules.append((host, prefix, tuple(kinds)))
             return cls(purpose, reviewed, expires, tuple(evidence), attachments, tuple(rules), version, missing)
@@ -193,23 +225,35 @@ class SourcePolicy:
                 return
             raise FetchError("url_not_allowed")
         if kind in ("listing", "notice"):
-            legacy = (parts.hostname == "search.ccgp.gov.cn" and path == "/bxsearch") if kind == "listing" else (
-                parts.hostname in ("www.ccgp.gov.cn", "ccgp.gov.cn") and bool(re.fullmatch(
-                    r"/cggg/(?:zygg|dfgg)/[A-Za-z0-9_/-]+\.html?", path)))
+            legacy = (
+                (parts.hostname == "search.ccgp.gov.cn" and path == "/bxsearch")
+                if kind == "listing"
+                else (
+                    parts.hostname in ("www.ccgp.gov.cn", "ccgp.gov.cn")
+                    and bool(re.fullmatch(r"/cggg/(?:zygg|dfgg)/[A-Za-z0-9_/-]+\.html?", path))
+                )
+            )
             public = False
             if self.schema_version == 2 and not parts.query:
                 from services.ingestion.sources.public_notices import canonical_notice_url, listing_identity
+
                 source = "cn_hainan" if parts.hostname == "ggzy.hainan.gov.cn" else "cn_ccgp"
-                public = (canonical_notice_url(source, url) is not None if kind == "notice"
-                          else listing_identity(source, url) is not None)
+                public = (
+                    canonical_notice_url(source, url) is not None
+                    if kind == "notice"
+                    else listing_identity(source, url) is not None
+                )
             if not legacy and not public:
                 raise FetchError("url_not_allowed")
         if kind == "attachment" and not self.attachments_allowed:
             raise FetchError("attachment_not_approved")
         for host, prefix, kinds in self.allowed:
             # 路径前缀必须以 / 结尾，否则只做精确匹配。不然 /bxsearch 会把 /bxsearch-evil 也放进来。
-            if (host == parts.hostname and kind in kinds
-                    and (path.startswith(prefix) if prefix.endswith("/") else path == prefix)):
+            if (
+                host == parts.hostname
+                and kind in kinds
+                and (path.startswith(prefix) if prefix.endswith("/") else path == prefix)
+            ):
                 return
         raise FetchError("url_not_allowed")
 
@@ -239,10 +283,12 @@ class _Robots:
 
 def _robot_normalize(value):
     """把路径里的百分号编码统一一下，方便和 robots 规则比较。"""
+
     # 例如 %63 和 c 是同一个字符，不统一的话，编码过的路径就能绕过 Disallow 规则。
     def replace(match):
         char = chr(int(match.group()[1:], 16))
         return char if char.isascii() and (char.isalnum() or char in "-._~") else match.group().upper()
+
     return re.sub(r"%[0-9a-fA-F]{2}", replace, value)
 
 
@@ -303,8 +349,11 @@ def _parse_robots(body):
             elif field in ("allow", "disallow", "crawl-delay", "request-rate") and agents:
                 started = True
                 if field in ("allow", "disallow"):
-                    if value and (not value.startswith("/") or len(value) > 2048
-                                  or any(ord(c) < 33 or ord(c) > 126 for c in value)):
+                    if value and (
+                        not value.startswith("/")
+                        or len(value) > 2048
+                        or any(ord(c) < 33 or ord(c) > 126 for c in value)
+                    ):
                         raise ValueError()
                     rules.append((field == "allow", value))
                 elif field == "crawl-delay":
@@ -326,8 +375,10 @@ def _parse_robots(body):
             groups.append((agents, rules, delay))
         if not groups:
             raise ValueError()
-        scored = [(max((len(a) for a in agents if a != "*" and a in "bidradar"), default=0), agents, rules, delay)
-                  for agents, rules, delay in groups]
+        scored = [
+            (max((len(a) for a in agents if a != "*" and a in "bidradar"), default=0), agents, rules, delay)
+            for agents, rules, delay in groups
+        ]
         best = max(s[0] for s in scored)
         chosen = [s for s in scored if (s[0] == best if best else "*" in s[1])]
         selected_rules = tuple(rule for s in chosen for rule in s[2])
@@ -344,11 +395,13 @@ def _resolve(host, port, timeout):
     系统 DNS 调用本身不能中途取消，所以放在后台线程里跑；超时就不再等它，它也不会再发起别的请求。
     """
     result = queue.Queue(maxsize=1)
+
     def work():
         try:
             result.put(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
         except OSError as exc:
             result.put(exc)
+
     threading.Thread(target=work, daemon=True).start()
     try:
         records = result.get(timeout=timeout)
@@ -364,15 +417,25 @@ def _public_unicast(address):
 
     只看 is_global 不够：组播地址、旧的 IPv6 站点本地地址也可能被判成 global。
     """
-    if (not address.is_global or address.is_multicast or address.is_unspecified
-            or address.is_loopback or address.is_link_local or address.is_reserved
-            or address.is_private):
+    if (
+        not address.is_global
+        or address.is_multicast
+        or address.is_unspecified
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_private
+    ):
         return False
     if isinstance(address, ipaddress.IPv6Address):
         # 带接口作用域的地址、隧道地址、IPv4 映射地址也拒绝：操作系统可能把它们路由到别处。
-        return not (address.is_site_local or address.scope_id is not None
-                    or address.ipv4_mapped is not None or address.sixtofour is not None
-                    or address.teredo is not None)
+        return not (
+            address.is_site_local
+            or address.scope_id is not None
+            or address.ipv4_mapped is not None
+            or address.sixtofour is not None
+            or address.teredo is not None
+        )
     return True
 
 
@@ -404,6 +467,7 @@ def _exchange(url, ip, timeout, max_bytes):
     """发一个 GET 请求，返回 (状态码, 响应头, 正文)。不跟随重定向；正文按原始字节返回，不解压。"""
     parts = urlsplit(url)
     connection = _PinnedConnection(parts.hostname, ip, parts.scheme == "https", timeout)
+
     def expire():
         if connection.active_socket is not None:
             try:
@@ -411,13 +475,16 @@ def _exchange(url, ip, timeout, max_bytes):
             except OSError:
                 pass
             connection.active_socket.close()
+
     timer = threading.Timer(timeout, expire)
     timer.daemon = True
     timer.start()
     started = time.monotonic()
     try:
         target = parts.path + ("?" + parts.query if parts.query else "")
-        connection.request("GET", target, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity", "Connection": "close"})
+        connection.request(
+            "GET", target, headers={"User-Agent": USER_AGENT, "Accept-Encoding": "identity", "Connection": "close"}
+        )
         response = connection.getresponse()
         headers = {k.lower(): v for k, v in response.getheaders()}
         # 状态码不是 200 时不下载正文。否则一个很大的错误页可能触发大小超限，把真正的 403/429 掩盖掉。
@@ -457,15 +524,36 @@ class Transport:
     exchange、resolver、clock、utcnow 这几个参数只给测试用，用来替换网络、DNS 和时钟。
     """
 
-    def __init__(self, policy, *, timeout=10, max_attempts=2, min_interval=2,
-                 max_requests=50, max_seconds=180, exchange=None, resolver=None,
-                 clock=None, sleep=None, utcnow=None, dns_mode="system", allow_network=True):
-        if (type(timeout) not in (int, float) or not 0 < timeout <= 30
-                or type(max_attempts) is not int or not 1 <= max_attempts <= 3
-                or type(min_interval) not in (int, float) or not 0 <= min_interval <= 60
-                or type(max_requests) is not int or not 1 <= max_requests <= 100
-                or type(max_seconds) not in (int, float) or not 0 < max_seconds <= 600
-                or (exchange is None and min_interval < 2)):
+    def __init__(
+        self,
+        policy,
+        *,
+        timeout=10,
+        max_attempts=2,
+        min_interval=2,
+        max_requests=50,
+        max_seconds=180,
+        exchange=None,
+        resolver=None,
+        clock=None,
+        sleep=None,
+        utcnow=None,
+        dns_mode="system",
+        allow_network=True,
+    ):
+        if (
+            type(timeout) not in (int, float)
+            or not 0 < timeout <= 30
+            or type(max_attempts) is not int
+            or not 1 <= max_attempts <= 3
+            or type(min_interval) not in (int, float)
+            or not 0 <= min_interval <= 60
+            or type(max_requests) is not int
+            or not 1 <= max_requests <= 100
+            or type(max_seconds) not in (int, float)
+            or not 0 < max_seconds <= 600
+            or (exchange is None and min_interval < 2)
+        ):
             raise ValueError("invalid transport limits")
         if dns_mode not in ("system", "google-doh") or type(allow_network) is not bool:
             raise ValueError("invalid transport options")
@@ -522,6 +610,7 @@ class Transport:
                 addresses = self.resolver(parts.hostname, port)
             elif self.dns_mode == "google-doh":
                 from services.ingestion.public_dns import resolve_public_dns
+
                 self.dns_requests += 1
                 addresses = resolve_public_dns(parts.hostname, port, timeout)
             else:
@@ -573,7 +662,12 @@ class Transport:
                 if exc.code == "http_error" and exc.http_status == 404 and self.policy.robots_missing == "allow_404":
                     self.robots[origin] = _Robots((), 0)
                     return self.robots[origin]
-                if exc.code in ("blocked", "policy_expired_or_not_yet_valid", "request_budget_exceeded", "time_budget_exceeded"):
+                if exc.code in (
+                    "blocked",
+                    "policy_expired_or_not_yet_valid",
+                    "request_budget_exceeded",
+                    "time_budget_exceeded",
+                ):
                     raise
                 raise FetchError("robots_unavailable", exc.http_status) from None
         return self.robots[origin]
@@ -581,7 +675,7 @@ class Transport:
     def _retry_delay(self, headers, attempt):
         raw = headers.get("retry-after")
         if raw is None:
-            return min(2 ** attempt, 10)
+            return min(2**attempt, 10)
         try:
             delay = float(raw) if raw.isdigit() else (parsedate_to_datetime(raw) - self.utcnow()).total_seconds()
             delay = max(0, delay)
@@ -611,7 +705,7 @@ class Transport:
                     _checkpoint(checkpoint)
                     if attempt + 1 == self.max_attempts:
                         raise FetchError("network_error") from None
-                    self._wait(min(2 ** attempt, 10), checkpoint)
+                    self._wait(min(2**attempt, 10), checkpoint)
                     continue
                 _checkpoint(checkpoint)
                 if status in (401, 403, 429):
@@ -630,8 +724,11 @@ class Transport:
                     target = urljoin(url, headers.get("location", ""))
                 except ValueError:
                     raise FetchError("redirect_not_allowed", status) from None
-                if (not headers.get("location") or (urlsplit(url).scheme == "https" and urlsplit(target).scheme != "https")
-                        or (kind == "robots" and urlsplit(target).hostname != initial_host)):
+                if (
+                    not headers.get("location")
+                    or (urlsplit(url).scheme == "https" and urlsplit(target).scheme != "https")
+                    or (kind == "robots" and urlsplit(target).hostname != initial_host)
+                ):
                     raise FetchError("redirect_not_allowed", status)
                 self._authorize(target, kind)
                 url = target
@@ -653,9 +750,15 @@ class Transport:
             if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_BODY_BYTES:
                 raise FetchError("invalid_byte_limit")
             final_url, status, headers, body = self._read(url, kind, max_bytes, checkpoint)
-            return FetchResult(url, final_url, status, headers, body,
-                               self.utcnow().astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
-                               self.requests - before)
+            return FetchResult(
+                url,
+                final_url,
+                status,
+                headers,
+                body,
+                self.utcnow().astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                self.requests - before,
+            )
         except _CheckpointFailure as exc:
             raise exc.error.with_traceback(exc.traceback) from None
         except FetchError as exc:

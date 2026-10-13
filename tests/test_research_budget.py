@@ -1,4 +1,5 @@
 """金额全是虚构单位，不调用模型；检验争用、恢复和未知计费占额。"""
+
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import tempfile
@@ -35,7 +36,11 @@ class BudgetTests(unittest.TestCase):
             self.ledger.reserve("a", "run3", "call3", "h", 1)
 
     def test_known_response_replays_without_reserving_twice(self):
-        result = {"message": {"content": "fictional"}, "usage": {"input_tokens": 2, "output_tokens": 3}, "model": "fake"}
+        result = {
+            "message": {"content": "fictional"},
+            "usage": {"input_tokens": 2, "output_tokens": 3},
+            "model": "fake",
+        }
         self.ledger.reserve("a", "run1", "call1", "h", 50)
         self.ledger.settle("call1", result, 12)
         self.assertEqual(self.ledger.reserve("a", "run1", "call1", "h", 50), result)
@@ -54,6 +59,7 @@ class BudgetTests(unittest.TestCase):
                 return exc.code
             finally:
                 ledger.close()
+
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(reserve, range(2)))
         self.assertCountEqual(results, ["ok", "budget_exhausted"])
@@ -76,11 +82,15 @@ class BudgetTests(unittest.TestCase):
 
     def test_replay_only_reads_exact_settled_request_and_never_creates_attempt(self):
         calls = []
-        provider = SimpleNamespace(metadata={"provider": "synthetic"}, max_output_tokens=10,
-                                   complete=lambda *args: calls.append(1) or {"usage": {}, "message": {"content": "known"}})
+        provider = SimpleNamespace(
+            metadata={"provider": "synthetic"},
+            max_output_tokens=10,
+            complete=lambda *args: calls.append(1) or {"usage": {}, "message": {"content": "known"}},
+        )
         messages, tools = [{"role": "user", "content": "fictional"}], []
-        answer = self.ledger.complete(provider, "a", "run", messages, tools, guard=lambda _: None,
-                                      estimate=lambda *_: 30, cost=lambda _: 12)
+        answer = self.ledger.complete(
+            provider, "a", "run", messages, tools, guard=lambda _: None, estimate=lambda *_: 30, cost=lambda _: 12
+        )
         self.ledger.close()
         self.ledger = self.open()
         self.assertEqual(self.ledger.replay(provider, "a", "run", messages, tools), answer)
@@ -94,14 +104,20 @@ class BudgetTests(unittest.TestCase):
 
     def test_temperature_and_provider_version_are_part_of_exact_request_identity(self):
         calls = []
-        provider = SimpleNamespace(metadata={"provider": "synthetic", "temperature": 0, "provider_version": "v2"},
-            max_output_tokens=10, complete=lambda *args: calls.append(1) or {"usage": {}, "message": {"content": "known"}})
+        provider = SimpleNamespace(
+            metadata={"provider": "synthetic", "temperature": 0, "provider_version": "v2"},
+            max_output_tokens=10,
+            complete=lambda *args: calls.append(1) or {"usage": {}, "message": {"content": "known"}},
+        )
         messages = [{"role": "user", "content": "synthetic request"}]
-        answer = self.ledger.complete(provider, "a", "run-temp", messages, [], guard=lambda _: None,
-                                      estimate=lambda *_: 30, cost=lambda _: 12)
+        answer = self.ledger.complete(
+            provider, "a", "run-temp", messages, [], guard=lambda _: None, estimate=lambda *_: 30, cost=lambda _: 12
+        )
         self.assertEqual(self.ledger.replay(provider, "a", "run-temp", messages, []), answer)
-        for metadata in ({"provider": "synthetic", "temperature": 1, "provider_version": "v2"},
-                         {"provider": "synthetic", "temperature": 0, "provider_version": "v1"}):
+        for metadata in (
+            {"provider": "synthetic", "temperature": 1, "provider_version": "v2"},
+            {"provider": "synthetic", "temperature": 0, "provider_version": "v1"},
+        ):
             provider.metadata = metadata
             with self.subTest(metadata=metadata), self.assertRaisesRegex(BudgetError, "checkpoint_request_mismatch"):
                 self.ledger.replay(provider, "a", "run-temp", messages, [])

@@ -1,4 +1,5 @@
 """生成可重建的学习索引；只整理文件和 Git 事实，不猜测业务进度或执行记录中的命令。"""
+
 from __future__ import annotations
 
 import argparse
@@ -72,11 +73,29 @@ def render_index(root: Path) -> str:
     digest = hashlib.sha256()
     for name, text in sources:
         digest.update(name.encode("utf-8") + b"\0" + text.encode("utf-8") + b"\0")
-    lines = ["# 项目学习与记忆索引（自动生成）", "", "由 scripts/refresh_project_memory.py 从状态文件和任务笔记生成；不要手工编辑。", "", "先读 [规则](../../AGENTS.md)、[状态](../../PROJECT_STATE.md)、[当前任务](../../CURRENT_TASK.md)，再按需读下列记录。", "", f"来源指纹：`{digest.hexdigest()}`", "", f"## 已记录任务（共 {len(notes)} 条，按编号倒序显示最多 20 条）", "", "| 任务 | 有用摘要 |", "| --- | --- |"]
+    lines = [
+        "# 项目学习与记忆索引（自动生成）",
+        "",
+        "由 scripts/refresh_project_memory.py 从状态文件和任务笔记生成；不要手工编辑。",
+        "",
+        "先读 [规则](../../AGENTS.md)、[状态](../../PROJECT_STATE.md)、[当前任务](../../CURRENT_TASK.md)，再按需读下列记录。",
+        "",
+        f"来源指纹：`{digest.hexdigest()}`",
+        "",
+        f"## 已记录任务（共 {len(notes)} 条，按编号倒序显示最多 20 条）",
+        "",
+        "| 任务 | 有用摘要 |",
+        "| --- | --- |",
+    ]
     # 索引不复制长日志；全部知识保留在按任务拆分的源笔记中。
     for name, summary, _ in reversed(notes[-20:]):
         lines.append(f"| [{Path(name).stem}]({Path(name).name}) | {safe_text(summary)} |")
-    lines += ["", "实现、测试、独立审查、合并与本人学习进度是不同事实；该索引不自动给任何一项盖章。", "全部源笔记留在本目录，不因索引截取而删除。每次推送/PR 更新的实际 SHA 与检查结果见 Actions 运行摘要。", ""]
+    lines += [
+        "",
+        "实现、测试、独立审查、合并与本人学习进度是不同事实；该索引不自动给任何一项盖章。",
+        "全部源笔记留在本目录，不因索引截取而删除。每次推送/PR 更新的实际 SHA 与检查结果见 Actions 运行摘要。",
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -104,7 +123,14 @@ def runtime_report(root: Path) -> str:
     head = git(root, "rev-parse", "HEAD").strip()
     if not SHA.fullmatch(head):
         raise ValueError("无法确认实际 HEAD")
-    rows = ["# 本次项目记忆快照", "", f"实际 checkout：`{head}`", f"事件：{safe_text(os.environ.get('GITHUB_EVENT_NAME', 'local'))}", "", "以下为各检查步骤的实际 outcome，不等于产品验收或独立审查："]
+    rows = [
+        "# 本次项目记忆快照",
+        "",
+        f"实际 checkout：`{head}`",
+        f"事件：{safe_text(os.environ.get('GITHUB_EVENT_NAME', 'local'))}",
+        "",
+        "以下为各检查步骤的实际 outcome，不等于产品验收或独立审查：",
+    ]
     for key in ("STRUCTURE_OUTCOME", "TESTS_OUTCOME", "MEMORY_OUTCOME", "CLEAN_OUTCOME", "DIFF_OUTCOME"):
         value = os.environ.get(key, "未提供")
         if value not in ("success", "failure", "cancelled", "skipped", "未提供"):

@@ -3,6 +3,7 @@
 这是最早写的一小段权限规则，目前只覆盖"查看报告"和"发起分析"两个动作。
 它没有接入实际的请求流程；线上权限检查在 workspace/store.py 的 _authorize 和 authorize 里。
 """
+
 from dataclasses import dataclass
 from enum import Enum
 

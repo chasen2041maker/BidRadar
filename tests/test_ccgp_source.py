@@ -1,11 +1,16 @@
 """CCGP小片离线回归；全部HTML为手写虚构样本，不证明真实站点已接通。"""
+
 import unittest
 from hashlib import sha256
 from unittest.mock import patch
 
 from services.ingestion.sources import ccgp
 from services.ingestion.sources.ccgp import (
-    MAX_HTML_BYTES, ParseStatus, SEARCH_URL, build_search_params, parse_search_page,
+    MAX_HTML_BYTES,
+    ParseStatus,
+    SEARCH_URL,
+    build_search_params,
+    parse_search_page,
 )
 
 URL = "http://www.ccgp.gov.cn/cggg/zygg/gkzb/202609/t20260915_99999999.htm"
@@ -64,7 +69,7 @@ class CCGPSourceTests(unittest.TestCase):
         self.assertEqual(item.locator, "ul.vT-srch-result-list-bid > li:nth-of-type(1)")
 
     def test_highlight_span_is_not_metadata(self):
-        result = parse_search_page(page(row(title='虚构<span>AI</span>项目')))
+        result = parse_search_page(page(row(title="虚构<span>AI</span>项目")))
         self.assertEqual(result.items[0].metadata_text, META)
 
     def test_missing_fields_are_unknown(self):
@@ -111,11 +116,16 @@ class CCGPSourceTests(unittest.TestCase):
         self.assertEqual(parse_search_page(page("<li>损坏条目</li>")).status, ParseStatus.PARSE_ERROR)
 
     def test_unsafe_or_unregistered_urls_rejected(self):
-        unsafe = ("javascript:alert(1)", "http://127.0.0.1/a", "https://www.ccgp.gov.cn.evil.example/a",
-                  URL.replace("www.ccgp.gov.cn", "user@www.ccgp.gov.cn"),
-                  URL.replace("www.ccgp.gov.cn", "www.ccgp.gov.cn:8080"),
-                  "https://www.ccgp.gov.cn/../../private", "/cggg/zygg/a.htm",
-                  "https://www.ccgp.gov.cn/%2e%2e/a.htm")
+        unsafe = (
+            "javascript:alert(1)",
+            "http://127.0.0.1/a",
+            "https://www.ccgp.gov.cn.evil.example/a",
+            URL.replace("www.ccgp.gov.cn", "user@www.ccgp.gov.cn"),
+            URL.replace("www.ccgp.gov.cn", "www.ccgp.gov.cn:8080"),
+            "https://www.ccgp.gov.cn/../../private",
+            "/cggg/zygg/a.htm",
+            "https://www.ccgp.gov.cn/%2e%2e/a.htm",
+        )
         for url in unsafe:
             with self.subTest(url=url):
                 self.assertEqual(parse_search_page(page(row(url=url))).status, ParseStatus.PARSE_ERROR)
@@ -139,8 +149,7 @@ class CCGPSourceTests(unittest.TestCase):
                 self.assertEqual(result.status, ParseStatus.PARTIAL)
                 self.assertEqual(len(result.items), 1)
                 self.assertEqual(result.items[0].url, URL)
-                self.assertEqual(result.items[0].locator,
-                                 "ul.vT-srch-result-list-bid > li:nth-of-type(2)")
+                self.assertEqual(result.items[0].locator, "ul.vT-srch-result-list-bid > li:nth-of-type(2)")
                 self.assertEqual(result.issues, ("row_1:invalid_title_url_or_metadata",))
 
     def test_https_and_protocol_relative_official_links(self):
@@ -173,7 +182,6 @@ class CCGPSourceTests(unittest.TestCase):
             build_search_params("软件")
             result = parse_search_page(page(row() + "<script>throw new Error('not executed')</script>"))
         self.assertEqual(result.status, ParseStatus.OK)
-
 
     def test_depth_limit_stops_before_unmatched_end_tags(self):
         # 不依赖机器速度断言：应在第129层退出，根本不处理后续不匹配结束标签。

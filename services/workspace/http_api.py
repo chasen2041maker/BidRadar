@@ -10,6 +10,7 @@
 
 阅读顺序：Handler._dispatch → 选择（selections）的创建和确认分支 → research_routes.dispatch。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,8 +30,8 @@ from services.common.local_http import token_valid
 from services.common.local_http import LocalHTTPError
 from services.workspace.research_routes import dispatch as dispatch_research
 
-ASSETS = Path(__file__).with_name("web")   # 前端静态文件目录
-MAX_BODY = 128 * 1024                      # 请求体最大 128 KB
+ASSETS = Path(__file__).with_name("web")  # 前端静态文件目录
+MAX_BODY = 128 * 1024  # 请求体最大 128 KB
 
 
 def _json(raw):
@@ -38,6 +39,7 @@ def _json(raw):
 
     不同程序对重复键的处理不一样（取第一个还是最后一个），拒绝掉可以避免同一个请求被两边理解成两件事。
     """
+
     def pairs(values):
         result = {}
         for key, value in values:
@@ -45,8 +47,10 @@ def _json(raw):
                 raise ValueError("duplicate_key")
             result[key] = value
         return result
-    return json.loads(raw, object_pairs_hook=pairs,
-                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid_number")))
+
+    return json.loads(
+        raw, object_pairs_hook=pairs, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid_number"))
+    )
 
 
 def _fields(value, keys):
@@ -73,6 +77,7 @@ class Handler(BaseHTTPRequestHandler):
 
     Cookie 只用来找到会话；角色和数据归属每次都重新从数据库查，不信任浏览器传来的任何身份信息。
     """
+
     server_version = "BidRadarLocal/1"
 
     def log_message(self, *_):
@@ -87,8 +92,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; "
-                         "img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        )
         for cookie in cookies:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -143,7 +151,9 @@ class Handler(BaseHTTPRequestHandler):
             result = lambda: store.authorize(body["actor_id"], body["workspace_id"], body["action"])
         elif path == "/internal/v1/context":
             _fields(body, "schema_version actor_id workspace_id profile_revision selection_id")
-            result = lambda: store.context(body["actor_id"], body["workspace_id"], body["profile_revision"], body["selection_id"])
+            result = lambda: store.context(
+                body["actor_id"], body["workspace_id"], body["profile_revision"], body["selection_id"]
+            )
         elif path == "/internal/v1/events" and identity == "tracking":
             _fields(body, "schema_version after limit")
             result = lambda: store.events(body["after"], body["limit"])
@@ -190,9 +200,11 @@ class Handler(BaseHTTPRequestHandler):
     def _dispatch(self):
         """按路径分发请求。顺序：静态文件 → 健康检查 → 内部接口 → 登录 → 需要登录的接口。"""
         parts = self._guard()
-        static = {"/": ("index.html", "text/html; charset=utf-8"),
-                  "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                  "/style.css": ("style.css", "text/css; charset=utf-8")}
+        static = {
+            "/": ("index.html", "text/html; charset=utf-8"),
+            "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+            "/style.css": ("style.css", "text/css; charset=utf-8"),
+        }
         if self.command == "GET" and parts.path in static and not parts.query:
             filename, mime = static[parts.path]
             self._send(200, (ASSETS / filename).read_bytes(), mime=mime)
@@ -219,9 +231,14 @@ class Handler(BaseHTTPRequestHandler):
                         store.logout(old_token)
                     except WorkspaceError:
                         pass
-                self._send(200, {"user": result["user"]}, cookies=(
-                    f"br_session={result['token']}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800",
-                    f"br_csrf={result['csrf_token']}; Path=/; SameSite=Strict; Max-Age=28800"))
+                self._send(
+                    200,
+                    {"user": result["user"]},
+                    cookies=(
+                        f"br_session={result['token']}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800",
+                        f"br_csrf={result['csrf_token']}; Path=/; SameSite=Strict; Max-Age=28800",
+                    ),
+                )
                 return
             token = self._token()
             user = store.bind_session(token)
@@ -232,15 +249,27 @@ class Handler(BaseHTTPRequestHandler):
                     raise WorkspaceError("invalid_csrf", 403)
                 store.check_csrf(token, csrf_values[0])
             if parts.path == "/api/session" and self.command == "GET" and not parts.query:
-                self._send(200, {"user": user, "workspaces": store.list_workspaces(uid),
-                                 "mode": "local_development", "analysis_enabled": self.server.research_client is not None})
+                self._send(
+                    200,
+                    {
+                        "user": user,
+                        "workspaces": store.list_workspaces(uid),
+                        "mode": "local_development",
+                        "analysis_enabled": self.server.research_client is not None,
+                    },
+                )
                 return
             if parts.path == "/api/logout" and self.command == "POST" and not parts.query:
                 _fields(body, "")
                 store.logout(token)
-                self._send(200, {"logged_out": True}, cookies=(
-                    "br_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
-                    "br_csrf=; Path=/; SameSite=Strict; Max-Age=0"))
+                self._send(
+                    200,
+                    {"logged_out": True},
+                    cookies=(
+                        "br_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+                        "br_csrf=; Path=/; SameSite=Strict; Max-Age=0",
+                    ),
+                )
                 return
             match = re.fullmatch(r"/api/workspaces/([A-Za-z0-9_-]{1,128})/(.+)", parts.path)
             if not match:
@@ -261,7 +290,9 @@ class Handler(BaseHTTPRequestHandler):
                 return member
 
             current_member()
-            handled, result = dispatch_research(self.command, action, parts.query, body, uid, wid, self.server, current_member)
+            handled, result = dispatch_research(
+                self.command, action, parts.query, body, uid, wid, self.server, current_member
+            )
             if handled:
                 self._send(200, result)
                 return
@@ -269,15 +300,24 @@ class Handler(BaseHTTPRequestHandler):
             if self.command == "GET":
                 if action == "notices":
                     values = parse_qs(parts.query, keep_blank_values=True, max_num_fields=6)
-                    if any(len(v) != 1 for v in values.values()) or set(values) - {"keyword", "kind", "page_size", "simulation", "cursor"}:
+                    if any(len(v) != 1 for v in values.values()) or set(values) - {
+                        "keyword",
+                        "kind",
+                        "page_size",
+                        "simulation",
+                        "cursor",
+                    }:
                         raise WorkspaceError("invalid_query", 400)
                     values = {k: v[0] for k, v in values.items()}
                     if values.get("simulation", "false") not in ("true", "false"):
                         raise WorkspaceError("invalid_query", 400)
-                    result = client.query(keyword=values.get("keyword", ""), kind=values.get("kind") or None,
-                                          page_size=int(values.get("page_size", "20")),
-                                          simulation=values.get("simulation", "false") == "true",
-                                          cursor=values.get("cursor") or None)
+                    result = client.query(
+                        keyword=values.get("keyword", ""),
+                        kind=values.get("kind") or None,
+                        page_size=int(values.get("page_size", "20")),
+                        simulation=values.get("simulation", "false") == "true",
+                        cursor=values.get("cursor") or None,
+                    )
                     current_member()
                 elif parts.query:
                     raise WorkspaceError("invalid_query", 400)
@@ -304,7 +344,9 @@ class Handler(BaseHTTPRequestHandler):
                 result = store.confirm_profile(uid, wid, body["proposal_id"], body["expected_revision"], body["key"])
             elif action == "members/change":
                 _fields(body, "target_user_id role active expected_version")
-                result = store.change_member(uid, wid, body["target_user_id"], body["role"], body["active"], body["expected_version"])
+                result = store.change_member(
+                    uid, wid, body["target_user_id"], body["role"], body["active"], body["expected_version"]
+                )
             elif action == "selections":
                 _fields(body, "profile_revision items key")
                 current_member(write=True)
@@ -315,7 +357,9 @@ class Handler(BaseHTTPRequestHandler):
                     items = client.validate_selection(body["items"])
                     checked_at = datetime.now(timezone.utc).isoformat()
                     # 远程核实在事务外完成；写入时 store 会再检查一遍会话、成员和档案版本。
-                    result = store.create_selection(uid, wid, body["profile_revision"], items, body["key"], checked_at=checked_at)
+                    result = store.create_selection(
+                        uid, wid, body["profile_revision"], items, body["key"], checked_at=checked_at
+                    )
             elif re.fullmatch(r"selections/[A-Za-z0-9_-]{1,128}/(confirm|cancel)", action):
                 _fields(body, "expected_version key")
                 _, sid, command = action.split("/")
@@ -324,9 +368,13 @@ class Handler(BaseHTTPRequestHandler):
                 if command == "confirm":
                     checked_at = None
                     if previous["state"] == "awaiting_decision":
-                        client.validate_selection([{k: item[k] for k in ("notice_id", "observation_id")} for item in previous["items"]])
+                        client.validate_selection(
+                            [{k: item[k] for k in ("notice_id", "observation_id")} for item in previous["items"]]
+                        )
                         checked_at = datetime.now(timezone.utc).isoformat()
-                    result = store.confirm_selection(uid, wid, sid, body["expected_version"], body["key"], checked_at=checked_at)
+                    result = store.confirm_selection(
+                        uid, wid, sid, body["expected_version"], body["key"], checked_at=checked_at
+                    )
                 else:
                     result = store.cancel_selection(uid, wid, sid, body["expected_version"], body["key"])
             else:
@@ -342,8 +390,10 @@ class Handler(BaseHTTPRequestHandler):
         except (CatalogError, LocalHTTPError) as error:
             # 其他服务返回 401，说明服务之间的令牌配置有问题，不是用户没登录。
             # 转成 503，免得前端以为会话失效、把用户踢回登录页，陷入重新登录也解决不了的循环。
-            self._error("dependency_authentication_failed" if error.status == 401 else error.code,
-                        503 if error.status == 401 else error.status)
+            self._error(
+                "dependency_authentication_failed" if error.status == 401 else error.code,
+                503 if error.status == 401 else error.status,
+            )
         except WorkspaceError as error:
             self._error(error.code, error.status)
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
@@ -374,8 +424,17 @@ class Handler(BaseHTTPRequestHandler):
         raise AttributeError(name)
 
 
-def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0, internal_tokens=None,
-                  research_client=None, tracking_client=None):
+def create_server(
+    store,
+    catalog_url,
+    catalog_token,
+    *,
+    host="127.0.0.1",
+    port=0,
+    internal_tokens=None,
+    research_client=None,
+    tracking_client=None,
+):
     """创建工作台 HTTP 服务器（未启动）。
 
     只允许监听 127.0.0.1：这套开发用的身份系统不能暴露到网络上。port=0 表示随机端口，测试用。
@@ -384,8 +443,11 @@ def create_server(store, catalog_url, catalog_token, *, host="127.0.0.1", port=0
         raise ValueError("loopback_required")
     client = CatalogClient(catalog_url, catalog_token)
     internal_tokens = dict(internal_tokens or {})
-    if (set(internal_tokens) - {"research", "tracking"} or not all(token_valid(v) for v in internal_tokens.values())
-            or len(set(internal_tokens.values())) != len(internal_tokens)):
+    if (
+        set(internal_tokens) - {"research", "tracking"}
+        or not all(token_valid(v) for v in internal_tokens.values())
+        or len(set(internal_tokens.values())) != len(internal_tokens)
+    ):
         raise ValueError("invalid_service_tokens")
     server = WorkbenchServer((host, port), Handler)
     server.store_path = Path(store)

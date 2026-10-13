@@ -1,4 +1,5 @@
 """虚构响应与本地socket替身验证边界；任何测试均不访问真实CCGP。"""
+
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 import json
@@ -9,7 +10,11 @@ import unittest
 from unittest.mock import patch
 
 from services.ingestion.transport import (
-    FetchError, SourcePolicy, Transport, _exchange, _parse_robots,
+    FetchError,
+    SourcePolicy,
+    Transport,
+    _exchange,
+    _parse_robots,
 )
 
 NOW = datetime(2026, 9, 30, 10, tzinfo=timezone.utc)
@@ -22,9 +27,13 @@ PAGE = (200, {"content-type": "text/html"}, b"<html>sample</html>")
 
 def policy_data():
     return {
-        "schema_version": 1, "approved": True, "purpose": "虚构离线测试",
-        "reviewed_at": "2026-09-30T09:00:00Z", "expires_at": "2026-10-01T09:00:00Z",
-        "evidence": ["虚构规则，禁止据此访问真实来源"], "attachments_allowed": False,
+        "schema_version": 1,
+        "approved": True,
+        "purpose": "虚构离线测试",
+        "reviewed_at": "2026-09-30T09:00:00Z",
+        "expires_at": "2026-10-01T09:00:00Z",
+        "evidence": ["虚构规则，禁止据此访问真实来源"],
+        "attachments_allowed": False,
         "allowed": [
             {"host": "www.ccgp.gov.cn", "path_prefix": "/cggg/", "kinds": ["notice", "attachment"]},
             {"host": "search.ccgp.gov.cn", "path_prefix": "/bxsearch", "kinds": ["listing"]},
@@ -65,14 +74,23 @@ class TransportTests(unittest.TestCase):
     def transport(self, responses, *, policy=None, resolver=None, **kwargs):
         self.clock = Clock()
         self.exchange = Exchange(responses)
-        return Transport(policy or SourcePolicy.from_dict(policy_data()), exchange=self.exchange,
-                         resolver=resolver or (lambda host, port: ["8.8.8.8"]),
-                         clock=self.clock, sleep=self.clock.sleep, utcnow=self.clock.utcnow,
-                         **kwargs)
+        return Transport(
+            policy or SourcePolicy.from_dict(policy_data()),
+            exchange=self.exchange,
+            resolver=resolver or (lambda host, port: ["8.8.8.8"]),
+            clock=self.clock,
+            sleep=self.clock.sleep,
+            utcnow=self.clock.utcnow,
+            **kwargs,
+        )
 
     def fetch(self, transport, url=NOTICE, **kwargs):
-        return transport.fetch(url, max_bytes=kwargs.get("max_bytes", 1024), kind=kwargs.get("kind", "notice"),
-                               checkpoint=kwargs.get("checkpoint"))
+        return transport.fetch(
+            url,
+            max_bytes=kwargs.get("max_bytes", 1024),
+            kind=kwargs.get("kind", "notice"),
+            checkpoint=kwargs.get("checkpoint"),
+        )
 
     def assert_error(self, code, transport, url=NOTICE, **kwargs):
         with self.assertRaises(FetchError) as caught:
@@ -95,9 +113,15 @@ class TransportTests(unittest.TestCase):
                 SourcePolicy.from_file(path)
 
     def test_invalid_policy_fields(self):
-        for key, value in (("approved", False), ("schema_version", True), ("purpose", ""),
-                           ("evidence", []), ("attachments_allowed", 1),
-                           ("expires_at", "2026-09-01T00:00:00Z"), ("reviewed_at", "2026-09-30")):
+        for key, value in (
+            ("approved", False),
+            ("schema_version", True),
+            ("purpose", ""),
+            ("evidence", []),
+            ("attachments_allowed", 1),
+            ("expires_at", "2026-09-01T00:00:00Z"),
+            ("reviewed_at", "2026-09-30"),
+        ):
             with self.subTest(key=key):
                 data = policy_data()
                 data[key] = value
@@ -105,8 +129,7 @@ class TransportTests(unittest.TestCase):
                     SourcePolicy.from_dict(data)
 
     def test_policy_host_and_prefix_reject_escape(self):
-        for host, prefix in (("evil.test", "/"), ("www.ccgp.gov.cn", "/cggg/../"),
-                             ("www.ccgp.gov.cn", "/cggg/%2f")):
+        for host, prefix in (("evil.test", "/"), ("www.ccgp.gov.cn", "/cggg/../"), ("www.ccgp.gov.cn", "/cggg/%2f")):
             data = policy_data()
             data["allowed"][0].update(host=host, path_prefix=prefix)
             with self.assertRaises(FetchError):
@@ -130,11 +153,20 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(["8.8.8.8"] * 3, [call[1] for call in self.exchange.calls])
 
     def test_url_scope_and_ambiguous_encoding_never_fetch(self):
-        bad = ["https://evil.test/cggg/a.htm", "https://www.ccgp.gov.cn:443/cggg/a.htm",
-               "https://user@www.ccgp.gov.cn/cggg/a.htm", NOTICE + "#x",
-               NOTICE.replace("/cggg/", "/%2fcggg/"), NOTICE.replace("/cggg/", "/%252ecggg/"),
-               NOTICE.replace("/cggg/", "/a/../cggg/"), "file:///etc/passwd", NOTICE + "\n",
-               "http://[bad", None, 123]
+        bad = [
+            "https://evil.test/cggg/a.htm",
+            "https://www.ccgp.gov.cn:443/cggg/a.htm",
+            "https://user@www.ccgp.gov.cn/cggg/a.htm",
+            NOTICE + "#x",
+            NOTICE.replace("/cggg/", "/%2fcggg/"),
+            NOTICE.replace("/cggg/", "/%252ecggg/"),
+            NOTICE.replace("/cggg/", "/a/../cggg/"),
+            "file:///etc/passwd",
+            NOTICE + "\n",
+            "http://[bad",
+            None,
+            123,
+        ]
         for url in bad:
             with self.subTest(url=url):
                 transport = self.transport([])
@@ -169,10 +201,25 @@ class TransportTests(unittest.TestCase):
 
     def test_non_unicast_dns_is_rejected_even_if_is_global_is_true(self):
         # 224.0.0.1/ff0e::1的is_global为True，仍不允许把采购HTTP请求发向多播组。
-        blocked = ["224.0.0.1", "239.255.255.250", "ff0e::1", "0.0.0.0", "::",
-                   "127.0.0.1", "::1", "169.254.169.254", "fe80::1", "240.0.0.1",
-                   "100.64.0.1", "192.0.2.1", "fec0::1", "2001:db8::1",
-                   "::ffff:8.8.8.8", "2002:0808:0808::1", "2606:4700:4700::1111%eth0"]
+        blocked = [
+            "224.0.0.1",
+            "239.255.255.250",
+            "ff0e::1",
+            "0.0.0.0",
+            "::",
+            "127.0.0.1",
+            "::1",
+            "169.254.169.254",
+            "fe80::1",
+            "240.0.0.1",
+            "100.64.0.1",
+            "192.0.2.1",
+            "fec0::1",
+            "2001:db8::1",
+            "::ffff:8.8.8.8",
+            "2002:0808:0808::1",
+            "2606:4700:4700::1111%eth0",
+        ]
         for address in blocked:
             with self.subTest(address=address):
                 answers = iter([["8.8.8.8"], ["8.8.8.8", address]])
@@ -187,8 +234,13 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(["2606:4700:4700::1111"] * 2, [call[1] for call in self.exchange.calls])
 
     def test_robots_unavailable_does_not_send_notice(self):
-        for response in ((404, {}, b""), (200, {}, b""), (200, {}, b"<html>challenge</html>"),
-                         (200, {}, b"invalid rules"), (200, {}, b"User-agent: *\nCrawl-delay: -1")):
+        for response in (
+            (404, {}, b""),
+            (200, {}, b""),
+            (200, {}, b"<html>challenge</html>"),
+            (200, {}, b"invalid rules"),
+            (200, {}, b"User-agent: *\nCrawl-delay: -1"),
+        ):
             with self.subTest(response=response):
                 transport = self.transport([response])
                 self.assert_error("robots_unavailable", transport)
@@ -200,7 +252,9 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(1, len(self.exchange.calls))
 
     def test_robots_specific_group_wildcards_and_allow_precedence(self):
-        robots = _parse_robots(b"User-agent: *\nDisallow: /\n\nUser-agent: BidRadar\nDisallow: /cggg/*\nAllow: /cggg/ok.htm$\n")
+        robots = _parse_robots(
+            b"User-agent: *\nDisallow: /\n\nUser-agent: BidRadar\nDisallow: /cggg/*\nAllow: /cggg/ok.htm$\n"
+        )
         self.assertTrue(robots.permits("https://www.ccgp.gov.cn/cggg/ok.htm"))
         self.assertFalse(robots.permits("https://www.ccgp.gov.cn/cggg/ok.htm?x=1"))
         self.assertFalse(robots.permits(NOTICE))
@@ -214,7 +268,9 @@ class TransportTests(unittest.TestCase):
             _parse_robots(b"User-agent: *\n" + b"Disallow: /x\n" * 257)
 
     def test_robots_crawl_delay_and_request_rate_are_respected(self):
-        transport = self.transport([(200, {}, b"User-agent: *\nCrawl-delay: 3\nRequest-rate: 1/5\nDisallow:"), PAGE, PAGE])
+        transport = self.transport(
+            [(200, {}, b"User-agent: *\nCrawl-delay: 3\nRequest-rate: 1/5\nDisallow:"), PAGE, PAGE]
+        )
         self.fetch(transport)
         self.fetch(transport, OTHER)
         self.assertEqual([5, 5], self.clock.waits)
@@ -262,14 +318,18 @@ class TransportTests(unittest.TestCase):
         data = policy_data()
         data["allowed"].append({"host": "ccgp.gov.cn", "path_prefix": "/cggg/", "kinds": ["notice"]})
         destination = NOTICE.replace("www.ccgp", "ccgp")
-        transport = self.transport([ALLOW, (302, {"location": destination}, b""),
-                                    (200, {}, b"User-agent: *\nDisallow: /")], policy=SourcePolicy.from_dict(data))
+        transport = self.transport(
+            [ALLOW, (302, {"location": destination}, b""), (200, {}, b"User-agent: *\nDisallow: /")],
+            policy=SourcePolicy.from_dict(data),
+        )
         self.assert_error("robots_denied", transport)
         self.assertEqual("https://ccgp.gov.cn/robots.txt", self.exchange.calls[-1][0])
 
     def test_redirect_external_downgrade_and_loop_rejected(self):
-        for destination, code in (("https://evil.test/x.htm", "url_not_allowed"),
-                                  (NOTICE.replace("https:", "http:"), "redirect_not_allowed")):
+        for destination, code in (
+            ("https://evil.test/x.htm", "url_not_allowed"),
+            (NOTICE.replace("https:", "http:"), "redirect_not_allowed"),
+        ):
             transport = self.transport([ALLOW, (302, {"location": destination}, b"")])
             self.assert_error(code, transport)
             self.assertEqual(2, len(self.exchange.calls))
@@ -302,8 +362,14 @@ class TransportTests(unittest.TestCase):
             self.assertGreaterEqual(transport.bytes_received, 2048)
 
     def test_invalid_constructor_and_body_limits(self):
-        for key, value in (("timeout", True), ("timeout", 31), ("max_attempts", 4),
-                           ("max_requests", 101), ("max_seconds", 601), ("min_interval", float("nan"))):
+        for key, value in (
+            ("timeout", True),
+            ("timeout", 31),
+            ("max_attempts", 4),
+            ("max_requests", 101),
+            ("max_seconds", 601),
+            ("min_interval", float("nan")),
+        ):
             with self.subTest(key=key):
                 with self.assertRaises(ValueError):
                     Transport(None, **{key: value})
@@ -314,8 +380,10 @@ class TransportTests(unittest.TestCase):
     def test_checkpoint_cancelled_before_robots_sends_nothing(self):
         transport = self.transport([])
         error = RuntimeError("cancelled")
+
         def checkpoint():
             raise error
+
         with self.assertRaises(RuntimeError) as caught:
             self.fetch(transport, checkpoint=checkpoint)
         self.assertIs(error, caught.exception)
@@ -323,9 +391,11 @@ class TransportTests(unittest.TestCase):
 
     def test_checkpoint_stops_after_robots_before_material(self):
         transport = self.transport([ALLOW])
+
         def checkpoint():
             if transport.requests:
                 raise RuntimeError("cancelled")
+
         with self.assertRaisesRegex(RuntimeError, "cancelled"):
             self.fetch(transport, checkpoint=checkpoint)
         self.assertEqual([ROBOTS], [call[0] for call in self.exchange.calls])
@@ -333,12 +403,15 @@ class TransportTests(unittest.TestCase):
     def test_checkpoint_rechecks_after_rate_limit_sleep(self):
         transport = self.transport([ALLOW])
         state = {"cancelled": False}
+
         def sleep(seconds):
             self.clock.sleep(seconds)
             state["cancelled"] = True
+
         def checkpoint():
             if state["cancelled"]:
                 raise RuntimeError("cancelled_during_wait")
+
         transport.sleep = sleep
         with self.assertRaisesRegex(RuntimeError, "cancelled_during_wait"):
             self.fetch(transport, checkpoint=checkpoint)
@@ -347,12 +420,15 @@ class TransportTests(unittest.TestCase):
 
     def test_checkpoint_rechecks_after_dns_before_exchange(self):
         state = {"resolutions": 0}
+
         def resolver(host, port):
             state["resolutions"] += 1
             return ["8.8.8.8"]
+
         def checkpoint():
             if state["resolutions"] == 2:
                 raise RuntimeError("lease_lost_during_dns")
+
         transport = self.transport([ALLOW], resolver=resolver)
         with self.assertRaisesRegex(RuntimeError, "lease_lost_during_dns"):
             self.fetch(transport, checkpoint=checkpoint)
@@ -363,13 +439,16 @@ class TransportTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 transport = self.transport([ALLOW, failure])
                 state = {"cancelled": False}
+
                 def sleep(seconds):
                     self.clock.sleep(seconds)
                     if transport.requests == 2:
                         state["cancelled"] = True
+
                 def checkpoint():
                     if state["cancelled"]:
                         raise RuntimeError("cancelled_during_retry_wait")
+
                 transport.sleep = sleep
                 with self.assertRaisesRegex(RuntimeError, "cancelled_during_retry_wait"):
                     self.fetch(transport, checkpoint=checkpoint)
@@ -378,9 +457,11 @@ class TransportTests(unittest.TestCase):
 
     def test_checkpoint_stops_redirect_target_and_followup_material(self):
         transport = self.transport([ALLOW, (302, {"location": OTHER}, b"")])
+
         def checkpoint():
             if transport.requests == 2:
                 raise RuntimeError("cancelled_after_redirect")
+
         with self.assertRaisesRegex(RuntimeError, "cancelled_after_redirect"):
             self.fetch(transport, checkpoint=checkpoint)
         self.assertEqual([ROBOTS, NOTICE], [call[0] for call in self.exchange.calls])
@@ -393,16 +474,18 @@ class TransportTests(unittest.TestCase):
 
     def test_checkpoint_errors_are_not_retried_wrapped_or_mutated(self):
         # 模拟StoreError可能继承的异常；robots的错误包装和网络重试都不能吞掉它。
-        for error in (RuntimeError("store_cancelled"), OSError("store_io"),
-                      FetchError("store_cancelled", attempts=17)):
+        for error in (RuntimeError("store_cancelled"), OSError("store_io"), FetchError("store_cancelled", attempts=17)):
             with self.subTest(error=error):
                 state = {"resolved": False}
+
                 def resolver(host, port):
                     state["resolved"] = True
                     return ["8.8.8.8"]
+
                 def checkpoint():
                     if state["resolved"]:
                         raise error
+
                 transport = self.transport([], resolver=resolver)
                 with self.assertRaises(type(error)) as caught:
                     self.fetch(transport, checkpoint=checkpoint)
@@ -415,6 +498,7 @@ class TransportTests(unittest.TestCase):
         transport = self.transport([ALLOW, PAGE])
         original = transport.exchange
         state = {"cancelled": False, "completed": False}
+
         def exchange(*args):
             response = original(*args)
             if args[0] == NOTICE:
@@ -422,9 +506,11 @@ class TransportTests(unittest.TestCase):
                 # 取消发生在请求中途，当前HTTP仍完成，之后才传播取消而不交付后续动作。
                 state["completed"] = True
             return response
+
         def checkpoint():
             if state["cancelled"]:
                 raise RuntimeError("cancelled_in_flight")
+
         transport.exchange = exchange
         with self.assertRaisesRegex(RuntimeError, "cancelled_in_flight"):
             self.fetch(transport, checkpoint=checkpoint)
@@ -460,9 +546,13 @@ class FakeSocket:
 class SocketBoundaryTests(unittest.TestCase):
     def test_actual_http_adapter_pins_ip_keeps_host_and_tls_hostname(self):
         sock = FakeSocket(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-        with patch("services.ingestion.transport.socket.socket", return_value=sock), \
-                patch("services.ingestion.transport.ssl.create_default_context") as context, \
-                patch("services.ingestion.transport.socket.getaddrinfo", side_effect=AssertionError("must not resolve twice")):
+        with (
+            patch("services.ingestion.transport.socket.socket", return_value=sock),
+            patch("services.ingestion.transport.ssl.create_default_context") as context,
+            patch(
+                "services.ingestion.transport.socket.getaddrinfo", side_effect=AssertionError("must not resolve twice")
+            ),
+        ):
             context.return_value.wrap_socket.return_value = sock
             self.assertEqual(b"ok", _exchange(NOTICE, "8.8.8.8", 5, 1024)[2])
             context.return_value.wrap_socket.assert_called_once_with(sock, server_hostname="www.ccgp.gov.cn")
@@ -472,9 +562,10 @@ class SocketBoundaryTests(unittest.TestCase):
 
     def test_actual_reader_rejects_oversize_and_truncated_bodies(self):
         for payload, limit, code in (
-                (b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx", 10, "body_too_large"),
-                (b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nx", 20, "truncated_body"),
-                (b"HTTP/1.1 200 OK\r\n\r\n123456", 5, "body_too_large")):
+            (b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nx", 10, "body_too_large"),
+            (b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nx", 20, "truncated_body"),
+            (b"HTTP/1.1 200 OK\r\n\r\n123456", 5, "body_too_large"),
+        ):
             sock = FakeSocket(payload)
             with patch("services.ingestion.transport.socket.socket", return_value=sock):
                 with self.assertRaises(FetchError) as caught:

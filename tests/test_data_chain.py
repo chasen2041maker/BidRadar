@@ -2,6 +2,7 @@
 
 这些测试验证本地行为；没有账号/真实接口响应，不能据此标成真实接入通过。
 """
+
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -18,18 +19,54 @@ from services.ingestion.pipeline import execute, parse_capture
 from services.processing.normalize import normalize_bundle, fingerprint
 
 
-def raw_bundle(*, title="虚构软件采购招标公告", key="https://www.ccgp.gov.cn/cggg/zygg/gkzb/202609/t1.htm",
-               capture="capture1", observed="2026-09-30T10:00:00Z", entries=None, links=None):
+def raw_bundle(
+    *,
+    title="虚构软件采购招标公告",
+    key="https://www.ccgp.gov.cn/cggg/zygg/gkzb/202609/t1.htm",
+    capture="capture1",
+    observed="2026-09-30T10:00:00Z",
+    entries=None,
+    links=None,
+):
     if entries is None:
-        entries = [("项目编号", "DEMO-001"), ("采购单位", "虚构采购方"), ("预算（万元）", "12.34"),
-                   ("公告发布时间", "2026-09-29"), ("投标截止时间", "2026-10-10 09:30（北京时间）")]
-    return {"schema_version": 1, "kind": "raw_evidence_bundle", "source_id": "cn_ccgp", "simulation": True,
-            "run_id": "demo-run", "run_status": "succeeded", "coverage": "bounded_sample", "failures": [],
-            "documents": [{"capture_id": capture, "source_url": key, "final_url": key, "source_record_key": key,
-                "identity_kind": "source_url", "raw_sha256": sha256(title.encode()).hexdigest(),
-                "observed_at": observed, "parser_version": "fixture-v1", "content": {"status": "ok", "title": title,
-                    "metadata": [{"label": k, "text": v, "locator": f"fixture[{i}]"} for i, (k, v) in enumerate(entries)],
-                    "segments": [], "links": links or []}}]}
+        entries = [
+            ("项目编号", "DEMO-001"),
+            ("采购单位", "虚构采购方"),
+            ("预算（万元）", "12.34"),
+            ("公告发布时间", "2026-09-29"),
+            ("投标截止时间", "2026-10-10 09:30（北京时间）"),
+        ]
+    return {
+        "schema_version": 1,
+        "kind": "raw_evidence_bundle",
+        "source_id": "cn_ccgp",
+        "simulation": True,
+        "run_id": "demo-run",
+        "run_status": "succeeded",
+        "coverage": "bounded_sample",
+        "failures": [],
+        "documents": [
+            {
+                "capture_id": capture,
+                "source_url": key,
+                "final_url": key,
+                "source_record_key": key,
+                "identity_kind": "source_url",
+                "raw_sha256": sha256(title.encode()).hexdigest(),
+                "observed_at": observed,
+                "parser_version": "fixture-v1",
+                "content": {
+                    "status": "ok",
+                    "title": title,
+                    "metadata": [
+                        {"label": k, "text": v, "locator": f"fixture[{i}]"} for i, (k, v) in enumerate(entries)
+                    ],
+                    "segments": [],
+                    "links": links or [],
+                },
+            }
+        ],
+    }
 
 
 class NormalizeTests(unittest.TestCase):
@@ -75,9 +112,11 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(item["facts"]["project_number"]["status"], "known")
 
     def test_inline_negation_and_table_headers_survive_ingestion(self):
-        html = ('<h2 class="tc">虚构采购公告</h2><div class="vF_detail_content">不接受<strong>联合体</strong>。'
-                '<p>项目编号：DEMO-001</p>以下金额是更正前记录'
-                '<table><tr><th>包号</th><th>预算</th></tr><tr><td>1</td><td>10万元</td></tr></table></div>')
+        html = (
+            '<h2 class="tc">虚构采购公告</h2><div class="vF_detail_content">不接受<strong>联合体</strong>。'
+            "<p>项目编号：DEMO-001</p>以下金额是更正前记录"
+            "<table><tr><th>包号</th><th>预算</th></tr><tr><td>1</td><td>10万元</td></tr></table></div>"
+        )
         content = parse_capture("notice", html.encode(), {"content-type": "text/html"}, NOTICE_URL)
         texts = [segment["text"] for segment in content["segments"]]
         self.assertIn("不接受联合体。", texts)
@@ -109,14 +148,24 @@ class NormalizeTests(unittest.TestCase):
         self.assertNotEqual(fake["notice_id"], real["notice_id"])
 
     def test_contract_rejects_bad_header_time_hash_and_versions(self):
-        for field, value in (("schema_version", True), ("schema_version", 2), ("source_id", "unknown"),
-                             ("simulation", "false"), ("run_status", "running"), ("documents", {})):
+        for field, value in (
+            ("schema_version", True),
+            ("schema_version", 2),
+            ("source_id", "unknown"),
+            ("simulation", "false"),
+            ("run_status", "running"),
+            ("documents", {}),
+        ):
             raw = raw_bundle()
             raw[field] = value
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 normalize_bundle(raw)
-        for field, value in (("observed_at", "2026-09-30T10:00:00"), ("raw_sha256", "../bad"),
-                             ("identity_kind", "guess"), ("capture_id", "")):
+        for field, value in (
+            ("observed_at", "2026-09-30T10:00:00"),
+            ("raw_sha256", "../bad"),
+            ("identity_kind", "guess"),
+            ("capture_id", ""),
+        ):
             raw = raw_bundle()
             raw["documents"][0][field] = value
             with self.subTest(field=field), self.assertRaises(ValueError):
@@ -162,7 +211,9 @@ class CatalogTests(unittest.TestCase):
         two = self.add(key="https://example.test/2", capture="two")
         first = self.store.query(simulation=True, page_size=1, as_of="2026-10-01T00:00:00Z")
         self.add(key="https://example.test/3", capture="new", observed="2026-10-01T11:00:00Z")
-        self.add(key="https://example.test/2", title="后来变更的采购公告", capture="updated", observed="2026-10-01T12:00:00Z")
+        self.add(
+            key="https://example.test/2", title="后来变更的采购公告", capture="updated", observed="2026-10-01T12:00:00Z"
+        )
         second = self.store.query(simulation=True, page_size=1, cursor=first["next_cursor"])
         self.assertEqual(first["items"][0]["notice_id"], one["notice_id"])
         self.assertEqual(second["items"][0]["observation_id"], two["observation_id"])
@@ -174,9 +225,11 @@ class CatalogTests(unittest.TestCase):
         self.add(key="https://example.test/1")
         self.add(key="https://example.test/2", capture="two")
         cursor = self.store.query(simulation=True, page_size=1)["next_cursor"]
-        for kwargs in ({"cursor": cursor + "a", "simulation": True, "page_size": 1},
-                       {"cursor": cursor, "simulation": True, "page_size": 2},
-                       {"cursor": cursor, "simulation": False, "page_size": 1}):
+        for kwargs in (
+            {"cursor": cursor + "a", "simulation": True, "page_size": 1},
+            {"cursor": cursor, "simulation": True, "page_size": 2},
+            {"cursor": cursor, "simulation": False, "page_size": 1},
+        ):
             with self.assertRaises(ValueError):
                 self.store.query(**kwargs)
 
@@ -199,8 +252,12 @@ class CatalogTests(unittest.TestCase):
 
     def test_explicit_correction_keeps_original_and_bound_versions(self):
         original = self.add()
-        correction = self.add(title="虚构软件更正公告", key="https://example.test/correction", capture="correction",
-                              links=[{"url": original["source_record_key"], "name": "原公告", "locator": "a[1]"}])
+        correction = self.add(
+            title="虚构软件更正公告",
+            key="https://example.test/correction",
+            capture="correction",
+            links=[{"url": original["source_record_key"], "name": "原公告", "locator": "a[1]"}],
+        )
         detail = self.store.detail(correction["notice_id"])
         self.assertEqual(detail["relationships"][0]["status"], "evidenced")
         self.assertEqual(detail["relationships"][0]["target_observation_id"], original["observation_id"])
@@ -219,9 +276,13 @@ class CatalogTests(unittest.TestCase):
     def test_explicit_link_does_not_override_known_lot_conflict(self):
         original = self.add(entries=[("包号", "1")])
         for lot, expected in (("2", "conflicting"), ("1", "evidenced")):
-            correction = self.add(title="虚构更正公告", key="https://example.test/correction/" + lot,
-                capture="correction" + lot, entries=[("包号", lot)],
-                links=[{"url": original["source_record_key"], "name": "原公告", "locator": "a[1]"}])
+            correction = self.add(
+                title="虚构更正公告",
+                key="https://example.test/correction/" + lot,
+                capture="correction" + lot,
+                entries=[("包号", lot)],
+                links=[{"url": original["source_record_key"], "name": "原公告", "locator": "a[1]"}],
+            )
             result = self.store.detail(correction["notice_id"])["relationships"][0]
             self.assertEqual(result["status"], expected)
             if expected == "conflicting":
@@ -229,8 +290,12 @@ class CatalogTests(unittest.TestCase):
 
     def test_missing_original_link_is_not_replaced_by_name_guess(self):
         self.add()
-        correction = self.add(title="虚构软件更正公告", key="https://example.test/correction", capture="correction",
-                              links=[{"url": "https://example.test/missing", "name": "原公告", "locator": "a[1]"}])
+        correction = self.add(
+            title="虚构软件更正公告",
+            key="https://example.test/correction",
+            capture="correction",
+            links=[{"url": "https://example.test/missing", "name": "原公告", "locator": "a[1]"}],
+        )
         self.assertEqual(self.store.detail(correction["notice_id"])["relationships"][0]["status"], "unresolved")
 
     def test_currentness_does_not_mean_eligibility(self):
@@ -242,7 +307,11 @@ class CatalogTests(unittest.TestCase):
 
     def test_empty_failed_import_retains_failure_not_zero_success(self):
         raw = raw_bundle()
-        raw.update(documents=[], run_status="blocked", failures=[{"capture_id": "x", "url": "https://example.test", "error": "blocked"}])
+        raw.update(
+            documents=[],
+            run_status="blocked",
+            failures=[{"capture_id": "x", "url": "https://example.test", "error": "blocked"}],
+        )
         result = self.store.import_bundle(normalize_bundle(raw))
         self.assertEqual(result["run_status"], "blocked")
         self.assertEqual(result["failures"], 1)

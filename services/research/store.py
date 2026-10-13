@@ -10,6 +10,7 @@
 
 现在用 SQLite 做本地开发，正式环境计划换成 PostgreSQL。
 """
+
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
@@ -48,31 +49,46 @@ class ResearchStore:
         database = self.root / "research.sqlite3"
         if marker.exists() and not database.exists():
             raise ResearchError("research_store_missing", 503)
-        if any(p.is_symlink() for p in (marker, database, self.root / "research.sqlite3-wal", self.root / "research.sqlite3-shm")):
+        if any(
+            p.is_symlink()
+            for p in (marker, database, self.root / "research.sqlite3-wal", self.root / "research.sqlite3-shm")
+        ):
             raise ResearchError("invalid_store")
         self.db = sqlite3.connect(database, isolation_level=None, timeout=5)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         with self.transaction():
-            self.db.execute("CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,actor_id TEXT NOT NULL,"
-                            "command_key TEXT NOT NULL,request_hash TEXT NOT NULL,request TEXT NOT NULL,manifest TEXT NOT NULL,"
-                            "membership_version INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT,version INTEGER NOT NULL,"
-                            "created_at REAL NOT NULL,updated_at REAL NOT NULL,started_at REAL,lease_owner TEXT,lease_until REAL,"
-                            "lease_epoch INTEGER NOT NULL DEFAULT 0,checkpoint TEXT,retry_count INTEGER NOT NULL DEFAULT 0,"
-                            "next_attempt_at REAL NOT NULL DEFAULT 0, UNIQUE(workspace_id,command_key))")
-            self.db.execute("CREATE TABLE IF NOT EXISTS reports(run_id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,"
-                            "payload TEXT NOT NULL,trace TEXT NOT NULL,quality TEXT NOT NULL,created_at REAL NOT NULL)")
-            self.db.execute("CREATE TABLE IF NOT EXISTS cancel_commands(workspace_id TEXT NOT NULL,command_key TEXT NOT NULL,"
-                            "actor_id TEXT NOT NULL,run_id TEXT NOT NULL,PRIMARY KEY(workspace_id,command_key))")
-            self.db.execute("CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL,"
-                            "workspace_id TEXT NOT NULL,state TEXT NOT NULL,reason TEXT,version INTEGER NOT NULL,recorded_at REAL NOT NULL)")
-            self.db.execute("CREATE INDEX IF NOT EXISTS research_queue ON runs(state,next_attempt_at,lease_until,created_at)")
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,actor_id TEXT NOT NULL,"
+                "command_key TEXT NOT NULL,request_hash TEXT NOT NULL,request TEXT NOT NULL,manifest TEXT NOT NULL,"
+                "membership_version INTEGER NOT NULL,state TEXT NOT NULL,reason TEXT,version INTEGER NOT NULL,"
+                "created_at REAL NOT NULL,updated_at REAL NOT NULL,started_at REAL,lease_owner TEXT,lease_until REAL,"
+                "lease_epoch INTEGER NOT NULL DEFAULT 0,checkpoint TEXT,retry_count INTEGER NOT NULL DEFAULT 0,"
+                "next_attempt_at REAL NOT NULL DEFAULT 0, UNIQUE(workspace_id,command_key))"
+            )
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS reports(run_id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,"
+                "payload TEXT NOT NULL,trace TEXT NOT NULL,quality TEXT NOT NULL,created_at REAL NOT NULL)"
+            )
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS cancel_commands(workspace_id TEXT NOT NULL,command_key TEXT NOT NULL,"
+                "actor_id TEXT NOT NULL,run_id TEXT NOT NULL,PRIMARY KEY(workspace_id,command_key))"
+            )
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL,"
+                "workspace_id TEXT NOT NULL,state TEXT NOT NULL,reason TEXT,version INTEGER NOT NULL,recorded_at REAL NOT NULL)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS research_queue ON runs(state,next_attempt_at,lease_until,created_at)"
+            )
             self.db.execute("CREATE INDEX IF NOT EXISTS research_workspace ON runs(workspace_id,created_at,id)")
             for table in ("reports", "events"):
                 for action in ("UPDATE", "DELETE"):
-                    self.db.execute(f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{action.lower()} BEFORE {action} ON {table} "
-                                    "BEGIN SELECT RAISE(ABORT,'immutable_record'); END")
+                    self.db.execute(
+                        f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{action.lower()} BEFORE {action} ON {table} "
+                        "BEGIN SELECT RAISE(ABORT,'immutable_record'); END"
+                    )
         marker.touch(exist_ok=True)
 
     def close(self):
@@ -93,8 +109,11 @@ class ResearchStore:
 
     def _event(self, run_id):
         """把任务当前的状态追加到历史表。"""
-        self.db.execute("INSERT INTO events(run_id,workspace_id,state,reason,version,recorded_at) "
-                        "SELECT id,workspace_id,state,reason,version,updated_at FROM runs WHERE id=?", (run_id,))
+        self.db.execute(
+            "INSERT INTO events(run_id,workspace_id,state,reason,version,recorded_at) "
+            "SELECT id,workspace_id,state,reason,version,updated_at FROM runs WHERE id=?",
+            (run_id,),
+        )
 
     def _row(self, workspace_id, run_id):
         row = self.db.execute("SELECT * FROM runs WHERE workspace_id=? AND id=?", (workspace_id, run_id)).fetchone()
@@ -104,7 +123,9 @@ class ResearchStore:
 
     def command(self, workspace_id, actor_id, key, request_hash=None):
         """按幂等键查找任务。同一个键但请求内容不同，报 idempotency_conflict。"""
-        row = self.db.execute("SELECT * FROM runs WHERE workspace_id=? AND command_key=?", (workspace_id, key)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM runs WHERE workspace_id=? AND command_key=?", (workspace_id, key)
+        ).fetchone()
         if row is None:
             return None
         if row["actor_id"] != actor_id or request_hash is not None and row["request_hash"] != request_hash:
@@ -117,15 +138,29 @@ class ResearchStore:
             previous = self.command(request["workspace_id"], request["actor_id"], request["key"], request_hash)
             if previous is not None:
                 return previous
-            active = self.db.execute("SELECT count(*) FROM runs WHERE workspace_id=? AND state IN ('queued','running','retry_wait')",
-                                     (request["workspace_id"],)).fetchone()[0]
+            active = self.db.execute(
+                "SELECT count(*) FROM runs WHERE workspace_id=? AND state IN ('queued','running','retry_wait')",
+                (request["workspace_id"],),
+            ).fetchone()[0]
             if active >= 3:
                 raise ResearchError("workspace_queue_limit", 429)
             run_id, now = uuid4().hex, time.time()
-            self.db.execute("INSERT INTO runs(id,workspace_id,actor_id,command_key,request_hash,request,manifest,membership_version,"
-                            "state,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'queued',1,?,?)",
-                            (run_id, request["workspace_id"], request["actor_id"], request["key"], request_hash,
-                             canonical(request), canonical(manifest), membership_version, now, now))
+            self.db.execute(
+                "INSERT INTO runs(id,workspace_id,actor_id,command_key,request_hash,request,manifest,membership_version,"
+                "state,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'queued',1,?,?)",
+                (
+                    run_id,
+                    request["workspace_id"],
+                    request["actor_id"],
+                    request["key"],
+                    request_hash,
+                    canonical(request),
+                    canonical(manifest),
+                    membership_version,
+                    now,
+                    now,
+                ),
+            )
             self._event(run_id)
             return self.public(request["workspace_id"], run_id)
 
@@ -135,21 +170,50 @@ class ResearchStore:
         manifest, request = json.loads(row["manifest"]), json.loads(row["request"])
         result = {k: row[k] for k in ("id", "workspace_id", "actor_id", "state", "reason", "version", "retry_count")}
         # 数据库里存秒级时间戳，方便比较租约；对外统一转成 UTC 的 ISO 8601 字符串。
-        result.update({key: datetime.fromtimestamp(row[key], timezone.utc).isoformat().replace("+00:00", "Z")
-                       for key in ("created_at", "updated_at")})
+        result.update(
+            {
+                key: datetime.fromtimestamp(row[key], timezone.utc).isoformat().replace("+00:00", "Z")
+                for key in ("created_at", "updated_at")
+            }
+        )
         result["freshness"] = {"profile": "not_checked", "catalog": "not_checked"}
-        result.update({"kind": request.get("kind", "analysis"), "mode": request.get("mode", "agent"),
-                       "notice_id": request["notice_id"], "profile_revision": manifest["profile"]["revision"],
-                       "parent_run_id": request.get("parent_run_id"), "report": None, "trace": [], "quality": None})
+        result.update(
+            {
+                "kind": request.get("kind", "analysis"),
+                "mode": request.get("mode", "agent"),
+                "notice_id": request["notice_id"],
+                "profile_revision": manifest["profile"]["revision"],
+                "parent_run_id": request.get("parent_run_id"),
+                "report": None,
+                "trace": [],
+                "quality": None,
+            }
+        )
         observations = manifest["observations"]
-        result.update({"simulation": all(o.get("simulation") is True for o in observations),
-                       "title": observations[0].get("title") or observations[0].get("facts", {}).get("title", {}).get("value"),
-                       "scope": {"notice_id": request["notice_id"], "observation_ids": [o["observation_id"] for o in observations],
-                                 "profile_revision": manifest["profile"]["revision"], "catalog_snapshot": manifest["catalog_snapshot"]},
-                       "material_status": {"full_tender_read": False, "source": "normalized_snippets"}})
-        report = self.db.execute("SELECT * FROM reports WHERE workspace_id=? AND run_id=?", (workspace_id, run_id)).fetchone()
+        result.update(
+            {
+                "simulation": all(o.get("simulation") is True for o in observations),
+                "title": observations[0].get("title") or observations[0].get("facts", {}).get("title", {}).get("value"),
+                "scope": {
+                    "notice_id": request["notice_id"],
+                    "observation_ids": [o["observation_id"] for o in observations],
+                    "profile_revision": manifest["profile"]["revision"],
+                    "catalog_snapshot": manifest["catalog_snapshot"],
+                },
+                "material_status": {"full_tender_read": False, "source": "normalized_snippets"},
+            }
+        )
+        report = self.db.execute(
+            "SELECT * FROM reports WHERE workspace_id=? AND run_id=?", (workspace_id, run_id)
+        ).fetchone()
         if report:
-            result.update({"report": json.loads(report["payload"]), "trace": json.loads(report["trace"]), "quality": json.loads(report["quality"])})
+            result.update(
+                {
+                    "report": json.loads(report["payload"]),
+                    "trace": json.loads(report["trace"]),
+                    "quality": json.loads(report["quality"]),
+                }
+            )
         return result
 
     def list_runs(self, workspace_id, *, before=None, limit=30):
@@ -160,16 +224,24 @@ class ResearchStore:
             raise ResearchError("invalid_cursor", 400)
         cursor_time = None
         if before is not None:
-            cursor = self.db.execute("SELECT created_at FROM runs WHERE workspace_id=? AND id=?", (workspace_id, before)).fetchone()
+            cursor = self.db.execute(
+                "SELECT created_at FROM runs WHERE workspace_id=? AND id=?", (workspace_id, before)
+            ).fetchone()
             if cursor is None:
                 raise ResearchError("invalid_cursor", 400)
             cursor_time = cursor["created_at"]
         # 先按创建时间排序；时间相同时再按 ID 排，只是为了顺序稳定，ID 大小本身没有含义。
-        rows = self.db.execute("SELECT id FROM runs WHERE workspace_id=? AND (? IS NULL OR created_at<? "
-                               "OR (created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?",
-                               (workspace_id, cursor_time, cursor_time, cursor_time, before, limit + 1)).fetchall()
+        rows = self.db.execute(
+            "SELECT id FROM runs WHERE workspace_id=? AND (? IS NULL OR created_at<? "
+            "OR (created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?",
+            (workspace_id, cursor_time, cursor_time, cursor_time, before, limit + 1),
+        ).fetchall()
         items = [self.public(workspace_id, row["id"]) for row in rows[:limit]]
-        return {"items": items, "next_before": rows[limit - 1]["id"] if len(rows) > limit else None, "order": "created_at_desc_id_desc"}
+        return {
+            "items": items,
+            "next_before": rows[limit - 1]["id"] if len(rows) > limit else None,
+            "order": "created_at_desc_id_desc",
+        }
 
     def load(self, workspace_id, run_id):
         """读取任务的完整记录（含 manifest、请求和进度），供服务内部使用。"""
@@ -186,17 +258,25 @@ class ResearchStore:
         """
         now = time.time()
         with self.transaction():
-            row = self.db.execute("SELECT * FROM runs WHERE state='queued' OR (state='retry_wait' AND next_attempt_at<=?) "
-                                  "OR (state='running' AND lease_until<=?) ORDER BY created_at,id LIMIT 1", (now, now)).fetchone()
+            row = self.db.execute(
+                "SELECT * FROM runs WHERE state='queued' OR (state='retry_wait' AND next_attempt_at<=?) "
+                "OR (state='running' AND lease_until<=?) ORDER BY created_at,id LIMIT 1",
+                (now, now),
+            ).fetchone()
             if row is None:
                 return None
             if row["started_at"] is not None and now - row["started_at"] >= 300:
-                self.db.execute("UPDATE runs SET state='failed',reason='execution_deadline',version=version+1,updated_at=? WHERE id=?", (now, row["id"]))
+                self.db.execute(
+                    "UPDATE runs SET state='failed',reason='execution_deadline',version=version+1,updated_at=? WHERE id=?",
+                    (now, row["id"]),
+                )
                 self._event(row["id"])
                 return None
-            self.db.execute("UPDATE runs SET state='running',reason=NULL,version=version+1,updated_at=?,started_at=coalesce(started_at,?),"
-                            "lease_owner=?,lease_until=?,lease_epoch=lease_epoch+1 WHERE id=?",
-                            (now, now, worker_id, now + lease_seconds, row["id"]))
+            self.db.execute(
+                "UPDATE runs SET state='running',reason=NULL,version=version+1,updated_at=?,started_at=coalesce(started_at,?),"
+                "lease_owner=?,lease_until=?,lease_epoch=lease_epoch+1 WHERE id=?",
+                (now, now, worker_id, now + lease_seconds, row["id"]),
+            )
             self._event(row["id"])
             return self.load(row["workspace_id"], row["id"])
 
@@ -238,10 +318,21 @@ class ResearchStore:
         with self.transaction():
             self._writable(run)
             now = time.time()
-            self.db.execute("INSERT INTO reports VALUES(?,?,?,?,?,?)", (run["id"], run["workspace_id"], canonical(result["report"]),
-                            canonical(result["trace"]), canonical(result["quality"]), now))
-            self.db.execute("UPDATE runs SET state=?,reason=NULL,version=version+1,updated_at=?,lease_until=NULL WHERE id=?",
-                            (result["state"], now, run["id"]))
+            self.db.execute(
+                "INSERT INTO reports VALUES(?,?,?,?,?,?)",
+                (
+                    run["id"],
+                    run["workspace_id"],
+                    canonical(result["report"]),
+                    canonical(result["trace"]),
+                    canonical(result["quality"]),
+                    now,
+                ),
+            )
+            self.db.execute(
+                "UPDATE runs SET state=?,reason=NULL,version=version+1,updated_at=?,lease_until=NULL WHERE id=?",
+                (result["state"], now, run["id"]),
+            )
             self._event(run["id"])
 
     def stop(self, run, state, reason):
@@ -254,8 +345,10 @@ class ResearchStore:
             if retries > 3:
                 state, reason = "failed", "dependency_retry_exhausted"
             now = time.time()
-            self.db.execute("UPDATE runs SET state=?,reason=?,version=version+1,updated_at=?,retry_count=?,next_attempt_at=?,lease_until=NULL WHERE id=?",
-                            (state, reason, now, retries, now + min(30, 5 * retries), run["id"]))
+            self.db.execute(
+                "UPDATE runs SET state=?,reason=?,version=version+1,updated_at=?,retry_count=?,next_attempt_at=?,lease_until=NULL WHERE id=?",
+                (state, reason, now, retries, now + min(30, 5 * retries), run["id"]),
+            )
             self._event(run["id"])
 
     def cancel(self, workspace_id, run_id, *, actor_id=None, key=None):
@@ -268,14 +361,20 @@ class ResearchStore:
             if actor_id is not None or key is not None:
                 if any(not isinstance(value, str) or not 1 <= len(value) <= 128 for value in (actor_id, key)):
                     raise ResearchError("invalid_input", 400)
-                previous = self.db.execute("SELECT actor_id,run_id FROM cancel_commands WHERE workspace_id=? AND command_key=?",
-                                           (workspace_id, key)).fetchone()
+                previous = self.db.execute(
+                    "SELECT actor_id,run_id FROM cancel_commands WHERE workspace_id=? AND command_key=?",
+                    (workspace_id, key),
+                ).fetchone()
                 if previous is not None and tuple(previous) != (actor_id, run_id):
                     raise ResearchError("idempotency_conflict")
                 # 取消命令和取消动作在同一个事务里保存。同一个键之后不能拿去取消另一个任务。
-                self.db.execute("INSERT OR IGNORE INTO cancel_commands VALUES(?,?,?,?)", (workspace_id, key, actor_id, run_id))
+                self.db.execute(
+                    "INSERT OR IGNORE INTO cancel_commands VALUES(?,?,?,?)", (workspace_id, key, actor_id, run_id)
+                )
             if row["state"] not in TERMINAL:
-                self.db.execute("UPDATE runs SET state='cancelled',reason='user_cancelled',version=version+1,updated_at=?,lease_until=NULL WHERE id=?",
-                                (time.time(), run_id))
+                self.db.execute(
+                    "UPDATE runs SET state='cancelled',reason='user_cancelled',version=version+1,updated_at=?,lease_until=NULL WHERE id=?",
+                    (time.time(), run_id),
+                )
                 self._event(run_id)
             return self.public(workspace_id, run_id)

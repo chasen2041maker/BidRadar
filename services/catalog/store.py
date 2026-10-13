@@ -13,6 +13,7 @@
 
 阅读顺序：import_bundle → query → detail / bundle → relationships。
 """
+
 from __future__ import annotations
 
 import base64
@@ -34,13 +35,19 @@ FIELDS = {"project_number", "buyer", "published_at", "budget", "response_deadlin
 V2_FIELDS = FIELDS | {"original_published_at", "original_contract_reference"}
 # 来源 → 发布方。只有同一发布方的公告之间才会建立更正、结果关联。
 # 这里只列已经核实过的来源，不按名字前缀（比如 tj_）推断。
-SOURCE_FAMILIES = {"cn_ccgp": "cn_ccgp", "cn_hainan": "cn_hainan", "tj_procurement_negotiation": "tj_finance_procurement",
-                   "tj_procurement_consultation": "tj_finance_procurement",
-                   "tj_procurement_correction": "tj_finance_procurement"}
+SOURCE_FAMILIES = {
+    "cn_ccgp": "cn_ccgp",
+    "cn_hainan": "cn_hainan",
+    "tj_procurement_negotiation": "tj_finance_procurement",
+    "tj_procurement_consultation": "tj_finance_procurement",
+    "tj_procurement_correction": "tj_finance_procurement",
+}
 # 每个格式版本对应的规范化器版本，以及允许的来源。
-SCHEMAS = {1: ("procurement-facts-v1", {"cn_ccgp", "tj_procurement_negotiation"}),
-           2: ("procurement-facts-v2", set(SOURCE_FAMILIES) - {"cn_hainan"}),
-           3: (VERSION, set(SOURCE_FAMILIES))}
+SCHEMAS = {
+    1: ("procurement-facts-v1", {"cn_ccgp", "tj_procurement_negotiation"}),
+    2: ("procurement-facts-v2", set(SOURCE_FAMILIES) - {"cn_hainan"}),
+    3: (VERSION, set(SOURCE_FAMILIES)),
+}
 # 选"当前版本"的排序：先比抓取时间；同一时刻抓到的，选规范化器版本高的；
 # 最后才比接收序号。这样晚到的 v1 数据不会把已有的 v2 结果降级。
 # 版本高低按这张表查，不按字符串比较。
@@ -91,12 +98,19 @@ def _evidence(value):
 
 def _date_value(value):
     """检查日期事实：精度（日、分、秒）和格式一致；只有原文写明北京时间才带 +08:00。"""
-    if (not isinstance(value, dict) or set(value) != {"local", "precision", "timezone", "timezone_basis"}
-            or value["precision"] not in ("date", "minute", "second") or value["timezone"] not in (None, "+08:00")):
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"local", "precision", "timezone", "timezone_basis"}
+        or value["precision"] not in ("date", "minute", "second")
+        or value["timezone"] not in (None, "+08:00")
+    ):
         raise ValueError("invalid_date_fact")
     _string(value["local"], 32)
-    patterns = {"date": r"\d{4}-\d{2}-\d{2}", "minute": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}",
-                "second": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"}
+    patterns = {
+        "date": r"\d{4}-\d{2}-\d{2}",
+        "minute": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}",
+        "second": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
+    }
     if not re.fullmatch(patterns[value["precision"]], value["local"]):
         raise ValueError("date_precision_mismatch")
     datetime.fromisoformat(value["local"])
@@ -109,8 +123,17 @@ def _validate_evidence_fields(value):
 
     目录自己做一遍完整检查，不依赖 processing 的代码。
     """
-    keys = {"money", "budget_assessment", "acquisition_window", "access_conditions", "material_availability",
-            "category_evidence", "technical_evidence", "qualification_evidence", "delivery_evidence"}
+    keys = {
+        "money",
+        "budget_assessment",
+        "acquisition_window",
+        "access_conditions",
+        "material_availability",
+        "category_evidence",
+        "technical_evidence",
+        "qualification_evidence",
+        "delivery_evidence",
+    }
     if not isinstance(value, dict) or set(value) != keys:
         raise ValueError("invalid_evidence_fields")
     for name in ("category_evidence", "technical_evidence", "qualification_evidence", "delivery_evidence"):
@@ -119,17 +142,25 @@ def _validate_evidence_fields(value):
     if not isinstance(money, list) or len(money) > 10000:
         raise ValueError("invalid_money_claims")
     for claim in money:
-        if (not isinstance(claim, dict) or set(claim) != {"role", "status", "amount", "currency", "source_unit", "package", "unit_basis", "evidence"}
-                or claim["role"] not in ("budget", "ceiling", "unit_price", "package_budget", "file_fee", "deposit")
-                or claim["status"] not in ("parsed", "unparsed") or claim["currency"] != "CNY"):
+        if (
+            not isinstance(claim, dict)
+            or set(claim)
+            != {"role", "status", "amount", "currency", "source_unit", "package", "unit_basis", "evidence"}
+            or claim["role"] not in ("budget", "ceiling", "unit_price", "package_budget", "file_fee", "deposit")
+            or claim["status"] not in ("parsed", "unparsed")
+            or claim["currency"] != "CNY"
+        ):
             raise ValueError("invalid_money_claim")
         _evidence(claim["evidence"])
         if not claim["evidence"]:
             raise ValueError("money_without_evidence")
         if claim["status"] == "parsed":
             _string(claim["amount"], 40)
-            if (not re.fullmatch(r"\d+(?:\.\d{1,6})?", claim["amount"]) or Decimal(claim["amount"]) > 10**15
-                    or claim["source_unit"] not in ("元", "万元")):
+            if (
+                not re.fullmatch(r"\d+(?:\.\d{1,6})?", claim["amount"])
+                or Decimal(claim["amount"]) > 10**15
+                or claim["source_unit"] not in ("元", "万元")
+            ):
                 raise ValueError("invalid_money_value")
         elif claim["amount"] is not None or claim["source_unit"] is not None:
             raise ValueError("unparsed_money_has_value")
@@ -141,17 +172,34 @@ def _validate_evidence_fields(value):
         if claim["role"] == "package_budget" and claim["package"] is None:
             raise ValueError("package_budget_without_package")
     assessment = value["budget_assessment"]
-    if (not isinstance(assessment, dict) or set(assessment) != {"status", "reasons", "evidence"}
-            or assessment["status"] not in ("known", "missing", "conflicting", "unparsed", "context_required")
-            or not isinstance(assessment["reasons"], list) or len(assessment["reasons"]) > 6
-            or any(reason not in ("different_budget_amounts", "package_amounts_present", "unit_pricing_present",
-                "unparsed_budget_evidence", "source_precedence_statement", "correction_context") for reason in assessment["reasons"])):
+    if (
+        not isinstance(assessment, dict)
+        or set(assessment) != {"status", "reasons", "evidence"}
+        or assessment["status"] not in ("known", "missing", "conflicting", "unparsed", "context_required")
+        or not isinstance(assessment["reasons"], list)
+        or len(assessment["reasons"]) > 6
+        or any(
+            reason
+            not in (
+                "different_budget_amounts",
+                "package_amounts_present",
+                "unit_pricing_present",
+                "unparsed_budget_evidence",
+                "source_precedence_statement",
+                "correction_context",
+            )
+            for reason in assessment["reasons"]
+        )
+    ):
         raise ValueError("invalid_budget_assessment")
     _evidence(assessment["evidence"])
     window = value["acquisition_window"]
-    if (not isinstance(window, dict) or set(window) != {"status", "value", "evidence"}
-            or window["status"] not in ("known", "missing", "conflicting", "unparsed")
-            or (window["status"] == "known") != (window["value"] is not None)):
+    if (
+        not isinstance(window, dict)
+        or set(window) != {"status", "value", "evidence"}
+        or window["status"] not in ("known", "missing", "conflicting", "unparsed")
+        or (window["status"] == "known") != (window["value"] is not None)
+    ):
         raise ValueError("invalid_acquisition_window")
     _evidence(window["evidence"])
     if (window["status"] == "missing") != (not window["evidence"]):
@@ -168,32 +216,53 @@ def _validate_evidence_fields(value):
     if not isinstance(conditions, list) or len(conditions) > 10000:
         raise ValueError("invalid_access_conditions")
     for condition in conditions:
-        if (not isinstance(condition, dict) or set(condition) != {"kind", "status", "evidence"}
-                or condition["kind"] not in ("registration", "login", "application", "payment", "ca_certificate")
-                or condition["status"] != "mentioned"):
+        if (
+            not isinstance(condition, dict)
+            or set(condition) != {"kind", "status", "evidence"}
+            or condition["kind"] not in ("registration", "login", "application", "payment", "ca_certificate")
+            or condition["status"] != "mentioned"
+        ):
             raise ValueError("invalid_access_condition")
         _evidence(condition["evidence"])
         if not condition["evidence"]:
             raise ValueError("condition_without_evidence")
     materials = value["material_availability"]
-    if (not isinstance(materials, dict) or set(materials) != {"status", "references"}
-            or materials["status"] not in ("not_obtained", "partially_obtained", "obtained")
-            or not isinstance(materials["references"], list) or len(materials["references"]) > 1000):
+    if (
+        not isinstance(materials, dict)
+        or set(materials) != {"status", "references"}
+        or materials["status"] not in ("not_obtained", "partially_obtained", "obtained")
+        or not isinstance(materials["references"], list)
+        or len(materials["references"]) > 1000
+    ):
         raise ValueError("invalid_material_availability")
     for reference in materials["references"]:
-        if not isinstance(reference, dict) or set(reference) != {"url", "name", "locator", "status", "capture_id", "raw_sha256"}:
+        if not isinstance(reference, dict) or set(reference) != {
+            "url",
+            "name",
+            "locator",
+            "status",
+            "capture_id",
+            "raw_sha256",
+        }:
             raise ValueError("invalid_material_reference")
         for name in ("url", "name", "locator", "status"):
             _string(reference[name], empty=True)
         if reference["status"] == "fetched":
             _string(reference["capture_id"], 128)
-            if not isinstance(reference["raw_sha256"], str) or not re.fullmatch("[0-9a-f]{64}", reference["raw_sha256"]):
+            if not isinstance(reference["raw_sha256"], str) or not re.fullmatch(
+                "[0-9a-f]{64}", reference["raw_sha256"]
+            ):
                 raise ValueError("fetched_attachment_without_hash")
         elif reference["capture_id"] is not None or reference["raw_sha256"] is not None:
             raise ValueError("unfetched_attachment_has_capture")
     acquired = sum(ref["status"] == "fetched" for ref in materials["references"])
-    expected = ("obtained" if acquired and acquired == len(materials["references"]) else
-                "partially_obtained" if acquired else "not_obtained")
+    expected = (
+        "obtained"
+        if acquired and acquired == len(materials["references"])
+        else "partially_obtained"
+        if acquired
+        else "not_obtained"
+    )
     if materials["status"] != expected:
         raise ValueError("material_status_without_acquisition")
 
@@ -202,9 +271,27 @@ def _validate(observation, bundle):
     """导入前检查一条观察：字段齐全、类型正确、ID 和内容哈希对得上、事实格式合法。"""
     if not isinstance(observation, dict):
         raise ValueError("invalid_observation")
-    required = {"observation_id", "notice_id", "source_id", "simulation", "source_record_key", "identity_kind",
-                "source_url", "capture_id", "raw_sha256", "parser_version", "normalizer_version", "observed_at",
-                "title", "notice_type", "facts", "references", "material_status", "attribution", "run_id"}
+    required = {
+        "observation_id",
+        "notice_id",
+        "source_id",
+        "simulation",
+        "source_record_key",
+        "identity_kind",
+        "source_url",
+        "capture_id",
+        "raw_sha256",
+        "parser_version",
+        "normalizer_version",
+        "observed_at",
+        "title",
+        "notice_type",
+        "facts",
+        "references",
+        "material_status",
+        "attribution",
+        "run_id",
+    }
     if bundle["schema_version"] >= 2:
         required.add("material_reference_evidence")
     if bundle["schema_version"] == 3:
@@ -220,9 +307,14 @@ def _validate(observation, bundle):
     for name in ("source_id", "run_id", "simulation", "normalizer_version"):
         if observation[name] != bundle[name] or type(observation[name]) is not type(bundle[name]):
             raise ValueError("observation_bundle_mismatch")
-    if observation["notice_id"] != _hash([observation["source_id"], observation["simulation"], observation["source_record_key"]]):
+    if observation["notice_id"] != _hash(
+        [observation["source_id"], observation["simulation"], observation["source_record_key"]]
+    ):
         raise ValueError("notice_identity_mismatch")
-    if observation["identity_kind"] not in ("source_url", "content_snapshot") or observation["notice_type"] not in KINDS:
+    if (
+        observation["identity_kind"] not in ("source_url", "content_snapshot")
+        or observation["notice_type"] not in KINDS
+    ):
         raise ValueError("invalid_observation_kind")
     for name in ("source_record_key", "source_url", "capture_id", "parser_version", "material_status"):
         _string(observation[name])
@@ -248,29 +340,44 @@ def _validate(observation, bundle):
         if state != "known":
             continue
         if name in ("published_at", "response_deadline", "original_published_at"):
-            if (not isinstance(value, dict) or set(value) != {"local", "precision", "timezone", "timezone_basis"}
-                    or value["precision"] not in ("date", "minute", "second") or value["timezone"] not in (None, "+08:00")):
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"local", "precision", "timezone", "timezone_basis"}
+                or value["precision"] not in ("date", "minute", "second")
+                or value["timezone"] not in (None, "+08:00")
+            ):
                 raise ValueError("invalid_date_fact")
             _string(value["local"], 32)
-            date_patterns = {"date": r"\d{4}-\d{2}-\d{2}", "minute": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}",
-                             "second": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"}
+            date_patterns = {
+                "date": r"\d{4}-\d{2}-\d{2}",
+                "minute": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}",
+                "second": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
+            }
             if not re.fullmatch(date_patterns[value["precision"]], value["local"]):
                 raise ValueError("date_precision_mismatch")
             datetime.fromisoformat(value["local"])
             if value["timezone_basis"] != ("原文明确北京时间" if value["timezone"] else None):
                 raise ValueError("date_timezone_basis_mismatch")
         elif name == "budget":
-            if (not isinstance(value, dict) or set(value) != {"amount", "currency", "source_unit", "scope"}
-                    or not isinstance(value["amount"], str) or not re.fullmatch(r"\d+(?:\.\d+)?", value["amount"])
-                    or value["currency"] != "CNY" or value["source_unit"] not in ("元", "万元")
-                    or value["scope"] != "unspecified"):
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"amount", "currency", "source_unit", "scope"}
+                or not isinstance(value["amount"], str)
+                or not re.fullmatch(r"\d+(?:\.\d+)?", value["amount"])
+                or value["currency"] != "CNY"
+                or value["source_unit"] not in ("元", "万元")
+                or value["scope"] != "unspecified"
+            ):
                 raise ValueError("invalid_budget_fact")
         else:
             _string(value, 200000)
     if bundle["schema_version"] == 3:
         _validate_evidence_fields(observation["evidence_fields"])
-        if (observation["evidence_fields"]["budget_assessment"]["status"] in ("conflicting", "context_required", "unparsed")
-                and facts["budget"]["status"] == "known"):
+        if (
+            observation["evidence_fields"]["budget_assessment"]["status"]
+            in ("conflicting", "context_required", "unparsed")
+            and facts["budget"]["status"] == "known"
+        ):
             raise ValueError("unsafe_budget_projection")
     if bundle["schema_version"] >= 2:
         evidence = observation["material_reference_evidence"]
@@ -305,8 +412,11 @@ def currentness(observation, as_of):
         date = fact["value"]
         if date["precision"] != "date" and date["timezone"]:
             end = _time(date["local"] + date["timezone"])
-            return {"status": "deadline_passed" if end <= _time(as_of) else "deadline_not_reached",
-                    "reason": "explicit_deadline_only_not_eligibility", "as_of": as_of}
+            return {
+                "status": "deadline_passed" if end <= _time(as_of) else "deadline_not_reached",
+                "reason": "explicit_deadline_only_not_eligibility",
+                "as_of": as_of,
+            }
     return {"status": "unknown", "reason": "deadline_or_timezone_unconfirmed", "as_of": as_of}
 
 
@@ -340,12 +450,19 @@ class Catalog:
             marker.touch(exist_ok=True)
         if (root / "catalog.sqlite3").is_symlink():
             raise ValueError("store_symlink")
-        self.db = (sqlite3.connect((root / "catalog.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=5)
-                   if read_only else sqlite3.connect(root / "catalog.sqlite3", timeout=5))
+        self.db = (
+            sqlite3.connect((root / "catalog.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=5)
+            if read_only
+            else sqlite3.connect(root / "catalog.sqlite3", timeout=5)
+        )
         self.db.row_factory = sqlite3.Row
         # 注册一个 SQL 函数，用于在排序时取规范化器版本的高低。
-        self.db.create_function("normalizer_rank", 1,
-            lambda payload: NORMALIZER_RANK[json.loads(payload)["normalizer_version"]], deterministic=True)
+        self.db.create_function(
+            "normalizer_rank",
+            1,
+            lambda payload: NORMALIZER_RANK[json.loads(payload)["normalizer_version"]],
+            deterministic=True,
+        )
         if read_only:
             try:
                 self.key = self.db.execute("SELECT value FROM settings WHERE key='cursor_key'").fetchone()[0].encode()
@@ -377,18 +494,27 @@ class Catalog:
 
         先全部检查，再在一个事务里写入：要么全部导入，要么一条都不导入。
         """
-        if (not isinstance(bundle, dict) or type(bundle.get("schema_version")) is not int
-                or bundle["schema_version"] not in SCHEMAS
-                or bundle.get("kind") != "normalized_observations"
-                or bundle.get("normalizer_version") != SCHEMAS[bundle["schema_version"]][0]
-                or not isinstance(bundle.get("source_id"), str)
-                or bundle.get("source_id") not in SCHEMAS[bundle["schema_version"]][1]
-                or type(bundle.get("simulation")) is not bool or bundle.get("coverage") != "bounded_sample"
-                or bundle.get("run_status") not in ("succeeded", "partial", "failed", "blocked", "cancelled")):
+        if (
+            not isinstance(bundle, dict)
+            or type(bundle.get("schema_version")) is not int
+            or bundle["schema_version"] not in SCHEMAS
+            or bundle.get("kind") != "normalized_observations"
+            or bundle.get("normalizer_version") != SCHEMAS[bundle["schema_version"]][0]
+            or not isinstance(bundle.get("source_id"), str)
+            or bundle.get("source_id") not in SCHEMAS[bundle["schema_version"]][1]
+            or type(bundle.get("simulation")) is not bool
+            or bundle.get("coverage") != "bounded_sample"
+            or bundle.get("run_status") not in ("succeeded", "partial", "failed", "blocked", "cancelled")
+        ):
             raise ValueError("unsupported_normalized_bundle")
         _string(bundle.get("run_id"), 128)
         observations, failures = bundle.get("observations"), bundle.get("failures")
-        if not isinstance(observations, list) or len(observations) > 100 or not isinstance(failures, list) or len(failures) > 100:
+        if (
+            not isinstance(observations, list)
+            or len(observations) > 100
+            or not isinstance(failures, list)
+            or len(failures) > 100
+        ):
             raise ValueError("invalid_bundle_items")
         payload = _json(bundle)
         if len(payload.encode()) > 32 * 1024 * 1024:
@@ -399,14 +525,28 @@ class Catalog:
         added = 0
         with self.db:
             for observation in observations:
-                cursor = self.db.execute("INSERT OR IGNORE INTO observations(id,notice_id,observed_at,simulation,kind,title,payload) "
-                                        "VALUES(?,?,?,?,?,?,?)", (observation["observation_id"], observation["notice_id"],
-                    _time(observation["observed_at"]).isoformat(), observation["simulation"], observation["notice_type"],
-                    observation["title"], _json(observation)))
+                cursor = self.db.execute(
+                    "INSERT OR IGNORE INTO observations(id,notice_id,observed_at,simulation,kind,title,payload) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (
+                        observation["observation_id"],
+                        observation["notice_id"],
+                        _time(observation["observed_at"]).isoformat(),
+                        observation["simulation"],
+                        observation["notice_type"],
+                        observation["title"],
+                        _json(observation),
+                    ),
+                )
                 added += cursor.rowcount
             self.db.execute("INSERT OR IGNORE INTO imports VALUES(?,?,?)", (bundle_id, bundle["run_id"], payload))
-        return {"bundle_id": bundle_id, "added": added, "duplicates": len(observations) - added,
-                "run_status": bundle["run_status"], "failures": len(failures)}
+        return {
+            "bundle_id": bundle_id,
+            "added": added,
+            "duplicates": len(observations) - added,
+            "run_status": bundle["run_status"],
+            "failures": len(failures),
+        }
 
     def _cursor(self, value):
         """生成翻页游标：内容加 HMAC 签名，客户端改不了。"""
@@ -428,9 +568,12 @@ class Catalog:
 
     def _current(self, snapshot):
         """在快照范围内，取每条公告的当前版本。"""
-        return self.db.execute(f"""SELECT * FROM (
+        return self.db.execute(
+            f"""SELECT * FROM (
             SELECT *,row_number() OVER(PARTITION BY notice_id ORDER BY {OBSERVATION_ORDER}) AS rank
-            FROM observations WHERE seq<=?) WHERE rank=1 ORDER BY observed_at DESC,notice_id ASC""", (snapshot,)).fetchall()
+            FROM observations WHERE seq<=?) WHERE rank=1 ORDER BY observed_at DESC,notice_id ASC""",
+            (snapshot,),
+        ).fetchall()
 
     def query(self, *, keyword="", kind=None, page_size=20, simulation=False, as_of=None, cursor=None):
         """搜索公告。第一页时固定一个快照，后续翻页都用同一个快照，结果不会因为新导入而错乱。
@@ -454,23 +597,48 @@ class Catalog:
                 imports_snapshot = self.db.execute("SELECT coalesce(max(rowid),0) FROM imports").fetchone()[0]
             finally:
                 self.db.rollback()
-            state = {"snapshot": snapshot, "imports_snapshot": imports_snapshot,
-                     "offset": 0, "filters": filters,
-                     "as_of": _time(as_of).isoformat() if as_of else datetime.now(timezone.utc).isoformat()}
-        rows = [json.loads(row["payload"]) for row in self._current(state["snapshot"])
-                if bool(row["simulation"]) == simulation and (kind is None or row["kind"] == kind)]
+            state = {
+                "snapshot": snapshot,
+                "imports_snapshot": imports_snapshot,
+                "offset": 0,
+                "filters": filters,
+                "as_of": _time(as_of).isoformat() if as_of else datetime.now(timezone.utc).isoformat(),
+            }
+        rows = [
+            json.loads(row["payload"])
+            for row in self._current(state["snapshot"])
+            if bool(row["simulation"]) == simulation and (kind is None or row["kind"] == kind)
+        ]
         rows = [row for row in rows if _matches_keyword(row, keyword)]
         offset = state["offset"]
-        page = rows[offset:offset + page_size]
+        page = rows[offset : offset + page_size]
         next_cursor = self._cursor({**state, "offset": offset + page_size}) if offset + page_size < len(rows) else None
-        imports = [json.loads(r[0]) for r in self.db.execute(
-            "SELECT payload FROM imports WHERE rowid<=? ORDER BY rowid DESC", (state["imports_snapshot"],))]
-        summaries = [{"run_id": b["run_id"], "source_id": b["source_id"], "run_status": b["run_status"],
-                      "observations": len(b["observations"]), "failures": len(b["failures"])}
-                     for b in imports if b["simulation"] == simulation][:10]
-        return {"items": [{**row, "currentness": currentness(row, state["as_of"])} for row in page],
-                "total": len(rows), "next_cursor": next_cursor, "as_of": state["as_of"],
-                "snapshot": state["snapshot"], "simulation": simulation, "recent_runs": summaries}
+        imports = [
+            json.loads(r[0])
+            for r in self.db.execute(
+                "SELECT payload FROM imports WHERE rowid<=? ORDER BY rowid DESC", (state["imports_snapshot"],)
+            )
+        ]
+        summaries = [
+            {
+                "run_id": b["run_id"],
+                "source_id": b["source_id"],
+                "run_status": b["run_status"],
+                "observations": len(b["observations"]),
+                "failures": len(b["failures"]),
+            }
+            for b in imports
+            if b["simulation"] == simulation
+        ][:10]
+        return {
+            "items": [{**row, "currentness": currentness(row, state["as_of"])} for row in page],
+            "total": len(rows),
+            "next_cursor": next_cursor,
+            "as_of": state["as_of"],
+            "snapshot": state["snapshot"],
+            "simulation": simulation,
+            "recent_runs": summaries,
+        }
 
     def detail(self, notice_id, *, as_of=None):
         """公告详情：当前版本、全部历史版本、时间状态、关联公告。"""
@@ -480,8 +648,12 @@ class Catalog:
         self.db.execute("BEGIN")
         try:
             snapshot = self.db.execute("SELECT coalesce(max(seq),0) FROM observations").fetchone()[0]
-            history = [json.loads(r[0]) for r in self.db.execute(
-                f"SELECT payload FROM observations WHERE notice_id=? ORDER BY {OBSERVATION_ORDER}", (notice_id,))]
+            history = [
+                json.loads(r[0])
+                for r in self.db.execute(
+                    f"SELECT payload FROM observations WHERE notice_id=? ORDER BY {OBSERVATION_ORDER}", (notice_id,)
+                )
+            ]
             if not history:
                 raise ValueError("notice_not_found")
             current = history[0]
@@ -489,15 +661,24 @@ class Catalog:
         finally:
             self.db.rollback()
         now = _time(as_of).isoformat() if as_of else datetime.now(timezone.utc).isoformat()
-        return {"current": current, "history": history, "currentness": currentness(current, now),
-                "relationships": relationships(current, candidates), "snapshot": snapshot}
+        return {
+            "current": current,
+            "history": history,
+            "currentness": currentness(current, now),
+            "relationships": relationships(current, candidates),
+            "snapshot": snapshot,
+        }
 
     def observation(self, notice_id, observation_id):
         """读取一个固定的观察。用于研究按版本取材：有了新版本，旧报告的输入也不会被替换。"""
-        if any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
-               for value in (notice_id, observation_id)):
+        if any(
+            not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+            for value in (notice_id, observation_id)
+        ):
             raise ValueError("invalid_observation_id")
-        row = self.db.execute("SELECT payload FROM observations WHERE notice_id=? AND id=?", (notice_id, observation_id)).fetchone()
+        row = self.db.execute(
+            "SELECT payload FROM observations WHERE notice_id=? AND id=?", (notice_id, observation_id)
+        ).fetchone()
         if row is None:
             raise ValueError("observation_not_found")
         return json.loads(row[0])
@@ -515,11 +696,26 @@ class Catalog:
             high = self.db.execute("SELECT coalesce(max(seq),0) FROM observations").fetchone()[0]
             if after > high:
                 raise ValueError("cursor_ahead")
-            rows = self.db.execute("SELECT seq,id,notice_id,observed_at FROM observations WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
-                                   (after, high, limit)).fetchall()
-            items = [{"seq": r["seq"], "event_id": "catalog:" + r["id"], "notice_id": r["notice_id"],
-                      "observation_id": r["id"], "observed_at": r["observed_at"]} for r in rows]
-            return {"schema_version": 1, "items": items, "next_after": rows[-1]["seq"] if rows else after, "high_watermark": high}
+            rows = self.db.execute(
+                "SELECT seq,id,notice_id,observed_at FROM observations WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
+                (after, high, limit),
+            ).fetchall()
+            items = [
+                {
+                    "seq": r["seq"],
+                    "event_id": "catalog:" + r["id"],
+                    "notice_id": r["notice_id"],
+                    "observation_id": r["id"],
+                    "observed_at": r["observed_at"],
+                }
+                for r in rows
+            ]
+            return {
+                "schema_version": 1,
+                "items": items,
+                "next_after": rows[-1]["seq"] if rows else after,
+                "high_watermark": high,
+            }
         finally:
             self.db.rollback()
 
@@ -548,15 +744,26 @@ class Catalog:
                 if item["notice_id"] == notice_id or item["simulation"] != current["simulation"]:
                     continue
                 for relation in relationships(item, candidates):
-                    if (relation.get("target_notice_id") == notice_id
-                            or relation.get("target_observation_id") == current["observation_id"]):
-                        record = {**relation, "source_notice_id": item["notice_id"], "source_observation_id": item["observation_id"]}
+                    if (
+                        relation.get("target_notice_id") == notice_id
+                        or relation.get("target_observation_id") == current["observation_id"]
+                    ):
+                        record = {
+                            **relation,
+                            "source_notice_id": item["notice_id"],
+                            "source_observation_id": item["observation_id"],
+                        }
                         incoming.append(record)
                         if relation.get("status") == "evidenced" and item not in related:
                             related.append(item)
             related.sort(key=lambda o: (o["observed_at"], o["notice_id"]))
-            return {"notice_id": notice_id, "snapshot": snapshot, "current": current,
-                    "observations": [current, *related], "relationships": incoming + relationships(current, candidates)}
+            return {
+                "notice_id": notice_id,
+                "snapshot": snapshot,
+                "current": current,
+                "observations": [current, *related],
+                "relationships": incoming + relationships(current, candidates),
+            }
         finally:
             self.db.rollback()
 
@@ -576,44 +783,96 @@ def relationships(current, candidates):
     contract_reference = current["facts"].get("original_contract_reference", {}).get("evidence", [])
     if contract_reference:
         # 引用的是"原合同"而不是"原采购公告"，不能当成采购更正来关联，哪怕项目编号相同。
-        return [{"status": "unresolved", "basis": "original_contract_outside_scope",
-                 "source_observation_id": current["observation_id"], "evidence": contract_reference}]
+        return [
+            {
+                "status": "unresolved",
+                "basis": "original_contract_outside_scope",
+                "source_observation_id": current["observation_id"],
+                "evidence": contract_reference,
+            }
+        ]
+
     def value(item, name):
         fact = item["facts"][name]
         return fact["value"] if fact["status"] == "known" else None
+
     def different_lot(other):
-        return (value(current, "lot_identifier") and value(other, "lot_identifier")
-                and value(current, "lot_identifier") != value(other, "lot_identifier"))
+        return (
+            value(current, "lot_identifier")
+            and value(other, "lot_identifier")
+            and value(current, "lot_identifier") != value(other, "lot_identifier")
+        )
+
     family = SOURCE_FAMILIES.get(current["source_id"])
     target_kinds = ("procurement", "correction") if current["notice_type"] == "award" else ("procurement",)
-    pool = [c for c in candidates if family is not None and SOURCE_FAMILIES.get(c["source_id"]) == family
-            and c["simulation"] == current["simulation"] and c["notice_type"] in target_kinds]
-    explicit = [(other, ref) for other in pool for ref in current["references"]
-                if other["identity_kind"] == "source_url" and other["source_record_key"] == ref["url"]]
+    pool = [
+        c
+        for c in candidates
+        if family is not None
+        and SOURCE_FAMILIES.get(c["source_id"]) == family
+        and c["simulation"] == current["simulation"]
+        and c["notice_type"] in target_kinds
+    ]
+    explicit = [
+        (other, ref)
+        for other in pool
+        for ref in current["references"]
+        if other["identity_kind"] == "source_url" and other["source_record_key"] == ref["url"]
+    ]
     if explicit:
         conflicts = [(other, ref) for other, ref in explicit if different_lot(other)]
         if conflicts:
             # 链接对上了但包号不一致：标为冲突，两边的原文都保留，不建立关联。
-            return [{"status": "conflicting", "basis": "original_link_lot_mismatch",
-                     "source_observation_id": current["observation_id"], "target_observation_id": other["observation_id"],
-                     "evidence": [ref] + current["facts"]["lot_identifier"]["evidence"]
-                     + other["facts"]["lot_identifier"]["evidence"]} for other, ref in conflicts]
+            return [
+                {
+                    "status": "conflicting",
+                    "basis": "original_link_lot_mismatch",
+                    "source_observation_id": current["observation_id"],
+                    "target_observation_id": other["observation_id"],
+                    "evidence": [ref]
+                    + current["facts"]["lot_identifier"]["evidence"]
+                    + other["facts"]["lot_identifier"]["evidence"],
+                }
+                for other, ref in conflicts
+            ]
         matches = {other["notice_id"]: (other, ref) for other, ref in explicit}
-        return [{"target_notice_id": other["notice_id"], "source_observation_id": current["observation_id"],
-                 "target_observation_id": other["observation_id"], "status": "evidenced" if len(matches) == 1 else "ambiguous",
-                 "basis": "explicit_original_link", "evidence": [ref]} for other, ref in matches.values()]
+        return [
+            {
+                "target_notice_id": other["notice_id"],
+                "source_observation_id": current["observation_id"],
+                "target_observation_id": other["observation_id"],
+                "status": "evidenced" if len(matches) == 1 else "ambiguous",
+                "basis": "explicit_original_link",
+                "evidence": [ref],
+            }
+            for other, ref in matches.values()
+        ]
     if current["references"]:
         return [{"status": "unresolved", "basis": "original_link_not_in_catalog", "evidence": current["references"]}]
     buyer, number = value(current, "buyer"), value(current, "project_number")
     if not buyer or not number:
         return [{"status": "unresolved", "basis": "missing_buyer_or_project_number", "evidence": []}]
-    possible = [other for other in pool if value(other, "buyer") == buyer and value(other, "project_number") == number
-                and not different_lot(other)]
+    possible = [
+        other
+        for other in pool
+        if value(other, "buyer") == buyer and value(other, "project_number") == number and not different_lot(other)
+    ]
     if not possible:
         return [{"status": "unresolved", "basis": "no_matching_original", "evidence": []}]
-    return [{"target_notice_id": other["notice_id"], "source_observation_id": current["observation_id"],
-             "target_observation_id": other["observation_id"], "status": "candidate" if len(possible) == 1 else "ambiguous",
-             "target_notice_type": other["notice_type"], "source_notice_type": current["notice_type"],
-             "basis": ("same_source_buyer_project_number" if other["source_id"] == current["source_id"]
-                       else "same_publisher_buyer_project_number"), "evidence": current["facts"]["project_number"]["evidence"]
-             + current["facts"]["buyer"]["evidence"]} for other in possible]
+    return [
+        {
+            "target_notice_id": other["notice_id"],
+            "source_observation_id": current["observation_id"],
+            "target_observation_id": other["observation_id"],
+            "status": "candidate" if len(possible) == 1 else "ambiguous",
+            "target_notice_type": other["notice_type"],
+            "source_notice_type": current["notice_type"],
+            "basis": (
+                "same_source_buyer_project_number"
+                if other["source_id"] == current["source_id"]
+                else "same_publisher_buyer_project_number"
+            ),
+            "evidence": current["facts"]["project_number"]["evidence"] + current["facts"]["buyer"]["evidence"],
+        }
+        for other in possible
+    ]

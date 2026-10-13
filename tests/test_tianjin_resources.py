@@ -1,4 +1,5 @@
 """天津三个已核实资源的离线契约验收；响应均为虚构，不证明真实API格式。"""
+
 from contextlib import redirect_stdout
 from copy import deepcopy
 import io
@@ -50,10 +51,16 @@ class ResourceTransport:
             raise KeyboardInterrupt()
         self.calls.append(page_number)
         url = tj.page_url(page_number, page_size, self.source_id)
-        body = json.dumps({"code": 200, "columnNames": list(self.fields), "list": [list(self.fields.values())],
-                           "totalCount": self.total}, ensure_ascii=False).encode()
-        return FetchResult(url, url, 200, {"content-type": "application/json"}, body,
-                           "2026-09-30T12:00:00Z", 1)
+        body = json.dumps(
+            {
+                "code": 200,
+                "columnNames": list(self.fields),
+                "list": [list(self.fields.values())],
+                "totalCount": self.total,
+            },
+            ensure_ascii=False,
+        ).encode()
+        return FetchResult(url, url, 200, {"content-type": "application/json"}, body, "2026-09-30T12:00:00Z", 1)
 
 
 class ResourceTests(unittest.TestCase):
@@ -71,8 +78,9 @@ class ResourceTests(unittest.TestCase):
 
     def collect(self, source, fields, *, simulation=True):
         self.sequence += 1
-        run = self.ingestion.create_run({**tj.request_spec(source_id=source), "simulation": simulation},
-                                        str(self.sequence))[0]
+        run = self.ingestion.create_run(
+            {**tj.request_spec(source_id=source), "simulation": simulation}, str(self.sequence)
+        )[0]
         with patch("socket.socket", side_effect=AssertionError("虚构资料不得联网")):
             tj.execute(self.ingestion, run, ResourceTransport(source, fields))
             raw = export_bundle(self.ingestion, run)
@@ -101,12 +109,19 @@ class ResourceTests(unittest.TestCase):
         token.write_text("fixture-not-a-real-token", encoding="utf-8")
         for source, resource in tj.SOURCE_RESOURCES.items():
             calls = []
+
             def exchange(url, *args):
                 calls.append(url)
                 return 200, {"content-type": "application/json"}, b'{"code":500,"msg":"fixture failure"}'
+
             with patch.object(tj, "utc_now", return_value="2026-09-30T12:00:00Z"):
-                result = tj.TianjinTransport(source_id=source, allow_network=True, token_file=token,
-                    resolver=lambda *args: ["1.1.1.1"], exchange=exchange).fetch_page(1, 2, checkpoint=lambda: None)
+                result = tj.TianjinTransport(
+                    source_id=source,
+                    allow_network=True,
+                    token_file=token,
+                    resolver=lambda *args: ["1.1.1.1"],
+                    exchange=exchange,
+                ).fetch_page(1, 2, checkpoint=lambda: None)
             self.assertEqual(len(calls), 1)
             self.assertIn("/api/invoke/" + resource + "?", calls[0])
             self.assertNotIn("fixture-not-a-real-token", repr(result))
@@ -141,8 +156,15 @@ class ResourceTests(unittest.TestCase):
     def test_cli_collect_binds_selected_resource_and_idempotency(self):
         # CLI入口不能默默回到默认谈判资源；同一个幂等键换资源必须拒绝。
         transport = ResourceTransport(CONSULTATION, row_fields())
-        args = ["--store", str(self.root / "ingestion"), "collect-tianjin", "--key", "cli-resource",
-                "--resource", "consultation"]
+        args = [
+            "--store",
+            str(self.root / "ingestion"),
+            "collect-tianjin",
+            "--key",
+            "cli-resource",
+            "--resource",
+            "consultation",
+        ]
         with patch.object(tj, "TianjinTransport", return_value=transport) as factory, redirect_stdout(io.StringIO()):
             self.assertEqual(main(args), 0)
             self.assertEqual(factory.call_args.kwargs["source_id"], CONSULTATION)
@@ -158,8 +180,9 @@ class ResourceTests(unittest.TestCase):
             doc = raw["documents"][0]
             item = self.catalog.detail(bundle["observations"][0]["notice_id"])["current"]
             self.assertEqual(item["material_status"], "reference_only")
-            self.assertEqual(item["material_reference_evidence"],
-                [{"label": label, "text": text, "locator": "$.list[0][3]"}])
+            self.assertEqual(
+                item["material_reference_evidence"], [{"label": label, "text": text, "locator": "$.list[0][3]"}]
+            )
             self.assertEqual(doc["content"]["attachments"], [])
             self.assertEqual(len(self.ingestion.report(raw["run_id"])["captures"]), 1)
         _, missing = self.collect(CONSULTATION, row_fields())
@@ -186,7 +209,11 @@ class ResourceTests(unittest.TestCase):
 
     def test_correction_can_find_original_in_other_reviewed_tianjin_resource(self):
         _, original = self.collect(CONSULTATION, row_fields())
-        correction_fields = {"公告标题": "虚构事项更正公告", "采购项目编号": "DEMO-RESOURCE-001", "采购人名称": "虚构采购方"}
+        correction_fields = {
+            "公告标题": "虚构事项更正公告",
+            "采购项目编号": "DEMO-RESOURCE-001",
+            "采购人名称": "虚构采购方",
+        }
         _, correction = self.collect(CORRECTION, correction_fields)
         item = correction["observations"][0]
         relations = self.catalog.detail(item["notice_id"])["relationships"]
@@ -205,7 +232,9 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(relations[0]["status"], "unresolved")
         # 此处simulation=False只测目录隔离，传输仍是离线虚构对象，不是实网成绩。
         _, separate = self.collect(CORRECTION, row_fields(), simulation=False)
-        self.assertEqual(self.catalog.detail(separate["observations"][0]["notice_id"])["relationships"][0]["status"], "unresolved")
+        self.assertEqual(
+            self.catalog.detail(separate["observations"][0]["notice_id"])["relationships"][0]["status"], "unresolved"
+        )
 
     def test_contract_reference_prevents_false_procurement_relationship(self):
         self.collect(CONSULTATION, row_fields())
@@ -234,8 +263,12 @@ class ResourceTests(unittest.TestCase):
         self.catalog.import_bundle(old)
         self.assertIn(item, self.catalog.detail(item["notice_id"])["history"])
         self.assertEqual(self.catalog.detail(item["notice_id"])["current"], v2["observations"][0])
-        for invalid in ({**v2, "schema_version": 1}, {**old, "schema_version": 2},
-                        {**old, "source_id": CORRECTION}, {**v2, "source_id": []}):
+        for invalid in (
+            {**v2, "schema_version": 1},
+            {**old, "schema_version": 2},
+            {**old, "source_id": CORRECTION},
+            {**v2, "source_id": []},
+        ):
             with self.assertRaises(ValueError):
                 self.catalog.import_bundle(invalid)
         malformed = deepcopy(v2)
@@ -247,8 +280,9 @@ class ResourceTests(unittest.TestCase):
 
     def test_late_v1_cannot_restore_contract_as_procurement_candidate(self):
         self.collect(tj.SOURCE_ID, row_fields("虚构项目采购公告"))
-        _, v2 = self.collect(tj.SOURCE_ID, row_fields("虚构事项更正公告",
-            **{"原合同公告链接": "https://example.test/contract"}))
+        _, v2 = self.collect(
+            tj.SOURCE_ID, row_fields("虚构事项更正公告", **{"原合同公告链接": "https://example.test/contract"})
+        )
         current = v2["observations"][0]
         old = legacy_bundle(v2)
         self.catalog.import_bundle(old)
@@ -274,8 +308,10 @@ class ResourceTests(unittest.TestCase):
             with_catalog.import_bundle(second)
             next_page = with_catalog.query(simulation=True, page_size=1, cursor=page["next_cursor"])
             self.assertEqual(next_page["items"][0]["normalizer_version"], "procurement-facts-v1")
-            self.assertEqual({r["normalizer_version"] for r in with_catalog.query(simulation=True)["items"]},
-                             {"procurement-facts-v3"})
+            self.assertEqual(
+                {r["normalizer_version"] for r in with_catalog.query(simulation=True)["items"]},
+                {"procurement-facts-v3"},
+            )
             # 规范版本只在获取时间相同时排序；不能让旧获取的v2压过新获取的v1。
             newer = legacy_bundle(first)
             item = newer["observations"][0]

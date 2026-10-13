@@ -11,6 +11,7 @@ research、tracking 的内部接口都用这里的 create_server 起服务，用
 
 v2 计划换成 FastAPI，这一层基本可以删掉（见 docs/v2-blueprint.md）。
 """
+
 from __future__ import annotations
 
 from http.client import HTTPConnection, HTTPException
@@ -22,9 +23,9 @@ import socket
 import time
 from urllib.parse import urlsplit
 
-BODY_TIMEOUT = 10.0              # 读取请求体的总时限（秒）
-REJECT_DRAIN_TIMEOUT = 0.25      # 拒绝请求后，最多再等多久来读掉没读完的请求体
-REJECT_DRAIN_BYTES = 64 * 1024   # 拒绝请求后，最多读掉多少字节
+BODY_TIMEOUT = 10.0  # 读取请求体的总时限（秒）
+REJECT_DRAIN_TIMEOUT = 0.25  # 拒绝请求后，最多再等多久来读掉没读完的请求体
+REJECT_DRAIN_BYTES = 64 * 1024  # 拒绝请求后，最多读掉多少字节
 
 
 class LocalHTTPError(Exception):
@@ -42,6 +43,7 @@ def encode(value):
 
 def decode(raw):
     """严格解析 JSON 字节：不允许重复键和 NaN，限制嵌套深度和节点数，顶层必须是对象。"""
+
     def pairs(values):
         result = {}
         for key, value in values:
@@ -49,8 +51,12 @@ def decode(raw):
                 raise ValueError("duplicate_json")
             result[key] = value
         return result
-    result = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
-                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite_json")))
+
+    result = json.loads(
+        raw.decode("utf-8"),
+        object_pairs_hook=pairs,
+        parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite_json")),
+    )
     pending, count = [(result, 0)], 0
     while pending:
         item, depth = pending.pop()
@@ -78,7 +84,12 @@ class LocalClient:
         match = re.fullmatch(r"http://127\.0\.0\.1:([1-9][0-9]{0,4})", base_url)
         if not match or not 1 <= int(match[1]) <= 65535 or not token_valid(token):
             raise ValueError("invalid_local_service")
-        if type(timeout) not in (float, int) or not 0 < timeout <= 60 or type(max_bytes) is not int or not 1 <= max_bytes <= 32 * 1024 * 1024:
+        if (
+            type(timeout) not in (float, int)
+            or not 0 < timeout <= 60
+            or type(max_bytes) is not int
+            or not 1 <= max_bytes <= 32 * 1024 * 1024
+        ):
             raise ValueError("invalid_limits")
         self.port, self.token, self.timeout, self.max_bytes = int(match[1]), token, timeout, max_bytes
 
@@ -89,7 +100,14 @@ class LocalClient:
         网络问题、格式不对、超时，一律抛 LocalHTTPError("service_unavailable", 503)。
         """
         parts = urlsplit(path)
-        if method not in ("GET", "POST") or not path.startswith("/") or parts.scheme or parts.netloc or parts.fragment or len(path) > 8192:
+        if (
+            method not in ("GET", "POST")
+            or not path.startswith("/")
+            or parts.scheme
+            or parts.netloc
+            or parts.fragment
+            or len(path) > 8192
+        ):
             raise LocalHTTPError("invalid_route", 400)
         if method == "GET" and payload is not None:
             raise LocalHTTPError("unexpected_body", 400)
@@ -105,18 +123,25 @@ class LocalClient:
         try:
             connection.request(method, path, raw, headers)
             sock = connection.sock
+
             def remaining():
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise TimeoutError()
                 sock.settimeout(left)
+
             remaining()
             response = connection.getresponse()
             lengths = response.headers.get_all("Content-Length", [])
-            if (response.getheader("Content-Type", "").split(";", 1)[0] != "application/json"
-                    or response.getheader("Content-Encoding") or len(lengths) != 1
-                    or not lengths[0].isdigit() or int(lengths[0]) > self.max_bytes
-                    or response.getheader("Transfer-Encoding") or 300 <= response.status < 400):
+            if (
+                response.getheader("Content-Type", "").split(";", 1)[0] != "application/json"
+                or response.getheader("Content-Encoding")
+                or len(lengths) != 1
+                or not lengths[0].isdigit()
+                or int(lengths[0]) > self.max_bytes
+                or response.getheader("Transfer-Encoding")
+                or 300 <= response.status < 400
+            ):
                 raise ValueError("invalid_response")
             expected, body = int(lengths[0]), bytearray()
             while len(body) < expected:
@@ -190,8 +215,11 @@ class _Handler(BaseHTTPRequestHandler):
         if not lengths and self.headers.get("Transfer-Encoding") is None:
             return
         limit = min(REJECT_DRAIN_BYTES, self.server.max_bytes)
-        if (self.headers.get("Transfer-Encoding") is None and len(lengths) == 1
-                and re.fullmatch(r"[0-9]{1,10}", lengths[0])):
+        if (
+            self.headers.get("Transfer-Encoding") is None
+            and len(lengths) == 1
+            and re.fullmatch(r"[0-9]{1,10}", lengths[0])
+        ):
             limit = min(limit, max(0, int(lengths[0]) - self._body_received))
         deadline = time.monotonic() + REJECT_DRAIN_TIMEOUT
         try:
@@ -236,14 +264,22 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if self.headers.get_all("Host") != [self.server.authority] or len(self.path) > 8192:
                 raise LocalHTTPError("invalid_host", 400)
-            if any(self.headers.get(name) is not None for name in ("Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto")):
+            if any(
+                self.headers.get(name) is not None for name in ("Forwarded", "X-Forwarded-Host", "X-Forwarded-Proto")
+            ):
                 raise LocalHTTPError("forwarded_request_rejected", 400)
             parts = urlsplit(self.path)
             if not self.path.startswith("/") or parts.scheme or parts.netloc or parts.fragment or "%" in parts.path:
                 raise LocalHTTPError("invalid_route", 400)
             tokens = self.headers.get_all("Authorization", [])
-            identity = next((name for name, token in self.server.tokens.items()
-                             if len(tokens) == 1 and hmac.compare_digest(tokens[0].encode(), ("Bearer " + token).encode())), None)
+            identity = next(
+                (
+                    name
+                    for name, token in self.server.tokens.items()
+                    if len(tokens) == 1 and hmac.compare_digest(tokens[0].encode(), ("Bearer " + token).encode())
+                ),
+                None,
+            )
             if identity is None:
                 raise LocalHTTPError("unauthorized", 401)
             if self.command not in ("GET", "POST"):
@@ -263,8 +299,11 @@ class _Handler(BaseHTTPRequestHandler):
                 raise LocalHTTPError("unexpected_body", 400)
             # 有多个调用方时，把调用方的名字一起传给 dispatch，由服务自己决定谁能用哪个接口。
             # 例如 tracking 不能借用户发起分析的接口，绕过自动复核的委托检查。
-            result = (self.server.dispatch(self.command, self.path, data, identity)
-                      if self.server.multiple_tokens else self.server.dispatch(self.command, self.path, data))
+            result = (
+                self.server.dispatch(self.command, self.path, data, identity)
+                if self.server.multiple_tokens
+                else self.server.dispatch(self.command, self.path, data)
+            )
             status, value = result if isinstance(result, tuple) else (200, result)
             self._send(status, value)
         except LocalHTTPError as exc:
@@ -292,9 +331,16 @@ def create_server(dispatch, token, *, port=0, host="127.0.0.1", max_bytes=8 * 10
     """
     multiple = isinstance(token, dict)
     tokens = token if multiple else {"service": token}
-    if (host != "127.0.0.1" or not tokens or not all(isinstance(k, str) and token_valid(v) for k, v in tokens.items())
-            or len(set(tokens.values())) != len(tokens) or type(port) is not int or not 0 <= port <= 65535
-            or type(max_bytes) is not int or not 1 <= max_bytes <= 32 * 1024 * 1024):
+    if (
+        host != "127.0.0.1"
+        or not tokens
+        or not all(isinstance(k, str) and token_valid(v) for k, v in tokens.items())
+        or len(set(tokens.values())) != len(tokens)
+        or type(port) is not int
+        or not 0 <= port <= 65535
+        or type(max_bytes) is not int
+        or not 1 <= max_bytes <= 32 * 1024 * 1024
+    ):
         raise ValueError("invalid_local_server")
     server = _Server((host, port), _Handler)
     server.dispatch, server.tokens, server.max_bytes = dispatch, tokens, max_bytes

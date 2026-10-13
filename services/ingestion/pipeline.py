@@ -6,6 +6,7 @@
 只处理公开资料，不调模型，也不对项目做任何判断。
 能不能真的联网抓取，取决于来源准入文件和网站的 robots.txt；离线测试通过不代表来源已获准。
 """
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -15,20 +16,41 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from services.ingestion.archive import Store, StoreError
 from services.ingestion.sources.ccgp import (
-    MAX_HTML_BYTES, SEARCH_URL, _notice_url, build_search_params,
-    parse_notice_page, parse_search_page,
+    MAX_HTML_BYTES,
+    SEARCH_URL,
+    _notice_url,
+    build_search_params,
+    parse_notice_page,
+    parse_search_page,
 )
 from services.ingestion.transport import FetchError
 
 PARSER_VERSION = "public-acquisition-v3"
 MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
-BLOCKING_ERRORS = frozenset({
-    "blocked", "access_blocked", "policy_required", "policy_invalid", "policy_expired_or_not_yet_valid",
-    "attachment_not_approved", "url_not_allowed", "dns_not_public", "robots_denied", "robots_unavailable",
-    "robots_invalid", "redirect_not_allowed", "request_budget_exceeded", "byte_budget_exceeded",
-    "time_budget_exceeded", "retry_after_out_of_bounds",
-    "network_opt_in_required", "dns_target_not_allowed", "doh_response_rejected", "doh_transport_error",
-})
+BLOCKING_ERRORS = frozenset(
+    {
+        "blocked",
+        "access_blocked",
+        "policy_required",
+        "policy_invalid",
+        "policy_expired_or_not_yet_valid",
+        "attachment_not_approved",
+        "url_not_allowed",
+        "dns_not_public",
+        "robots_denied",
+        "robots_unavailable",
+        "robots_invalid",
+        "redirect_not_allowed",
+        "request_budget_exceeded",
+        "byte_budget_exceeded",
+        "time_budget_exceeded",
+        "retry_after_out_of_bounds",
+        "network_opt_in_required",
+        "dns_target_not_allowed",
+        "doh_response_rejected",
+        "doh_transport_error",
+    }
+)
 
 
 def _canonical_notice_url(url: str) -> str:
@@ -44,15 +66,26 @@ def _canonical_notice_url(url: str) -> str:
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, ""))
 
 
-def request_spec(*, keyword: str | None = None, notice_urls=(), pages: int = 1,
-                 max_notices: int = 10, max_attachments: int = 5,
-                 attachments: bool = False, start_date=None, end_date=None) -> dict:
+def request_spec(
+    *,
+    keyword: str | None = None,
+    notice_urls=(),
+    pages: int = 1,
+    max_notices: int = 10,
+    max_attachments: int = 5,
+    attachments: bool = False,
+    start_date=None,
+    end_date=None,
+) -> dict:
     """生成 CCGP 搜索采集的请求：按关键词搜索，或者直接给出公告 URL，二选一。
 
     所有参数都会参与幂等比较：同一个幂等键配不同参数会报冲突。
     """
-    for name, value, limit in (("pages", pages, 5), ("max_notices", max_notices, 20),
-                                ("max_attachments", max_attachments, 10)):
+    for name, value, limit in (
+        ("pages", pages, 5),
+        ("max_notices", max_notices, 20),
+        ("max_attachments", max_attachments, 10),
+    ):
         if type(value) is not int or not 1 <= value <= limit:
             raise ValueError(f"{name}须为1到{limit}的整数")
     if type(attachments) is not bool or bool(keyword) == bool(notice_urls):
@@ -69,15 +102,33 @@ def request_spec(*, keyword: str | None = None, notice_urls=(), pages: int = 1,
         keyword = keyword.strip()
     elif start_date is not None or end_date is not None or pages != 1:
         raise ValueError("明确公告入口不接受搜索日期/分页参数")
-    return {"schema_version": 1, "source_id": "cn_ccgp", "keyword": keyword,
-            "notice_urls": urls, "pages": pages, "max_notices": max_notices,
-            "max_attachments": max_attachments, "attachments": attachments,
-            "start_date": start_date, "end_date": end_date}
+    return {
+        "schema_version": 1,
+        "source_id": "cn_ccgp",
+        "keyword": keyword,
+        "notice_urls": urls,
+        "pages": pages,
+        "max_notices": max_notices,
+        "max_attachments": max_attachments,
+        "attachments": attachments,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
 
 
-def public_request_spec(*, source_id="cn_ccgp", category=None, notice_urls=(), start_page=1,
-                        pages=1, max_notices=10, max_attachments=5, attachments=False,
-                        title_terms=(), dns_mode="system"):
+def public_request_spec(
+    *,
+    source_id="cn_ccgp",
+    category=None,
+    notice_urls=(),
+    start_page=1,
+    pages=1,
+    max_notices=10,
+    max_attachments=5,
+    attachments=False,
+    title_terms=(),
+    dns_mode="system",
+):
     """生成按栏目采集的请求（CCGP 或海南）：指定栏目和页码范围，或者直接给出公告 URL。
 
     title_terms 是标题筛选词：只抓标题里含这些词的公告。它只是缩小抓取范围，
@@ -85,18 +136,28 @@ def public_request_spec(*, source_id="cn_ccgp", category=None, notice_urls=(), s
     DNS 模式和筛选词也参与幂等比较，恢复运行时不能悄悄换来源、扩大页数或改网络模式。
     """
     from services.ingestion.sources.public_notices import build_listing_url, canonical_notice_url
+
     if source_id not in ("cn_ccgp", "cn_hainan") or dns_mode not in ("system", "google-doh"):
         raise ValueError("invalid_public_source_or_dns")
-    for name, value, maximum in (("start_page", start_page, 10000), ("pages", pages, 5),
-                                 ("max_notices", max_notices, 20), ("max_attachments", max_attachments, 10)):
+    for name, value, maximum in (
+        ("start_page", start_page, 10000),
+        ("pages", pages, 5),
+        ("max_notices", max_notices, 20),
+        ("max_attachments", max_attachments, 10),
+    ):
         if type(value) is not int or not 1 <= value <= maximum:
             raise ValueError("invalid_" + name)
     if start_page + pages - 1 > 10000:
         raise ValueError("page_range_exceeded")
-    if (type(attachments) is not bool or bool(category) == bool(notice_urls)
-            or not isinstance(notice_urls, (tuple, list)) or len(notice_urls) > max_notices
-            or not isinstance(title_terms, (tuple, list)) or len(title_terms) > 20
-            or any(not isinstance(t, str) or not t.strip() or len(t) > 100 for t in title_terms)):
+    if (
+        type(attachments) is not bool
+        or bool(category) == bool(notice_urls)
+        or not isinstance(notice_urls, (tuple, list))
+        or len(notice_urls) > max_notices
+        or not isinstance(title_terms, (tuple, list))
+        or len(title_terms) > 20
+        or any(not isinstance(t, str) or not t.strip() or len(t) > 100 for t in title_terms)
+    ):
         raise ValueError("invalid_public_request")
     urls = []
     for value in notice_urls:
@@ -110,10 +171,20 @@ def public_request_spec(*, source_id="cn_ccgp", category=None, notice_urls=(), s
             build_listing_url(source_id, category, page)
     elif start_page != 1 or pages != 1 or title_terms:
         raise ValueError("explicit_notices_reject_listing_options")
-    return {"schema_version": 2, "discovery": "public_category", "source_id": source_id,
-            "category": category, "notice_urls": urls, "start_page": start_page, "pages": pages,
-            "max_notices": max_notices, "max_attachments": max_attachments, "attachments": attachments,
-            "title_terms": list(dict.fromkeys(t.strip() for t in title_terms)), "dns_mode": dns_mode}
+    return {
+        "schema_version": 2,
+        "discovery": "public_category",
+        "source_id": source_id,
+        "category": category,
+        "notice_urls": urls,
+        "start_page": start_page,
+        "pages": pages,
+        "max_notices": max_notices,
+        "max_attachments": max_attachments,
+        "attachments": attachments,
+        "title_terms": list(dict.fromkeys(t.strip() for t in title_terms)),
+        "dns_mode": dns_mode,
+    }
 
 
 def decode_html(body: bytes, headers: dict[str, str]) -> tuple[str, str]:
@@ -129,8 +200,9 @@ def decode_html(body: bytes, headers: dict[str, str]) -> tuple[str, str]:
     else:
         match = re.search(r"charset\s*=\s*[\"']?([\w-]+)", content_type, re.I)
         if not match:
-            match = re.search(r"<meta[^>]+charset\s*=\s*[\"']?([\w-]+)",
-                              body[:4096].decode("ascii", errors="ignore"), re.I)
+            match = re.search(
+                r"<meta[^>]+charset\s*=\s*[\"']?([\w-]+)", body[:4096].decode("ascii", errors="ignore"), re.I
+            )
         encoding = match.group(1).lower() if match else "utf-8"
     if encoding not in ("utf-8", "utf8", "utf-8-sig", "gbk", "gb2312", "gb18030"):
         raise ValueError("unsupported_charset")
@@ -151,31 +223,42 @@ def parse_capture(kind: str, body: bytes, headers: dict, url: str, source_id="cn
         if "html" in media.lower() or body.lstrip()[:32].lower().startswith((b"<!doctype html", b"<html")):
             return {"status": "parse_error", "issues": ["attachment_is_html"], "raw_sha256": sha256(body).hexdigest()}
         extension = urlsplit(url).path.lower().rsplit(".", 1)[-1]
-        magic_ok = (extension == "pdf" and body.startswith(b"%PDF-")) or (
-            extension in ("docx", "xlsx", "zip") and body.startswith(b"PK\x03\x04")) or (
-            extension in ("doc", "xls") and body.startswith(bytes.fromhex("d0cf11e0a1b11ae1"))) or (
-            extension == "rar" and body.startswith(b"Rar!")) or (
-            extension == "7z" and body.startswith(b"7z\xbc\xaf\x27\x1c"))
-        return {"status": "ok" if magic_ok else "parse_error", "kind": "attachment",
-                "issues": [] if magic_ok else ["attachment_signature_mismatch"],
-                "raw_sha256": sha256(body).hexdigest(), "text_extracted": False}
+        magic_ok = (
+            (extension == "pdf" and body.startswith(b"%PDF-"))
+            or (extension in ("docx", "xlsx", "zip") and body.startswith(b"PK\x03\x04"))
+            or (extension in ("doc", "xls") and body.startswith(bytes.fromhex("d0cf11e0a1b11ae1")))
+            or (extension == "rar" and body.startswith(b"Rar!"))
+            or (extension == "7z" and body.startswith(b"7z\xbc\xaf\x27\x1c"))
+        )
+        return {
+            "status": "ok" if magic_ok else "parse_error",
+            "kind": "attachment",
+            "issues": [] if magic_ok else ["attachment_signature_mismatch"],
+            "raw_sha256": sha256(body).hexdigest(),
+            "text_extracted": False,
+        }
     html, encoding = decode_html(body, headers)
     if source_id not in ("cn_ccgp", "cn_hainan"):
         raise ValueError("invalid_public_source")
     if kind not in ("listing", "notice"):
         raise ValueError("invalid_capture_kind")
     from services.ingestion.sources.public_notices import listing_identity
+
     if source_id == "cn_ccgp" and kind == "listing" and listing_identity(source_id, url) is None:
         parsed = asdict(parse_search_page(html))
     else:
         from services.ingestion.sources.public_notices import parse_listing, parse_notice
-        parsed = asdict(parse_listing(html, url, source_id) if kind == "listing" else parse_notice(html, url, source_id))
+
+        parsed = asdict(
+            parse_listing(html, url, source_id) if kind == "listing" else parse_notice(html, url, source_id)
+        )
     parsed["status"] = parsed["status"].value
     parsed["decoded_input_sha256"] = parsed.pop("input_sha256")
     parsed["raw_sha256"] = sha256(body).hexdigest()
     parsed["encoding"] = encoding
     if kind == "notice":
         from services.ingestion.sources.public_notices import canonical_notice_url
+
         canonical = canonical_notice_url(source_id, url)
         if canonical is None:
             raise ValueError("notice_url_outside_source")
@@ -187,15 +270,28 @@ def _initial_tasks(request: dict) -> list[dict]:
     """根据请求生成最初的抓取任务（列表页，或者直接给出的公告页）。"""
     if request.get("discovery") == "public_category":
         from services.ingestion.sources.public_notices import build_listing_url
+
         if request["notice_urls"]:
             return [{"kind": "notice", "url": url} for url in request["notice_urls"]]
-        return [{"kind": "listing", "url": build_listing_url(request["source_id"], request["category"], page)}
-                for page in range(request["start_page"], request["start_page"] + request["pages"])]
+        return [
+            {"kind": "listing", "url": build_listing_url(request["source_id"], request["category"], page)}
+            for page in range(request["start_page"], request["start_page"] + request["pages"])
+        ]
     if request["keyword"] is None:
         return [{"kind": "notice", "url": url} for url in request["notice_urls"]]
-    return [{"kind": "listing", "url": SEARCH_URL + "?" + urlencode(build_search_params(
-        request["keyword"], page, start_date=request["start_date"], end_date=request["end_date"]))}
-        for page in range(1, request["pages"] + 1)]
+    return [
+        {
+            "kind": "listing",
+            "url": SEARCH_URL
+            + "?"
+            + urlencode(
+                build_search_params(
+                    request["keyword"], page, start_date=request["start_date"], end_date=request["end_date"]
+                )
+            ),
+        }
+        for page in range(1, request["pages"] + 1)
+    ]
 
 
 def _following(store: Store, run_id: str, request: dict, task: dict, parsed: dict, transport) -> list[dict]:
@@ -206,12 +302,14 @@ def _following(store: Store, run_id: str, request: dict, task: dict, parsed: dic
         skipped = 0
         filtered = 0
         for item in parsed.get("items", ()):
-            if request.get("title_terms") and not any(term.casefold() in item["title"].casefold()
-                                                       for term in request["title_terms"]):
+            if request.get("title_terms") and not any(
+                term.casefold() in item["title"].casefold() for term in request["title_terms"]
+            ):
                 filtered += 1
                 continue
             if request.get("discovery") == "public_category":
                 from services.ingestion.sources.public_notices import canonical_notice_url
+
                 url = canonical_notice_url(request["source_id"], item["url"])
                 if url is None:
                     parsed["issues"] = [*parsed.get("issues", ()), "notice_url_outside_source"]
@@ -270,9 +368,12 @@ def execute(store: Store, run_id: str, transport) -> dict:
             try:
                 # 每发一个 HTTP 请求（包括读 robots、重试、重定向）之前，都检查运行有没有被取消、租约是否还在。
                 # 已经发出的请求收不回来，但之后不会再发新的。
-                response = transport.fetch(task["url"], max_bytes=(MAX_ATTACHMENT_BYTES if task["kind"] == "attachment"
-                                                                  else MAX_HTML_BYTES), kind=task["kind"],
-                                           checkpoint=lambda: store.heartbeat(run_id, token))
+                response = transport.fetch(
+                    task["url"],
+                    max_bytes=(MAX_ATTACHMENT_BYTES if task["kind"] == "attachment" else MAX_HTML_BYTES),
+                    kind=task["kind"],
+                    checkpoint=lambda: store.heartbeat(run_id, token),
+                )
             except FetchError as exc:
                 store.record(run_id, token, task, error=exc.code, http_status=exc.http_status, attempts=exc.attempts)
                 # 访问受限：整个运行停下，剩下的页面也不再尝试。
@@ -285,24 +386,49 @@ def execute(store: Store, run_id: str, transport) -> dict:
                 # 如果在这里崩溃，恢复时可能重新下载一次，但相同的内容不会重复存储。
                 store.heartbeat(run_id, token)
                 archived_body = store.read_blob(store.put_blob(response.body))
-                parsed = parse_capture(task["kind"], archived_body, response.headers, response.final_url,
-                                       request.get("source_id", "cn_ccgp"))
+                parsed = parse_capture(
+                    task["kind"],
+                    archived_body,
+                    response.headers,
+                    response.final_url,
+                    request.get("source_id", "cn_ccgp"),
+                )
             except (ValueError, TypeError, UnicodeError) as exc:
-                parsed = {"status": "parse_error", "issues": [str(exc)], "raw_sha256": sha256(response.body).hexdigest()}
+                parsed = {
+                    "status": "parse_error",
+                    "issues": [str(exc)],
+                    "raw_sha256": sha256(response.body).hexdigest(),
+                }
             following = _following(store, run_id, request, task, parsed, transport)
             error = parsed["status"] if parsed["status"] in ("parse_error", "blocked") else None
-            store.record(run_id, token, task, response=response, parsed=parsed,
-                         parser_version=PARSER_VERSION, error=error, following=following)
+            store.record(
+                run_id,
+                token,
+                task,
+                response=response,
+                parsed=parsed,
+                parser_version=PARSER_VERSION,
+                error=error,
+                following=following,
+            )
             if parsed["status"] == "blocked":
                 store.finish(run_id, token, "blocked", "access_challenge")
                 return store.report(run_id)
         report = store.report(run_id)
         captures = report["captures"]
         errors = [row for row in captures if row["error_code"]]
-        gaps = any(row["parsed"] and (row["parsed"].get("status") == "partial"
-                   or row["parsed"].get("notices_outside_run_limit", 0)
-                   or any(link["status"] in ("not_authorized", "run_limit", "not_requested")
-                          for link in row["parsed"].get("attachments", ()))) for row in captures)
+        gaps = any(
+            row["parsed"]
+            and (
+                row["parsed"].get("status") == "partial"
+                or row["parsed"].get("notices_outside_run_limit", 0)
+                or any(
+                    link["status"] in ("not_authorized", "run_limit", "not_requested")
+                    for link in row["parsed"].get("attachments", ())
+                )
+            )
+            for row in captures
+        )
         status = "failed" if errors and len(errors) == len(captures) else ("partial" if errors or gaps else "succeeded")
         store.finish(run_id, token, status)
         return store.report(run_id)
@@ -327,10 +453,16 @@ def replay(store: Store, capture_id: str) -> dict:
         raise StoreError("capture_has_no_body")
     if capture["kind"] == "api_page":
         from services.ingestion import tianjin
+
         req = store.run(capture["run_id"])["request"]
         parsed = tianjin.parse_page(store.read_blob(capture["sha256"]), req["page_size"])
         return store.save_replay(capture_id, tianjin.PARSER_VERSION, parsed)
     source = store.run(capture["run_id"])["request"].get("source_id", "cn_ccgp")
-    parsed = parse_capture(capture["kind"], store.read_blob(capture["sha256"]), capture["headers"],
-                           capture["final_url"] or capture["url"], source)
+    parsed = parse_capture(
+        capture["kind"],
+        store.read_blob(capture["sha256"]),
+        capture["headers"],
+        capture["final_url"] or capture["url"],
+        source,
+    )
     return store.save_replay(capture_id, PARSER_VERSION, parsed)

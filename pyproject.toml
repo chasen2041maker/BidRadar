@@ -1,0 +1,6 @@
+# 代码格式配置。
+# 格式化 Python：ruff format services scripts tests
+# 只用于格式化，项目运行仍然只依赖 Python 标准库。
+[tool.ruff]
+line-length = 120
+target-version = "py310"

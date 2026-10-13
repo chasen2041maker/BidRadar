@@ -1,4 +1,5 @@
 """公开来源新增门控与DNS负例；仅注入虚构响应，绝不访问外网。"""
+
 from datetime import datetime, timezone
 import json
 import unittest
@@ -11,11 +12,17 @@ NOTICE = "https://ggzy.hainan.gov.cn/ggzy/ggzy/cggg/293740.jhtml"
 
 
 def policy(**overrides):
-    value = {"schema_version": 2, "approved": True, "purpose": "虚构离线测试",
-        "reviewed_at": "2026-09-29T00:00:00Z", "expires_at": "2026-10-01T00:00:00Z",
-        "evidence": ["虚构政策，不得据此访问网站"], "attachments_allowed": False,
-        "robots_missing": "allow_404", "allowed": [{"host": "ggzy.hainan.gov.cn",
-            "path_prefix": "/ggzy/ggzy/cggg/", "kinds": ["notice", "listing"]}]}
+    value = {
+        "schema_version": 2,
+        "approved": True,
+        "purpose": "虚构离线测试",
+        "reviewed_at": "2026-09-29T00:00:00Z",
+        "expires_at": "2026-10-01T00:00:00Z",
+        "evidence": ["虚构政策，不得据此访问网站"],
+        "attachments_allowed": False,
+        "robots_missing": "allow_404",
+        "allowed": [{"host": "ggzy.hainan.gov.cn", "path_prefix": "/ggzy/ggzy/cggg/", "kinds": ["notice", "listing"]}],
+    }
     value.update(overrides)
     return SourcePolicy.from_dict(value)
 
@@ -23,12 +30,21 @@ def policy(**overrides):
 class PublicTransportTests(unittest.TestCase):
     def transport(self, statuses, **options):
         self.calls = []
+
         def exchange(url, *_):
             self.calls.append(url)
             status = statuses.pop(0)
             return status, {"content-type": "text/html"}, b"<html>sample</html>" if status == 200 else b""
-        return Transport(policy(), exchange=exchange, resolver=lambda *_: ["8.8.8.8"],
-                         utcnow=lambda: NOW, min_interval=0, max_attempts=1, **options)
+
+        return Transport(
+            policy(),
+            exchange=exchange,
+            resolver=lambda *_: ["8.8.8.8"],
+            utcnow=lambda: NOW,
+            min_interval=0,
+            max_attempts=1,
+            **options,
+        )
 
     def test_missing_robots_only_explicit_404_is_allowed(self):
         transport = self.transport([404, 200])
@@ -55,9 +71,11 @@ class PublicTransportTests(unittest.TestCase):
             transport.fetch(NOTICE, kind="notice", max_bytes=1024)
         self.assertEqual("network_opt_in_required", caught.exception.code)
         self.assertEqual([], self.calls)
-        for url, kind in (("https://ggzy.hainan.gov.cn/login", "notice"),
-                          ("https://ggzy.hainan.gov.cn/ggzy/ggzy/cggg/a.pdf", "attachment"),
-                          ("https://evil.example/ggzy/ggzy/cggg/123.jhtml", "notice")):
+        for url, kind in (
+            ("https://ggzy.hainan.gov.cn/login", "notice"),
+            ("https://ggzy.hainan.gov.cn/ggzy/ggzy/cggg/a.pdf", "attachment"),
+            ("https://evil.example/ggzy/ggzy/cggg/123.jhtml", "notice"),
+        ):
             with self.subTest(url=url), self.assertRaises(FetchError):
                 policy().authorize(url, kind)
 
@@ -75,16 +93,25 @@ class PublicTransportTests(unittest.TestCase):
 
 class PublicDnsTests(unittest.TestCase):
     def payload(self, answers=None):
-        return {"Status": 0, "TC": False, "CD": False,
-            "Question": [{"name": "www.ccgp.gov.cn.", "type": 1}], "Answer": answers or [
+        return {
+            "Status": 0,
+            "TC": False,
+            "CD": False,
+            "Question": [{"name": "www.ccgp.gov.cn.", "type": 1}],
+            "Answer": answers
+            or [
                 {"name": "www.ccgp.gov.cn.", "type": 5, "TTL": 100, "data": "cdn.example."},
-                {"name": "cdn.example.", "type": 1, "TTL": 100, "data": "8.8.4.4"}]}
+                {"name": "cdn.example.", "type": 1, "TTL": 100, "data": "8.8.4.4"},
+            ],
+        }
 
     def resolve(self, payload):
         self.calls = []
+
         def exchange(*args):
             self.calls.append(args)
             return 200, {"content-type": "application/json"}, json.dumps(payload).encode()
+
         return resolve_public_dns("www.ccgp.gov.cn", 443, 7, exchange=exchange)
 
     def test_finite_connected_cname_chain_pins_dns_provider(self):

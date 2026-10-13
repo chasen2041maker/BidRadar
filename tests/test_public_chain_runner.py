@@ -1,4 +1,5 @@
 """整链验收日志也需可校验：重复或失败的调用不能污染上次成功证据。"""
+
 from contextlib import redirect_stdout
 from hashlib import sha256
 import io
@@ -24,8 +25,11 @@ class PublicChainRunnerTests(unittest.TestCase):
                 output = ""
             elif "collect-public" in command:
                 calls["collect"] += 1
-                output = json.dumps({"created": calls["collect"] == 1}) + "\n" + json.dumps(
-                    {"run": {"id": "same-run", "status": "succeeded"}, "captures": []})
+                output = (
+                    json.dumps({"created": calls["collect"] == 1})
+                    + "\n"
+                    + json.dumps({"run": {"id": "same-run", "status": "succeeded"}, "captures": []})
+                )
             elif "services.processing" in command:
                 if fail_processing:
                     return subprocess.CompletedProcess(command, 4, "{}", "")
@@ -37,8 +41,18 @@ class PublicChainRunnerTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, output, "")
 
         with tempfile.TemporaryDirectory() as directory, patch("subprocess.run", side_effect=run):
-            args = ["--root", directory, "--source", "ccgp", "--category", "zygg/jzxcs", "--key", "same",
-                    "--policy", str(Path(directory) / "policy.json")]
+            args = [
+                "--root",
+                directory,
+                "--source",
+                "ccgp",
+                "--category",
+                "zygg/jzxcs",
+                "--key",
+                "same",
+                "--policy",
+                str(Path(directory) / "policy.json"),
+            ]
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(0, main(args))
                 self.assertEqual(0, main(args))

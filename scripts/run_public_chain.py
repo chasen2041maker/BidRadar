@@ -8,6 +8,7 @@
 原始网页只保存在本地数据目录，终端只输出数量、状态和证据位置。不调模型，也不会定时重复运行。
 同一个 --key 重复执行会取回同一次运行的结果；想抓新的时间段，换一个新的 key。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -50,18 +51,42 @@ def main(argv=None):
 
     def invoke(module, arguments, *, data=None, accepted=(0,), timeout=40):
         command = [sys.executable, "-m", module, *map(str, arguments)]
-        process = subprocess.run(command, input=data, text=True, encoding="utf-8", capture_output=True,
-                                 cwd=workspace, env=env, timeout=timeout)
+        process = subprocess.run(
+            command,
+            input=data,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            cwd=workspace,
+            env=env,
+            timeout=timeout,
+        )
         checks.append({"module": module, "arguments": list(map(str, arguments)), "exit_code": process.returncode})
         if process.returncode not in accepted:
             raise RuntimeError(module + ":exit_" + str(process.returncode))
         return process.stdout, json.loads(process.stdout.splitlines()[-1]), process.returncode
 
     base = ["--store", root / "ingestion"]
-    collect = [*base, "collect-public", "--source", args.source, "--key", args.key,
-        "--policy", args.policy.resolve(), "--dns-mode", args.dns_mode,
-        "--start-page", args.start_page, "--pages", args.pages,
-        "--max-notices", args.max_notices, "--max-attachments", args.max_attachments]
+    collect = [
+        *base,
+        "collect-public",
+        "--source",
+        args.source,
+        "--key",
+        args.key,
+        "--policy",
+        args.policy.resolve(),
+        "--dns-mode",
+        args.dns_mode,
+        "--start-page",
+        args.start_page,
+        "--pages",
+        args.pages,
+        "--max-notices",
+        args.max_notices,
+        "--max-attachments",
+        args.max_attachments,
+    ]
     if args.category:
         collect += ["--category", args.category]
     for url in args.notice_url:
@@ -104,24 +129,66 @@ def main(argv=None):
         if capture["sha256"]:
             replayed, _, _ = invoke("services.ingestion", [*base, "replay", capture["id"]])
             save("replay-" + capture["id"] + ".json", replayed)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=workspace, capture_output=True,
-                          text=True, encoding="utf-8", check=True).stdout.strip()
-    dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=workspace, capture_output=True,
-                               text=True, encoding="utf-8", check=True).stdout)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, capture_output=True, text=True, encoding="utf-8", check=True
+    ).stdout.strip()
+    dirty = bool(
+        subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        ).stdout
+    )
     registered = json.loads(raw.splitlines()[0])
-    manifest = {"mode": "live_transport" if args.allow_network else "network_disabled",
-        "network_opt_in": args.allow_network, "reused_existing_run": registered.get("created") is False,
-        "simulation": False, "run_id": run_id, "source": args.source, "started_at": started,
-        "finished_at": datetime.now(timezone.utc).isoformat(), "workspace": str(workspace),
-        "head": head, "working_tree_dirty": dirty, "python": platform.python_version(),
-        "platform": platform.platform(), "run_status": report["run"]["status"], "exit_code": exit_code,
-        "captures": len(report["captures"]), "added": first["added"], "repeat_added": second["added"],
-        "checks": checks, "evidence_directory": str(evidence_dir),
-        "files": {p.name: sha256(p.read_bytes()).hexdigest() for p in evidence_dir.glob("*.json*")
-                  if p.name != "manifest.json"}}
+    manifest = {
+        "mode": "live_transport" if args.allow_network else "network_disabled",
+        "network_opt_in": args.allow_network,
+        "reused_existing_run": registered.get("created") is False,
+        "simulation": False,
+        "run_id": run_id,
+        "source": args.source,
+        "started_at": started,
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "workspace": str(workspace),
+        "head": head,
+        "working_tree_dirty": dirty,
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "run_status": report["run"]["status"],
+        "exit_code": exit_code,
+        "captures": len(report["captures"]),
+        "added": first["added"],
+        "repeat_added": second["added"],
+        "checks": checks,
+        "evidence_directory": str(evidence_dir),
+        "files": {
+            p.name: sha256(p.read_bytes()).hexdigest()
+            for p in evidence_dir.glob("*.json*")
+            if p.name != "manifest.json"
+        },
+    }
     save("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-    print(json.dumps({k: manifest[k] for k in ("run_id", "source", "run_status", "exit_code", "captures",
-                                               "added", "repeat_added", "evidence_directory")}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                k: manifest[k]
+                for k in (
+                    "run_id",
+                    "source",
+                    "run_status",
+                    "exit_code",
+                    "captures",
+                    "added",
+                    "repeat_added",
+                    "evidence_directory",
+                )
+            },
+            ensure_ascii=False,
+        )
+    )
     return exit_code
 
 

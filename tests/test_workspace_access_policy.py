@@ -1,9 +1,14 @@
 """用两家虚构公司验证基础权限；不冒充数据库、会话或真实撤权集成测试。"""
+
 from dataclasses import replace
 import unittest
 
 from services.workspace.domain.access_policy import (
-    Action, Membership, Role, Visibility, allows_shared_action,
+    Action,
+    Membership,
+    Role,
+    Visibility,
+    allows_shared_action,
 )
 
 
@@ -11,8 +16,7 @@ class SharedAccessPolicyTests(unittest.TestCase):
     def setUp(self):
         self.viewer = Membership("user-a", "company-a", Role.VIEWER, True)
 
-    def allowed(self, member, action=Action.VIEW_REPORT, company="company-a",
-                visibility=Visibility.COMPANY):
+    def allowed(self, member, action=Action.VIEW_REPORT, company="company-a", visibility=Visibility.COMPANY):
         return allows_shared_action(member, company, action, visibility)
 
     def test_viewer_can_read_but_cannot_request_analysis(self):
@@ -34,9 +38,7 @@ class SharedAccessPolicyTests(unittest.TestCase):
         for role in Role:
             for action in Action:
                 with self.subTest(role=role, action=action):
-                    self.assertFalse(self.allowed(
-                        replace(self.viewer, role=role), action, "company-b"
-                    ))
+                    self.assertFalse(self.allowed(replace(self.viewer, role=role), action, "company-b"))
 
     def test_removed_member_and_missing_membership_denied(self):
         for member in (None, replace(self.viewer, active=False)):
@@ -49,10 +51,13 @@ class SharedAccessPolicyTests(unittest.TestCase):
         for role in Role:
             for action in Action:
                 with self.subTest(role=role, action=action):
-                    self.assertFalse(self.allowed(
-                        replace(self.viewer, role=role), action,
-                        visibility=Visibility.RESTRICTED,
-                    ))
+                    self.assertFalse(
+                        self.allowed(
+                            replace(self.viewer, role=role),
+                            action,
+                            visibility=Visibility.RESTRICTED,
+                        )
+                    )
 
     def test_unknown_action_role_and_visibility_denied(self):
         for value in (None, "view_report", "delete", [], 1):
@@ -78,10 +83,16 @@ class SharedAccessPolicyTests(unittest.TestCase):
                 self.assertFalse(self.allowed(replace(self.viewer, active=value)))
 
     def test_dict_cannot_be_used_as_verified_membership(self):
-        self.assertFalse(self.allowed({
-            "user_id": "user-a", "workspace_id": "company-a",
-            "role": "admin", "active": True,
-        }))
+        self.assertFalse(
+            self.allowed(
+                {
+                    "user_id": "user-a",
+                    "workspace_id": "company-a",
+                    "role": "admin",
+                    "active": True,
+                }
+            )
+        )
 
     def test_calls_do_not_retain_previous_company_or_role(self):
         # 纯函数不能把上次管理员的放行结果带到下次只读或其他公司的调用中。

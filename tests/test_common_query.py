@@ -3,6 +3,7 @@
 Python 3.10 在严格模式下解析空串会报错，新版本返回空列表。
 parse_query_pairs 统一成新版本的行为，其余输入和 parse_qsl 完全一致。
 """
+
 import unittest
 
 from services.common.query import parse_query_pairs

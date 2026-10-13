@@ -3,6 +3,7 @@
 Checks structure, local Markdown file links and size; it does not verify business
 correctness, remote URLs, Markdown anchors, permissions, or independent review.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -13,8 +14,11 @@ from urllib.parse import unquote, urlsplit
 
 LIMITS = {"AGENTS.md": 12288, "PROJECT_STATE.md": 6144, "CURRENT_TASK.md": 5120}
 REQUIRED = (
-    "README.md", "CLAUDE.md", "docs/20-development-standard.md",
-    "docs/21-context-management.md", "docs/22-cms-chinese-acceptance.md",
+    "README.md",
+    "CLAUDE.md",
+    "docs/20-development-standard.md",
+    "docs/21-context-management.md",
+    "docs/22-cms-chinese-acceptance.md",
     ".agents/skills/bidradar-handoff/SKILL.md",
 )
 HEADINGS = {
@@ -61,23 +65,14 @@ def check(root: Path) -> list[str]:
         fence_len = 0
         for line in text.splitlines():
             match = FENCE.match(line)
-            if (
-                match is not None
-                and fence_char is None
-                and match.group(1)[0] == "`"
-                and "`" in line[match.end():]
-            ):
+            if match is not None and fence_char is None and match.group(1)[0] == "`" and "`" in line[match.end() :]:
                 # Not a fence: continue through ordinary same-line link checking.
                 match = None
             if match:
                 token = match.group(1)
                 if fence_char is None:
                     fence_char, fence_len = token[0], len(token)
-                elif (
-                    token[0] == fence_char
-                    and len(token) >= fence_len
-                    and not line[match.end():].strip(" \t")
-                ):
+                elif token[0] == fence_char and len(token) >= fence_len and not line[match.end() :].strip(" \t"):
                     # A closing fence cannot have an info string or other text.
                     fence_char = None
                 continue

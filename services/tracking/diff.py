@@ -9,6 +9,7 @@
       就记为 unclassified_content_change（原文有变化但没归到具体维度），
       而不是断言"只是排版变了"。
 """
+
 from __future__ import annotations
 
 from hashlib import sha256
@@ -38,8 +39,11 @@ def _semantic(value):
     保留的：否定词、状态、包号、计价口径、时区和时间精度等一切有业务含义的内容。
     """
     if isinstance(value, dict):
-        return {key: _semantic(item) for key, item in sorted(value.items())
-                if key not in ("locator", "capture_id", "source_observation_id", "target_observation_id")}
+        return {
+            key: _semantic(item)
+            for key, item in sorted(value.items())
+            if key not in ("locator", "capture_id", "source_observation_id", "target_observation_id")
+        }
     if isinstance(value, list):
         return sorted((_semantic(item) for item in value), key=canonical)
     if isinstance(value, str):
@@ -51,23 +55,47 @@ def _projection(observation):
     """把一条公告观察投影成各个业务维度的可比较值。"""
     facts, extra = observation.get("facts", {}), observation.get("evidence_fields", {})
     return {
-        "deadline": _semantic({key: facts.get(key) for key in ("published_at", "response_deadline", "original_published_at")}
-                               | {"acquisition_window": extra.get("acquisition_window")}),
-        "money": _semantic({"budget": facts.get("budget"), "claims": extra.get("money"), "assessment": extra.get("budget_assessment")}),
+        "deadline": _semantic(
+            {key: facts.get(key) for key in ("published_at", "response_deadline", "original_published_at")}
+            | {"acquisition_window": extra.get("acquisition_window")}
+        ),
+        "money": _semantic(
+            {"budget": facts.get("budget"), "claims": extra.get("money"), "assessment": extra.get("budget_assessment")}
+        ),
         "qualification": _semantic(extra.get("qualification_evidence")),
         "delivery": _semantic(extra.get("delivery_evidence")),
-        "materials": _semantic({"availability": extra.get("material_availability"), "access": extra.get("access_conditions"),
-                                 "status": observation.get("material_status"), "references": observation.get("material_reference_evidence")}),
-        "lifecycle": _semantic({"notice_type": observation.get("notice_type"), "references": observation.get("references")}),
-        "other": _semantic({"title": observation.get("title"), "identity": {key: facts.get(key) for key in ("project_number", "buyer", "lot_identifier")},
-                             "technical": extra.get("technical_evidence"), "category": extra.get("category_evidence")}),
+        "materials": _semantic(
+            {
+                "availability": extra.get("material_availability"),
+                "access": extra.get("access_conditions"),
+                "status": observation.get("material_status"),
+                "references": observation.get("material_reference_evidence"),
+            }
+        ),
+        "lifecycle": _semantic(
+            {"notice_type": observation.get("notice_type"), "references": observation.get("references")}
+        ),
+        "other": _semantic(
+            {
+                "title": observation.get("title"),
+                "identity": {key: facts.get(key) for key in ("project_number", "buyer", "lot_identifier")},
+                "technical": extra.get("technical_evidence"),
+                "category": extra.get("category_evidence"),
+            }
+        ),
     }
 
 
 def input_fingerprint(notice_id, profile_revision, snapshot, observation_ids):
     """一次复核的输入指纹：哪个公告、哪版档案、目录快照、哪几条观察。委托里会记下它。"""
-    return fingerprint({"notice_id": notice_id, "profile_revision": profile_revision,
-                        "catalog_snapshot": snapshot, "observation_ids": observation_ids})
+    return fingerprint(
+        {
+            "notice_id": notice_id,
+            "profile_revision": profile_revision,
+            "catalog_snapshot": snapshot,
+            "observation_ids": observation_ids,
+        }
+    )
 
 
 def compare_bundles(before, after):
@@ -85,25 +113,52 @@ def compare_bundles(before, after):
     for notice_id in sorted(old.keys() | new.keys()):
         left, right = old.get(notice_id), new.get(notice_id)
         if left is None or right is None:
-            entries.append({"scope": "lifecycle", "notice_id": notice_id, "path": "observations",
-                            "before": left, "after": right})
+            entries.append(
+                {"scope": "lifecycle", "notice_id": notice_id, "path": "observations", "before": left, "after": right}
+            )
             continue
         first, second = _projection(left), _projection(right)
         for name in sorted(first):
             if first[name] != second[name]:
                 # 差异项记下前后两个观察的 ID，需要时可以回到原文核对。
-                entries.append({"scope": name, "notice_id": notice_id, "path": name,
-                                "before": first[name], "after": second[name],
-                                "before_observation_id": left["observation_id"], "after_observation_id": right["observation_id"]})
+                entries.append(
+                    {
+                        "scope": name,
+                        "notice_id": notice_id,
+                        "path": name,
+                        "before": first[name],
+                        "after": second[name],
+                        "before_observation_id": left["observation_id"],
+                        "after_observation_id": right["observation_id"],
+                    }
+                )
         if first == second and left.get("raw_sha256") != right.get("raw_sha256"):
-            unclassified.append({"notice_id": notice_id, "before_observation_id": left["observation_id"],
-                                 "after_observation_id": right["observation_id"]})
+            unclassified.append(
+                {
+                    "notice_id": notice_id,
+                    "before_observation_id": left["observation_id"],
+                    "after_observation_id": right["observation_id"],
+                }
+            )
     relations_changed = _semantic(before.get("relationships", [])) != _semantic(after.get("relationships", []))
     if relations_changed:
-        entries.append({"scope": "lifecycle", "notice_id": after["notice_id"], "path": "relationships",
-                        "before": before.get("relationships", []), "after": after.get("relationships", [])})
+        entries.append(
+            {
+                "scope": "lifecycle",
+                "notice_id": after["notice_id"],
+                "path": "relationships",
+                "before": before.get("relationships", []),
+                "after": after.get("relationships", []),
+            }
+        )
     kind = "material_change" if entries else "unclassified_content_change" if unclassified else "no_business_change"
-    return {"schema_version": 1, "rule_version": RULE_VERSION, "kind": kind, "entries": entries,
-            "unclassified": unclassified, "scopes": sorted({entry["scope"] for entry in entries} | ({"other"} if unclassified else set())),
-            "before_observation_ids": [item["observation_id"] for item in before["observations"]],
-            "after_observation_ids": [item["observation_id"] for item in after["observations"]]}
+    return {
+        "schema_version": 1,
+        "rule_version": RULE_VERSION,
+        "kind": kind,
+        "entries": entries,
+        "unclassified": unclassified,
+        "scopes": sorted({entry["scope"] for entry in entries} | ({"other"} if unclassified else set())),
+        "before_observation_ids": [item["observation_id"] for item in before["observations"]],
+        "after_observation_ids": [item["observation_id"] for item in after["observations"]],
+    }

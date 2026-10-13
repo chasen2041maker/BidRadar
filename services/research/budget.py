@@ -10,6 +10,7 @@
     - 三层上限：本轮总额、每家公司、每个任务。
     - 所有真实运行（试跑、评测、worker）必须用同一个账本。
 """
+
 from contextlib import contextmanager
 from hashlib import sha256
 import json
@@ -36,9 +37,14 @@ class BudgetLedger:
 
     默认上限：本轮共 20 元，每家公司 10 元，每个任务 1 元（单位换算成 micro-CNY）。
     """
-    def __init__(self, path, *, authorization="r12-20261001", cap=20_000_000,
-                 workspace_cap=10_000_000, run_cap=1_000_000):
-        if any(type(v) is not int or v <= 0 for v in (cap, workspace_cap, run_cap)) or not run_cap <= workspace_cap <= cap:
+
+    def __init__(
+        self, path, *, authorization="r12-20261001", cap=20_000_000, workspace_cap=10_000_000, run_cap=1_000_000
+    ):
+        if (
+            any(type(v) is not int or v <= 0 for v in (cap, workspace_cap, run_cap))
+            or not run_cap <= workspace_cap <= cap
+        ):
             raise BudgetError("invalid_budget_config")
         self.path = Path(path).absolute()
         marker = self.path.with_suffix(".authorized")
@@ -54,11 +60,15 @@ class BudgetLedger:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             with self.transaction():
-                self.db.execute("CREATE TABLE IF NOT EXISTS authorization(id TEXT PRIMARY KEY,cap INTEGER NOT NULL,"
-                                "workspace_cap INTEGER NOT NULL,run_cap INTEGER NOT NULL,blocked INTEGER NOT NULL DEFAULT 0)")
-                self.db.execute("CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,run_id TEXT NOT NULL,"
-                                "request_hash TEXT NOT NULL,reserved INTEGER NOT NULL,charged INTEGER NOT NULL,state TEXT NOT NULL,"
-                                "response TEXT,usage TEXT,model TEXT,provider_request_id TEXT,created_at REAL NOT NULL,settled_at REAL)")
+                self.db.execute(
+                    "CREATE TABLE IF NOT EXISTS authorization(id TEXT PRIMARY KEY,cap INTEGER NOT NULL,"
+                    "workspace_cap INTEGER NOT NULL,run_cap INTEGER NOT NULL,blocked INTEGER NOT NULL DEFAULT 0)"
+                )
+                self.db.execute(
+                    "CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY,workspace_id TEXT NOT NULL,run_id TEXT NOT NULL,"
+                    "request_hash TEXT NOT NULL,reserved INTEGER NOT NULL,charged INTEGER NOT NULL,state TEXT NOT NULL,"
+                    "response TEXT,usage TEXT,model TEXT,provider_request_id TEXT,created_at REAL NOT NULL,settled_at REAL)"
+                )
                 rows = self.db.execute("SELECT * FROM authorization").fetchall()
                 config = (authorization, cap, workspace_cap, run_cap)
                 if not rows:
@@ -95,12 +105,18 @@ class BudgetLedger:
         """
         if type(amount) is not int or amount <= 0:
             raise BudgetError("invalid_reservation")
-        if any(not isinstance(v, str) or not 1 <= len(v) <= 128 for v in (workspace_id, run_id, attempt_id, request_hash)):
+        if any(
+            not isinstance(v, str) or not 1 <= len(v) <= 128 for v in (workspace_id, run_id, attempt_id, request_hash)
+        ):
             raise BudgetError("invalid_attempt")
         with self.transaction():
             existing = self.db.execute("SELECT * FROM attempts WHERE id=?", (attempt_id,)).fetchone()
             if existing:
-                if (existing["workspace_id"], existing["run_id"], existing["request_hash"]) != (workspace_id, run_id, request_hash):
+                if (existing["workspace_id"], existing["run_id"], existing["request_hash"]) != (
+                    workspace_id,
+                    run_id,
+                    request_hash,
+                ):
                     raise BudgetError("budget_attempt_conflict")
                 if existing["state"] == "settled":
                     return json.loads(existing["response"])
@@ -108,16 +124,23 @@ class BudgetLedger:
             config = self.db.execute("SELECT * FROM authorization").fetchone()
             if config["blocked"]:
                 raise BudgetError("budget_suspended")
-            if self.db.execute("SELECT 1 FROM attempts WHERE run_id=? AND state IN ('pending','unknown')", (run_id,)).fetchone():
+            if self.db.execute(
+                "SELECT 1 FROM attempts WHERE run_id=? AND state IN ('pending','unknown')", (run_id,)
+            ).fetchone():
                 raise BudgetError("billing_unknown")
-            for clause, args, limit in (("", (), config["cap"]),
-                                       (" WHERE workspace_id=?", (workspace_id,), config["workspace_cap"]),
-                                       (" WHERE run_id=?", (run_id,), config["run_cap"])):
+            for clause, args, limit in (
+                ("", (), config["cap"]),
+                (" WHERE workspace_id=?", (workspace_id,), config["workspace_cap"]),
+                (" WHERE run_id=?", (run_id,), config["run_cap"]),
+            ):
                 charged = self.db.execute("SELECT coalesce(sum(charged),0) FROM attempts" + clause, args).fetchone()[0]
                 if charged + amount > limit:
                     raise BudgetError("budget_exhausted")
-            self.db.execute("INSERT INTO attempts(id,workspace_id,run_id,request_hash,reserved,charged,state,created_at) "
-                            "VALUES(?,?,?,?,?,?,'pending',?)", (attempt_id, workspace_id, run_id, request_hash, amount, amount, time.time()))
+            self.db.execute(
+                "INSERT INTO attempts(id,workspace_id,run_id,request_hash,reserved,charged,state,created_at) "
+                "VALUES(?,?,?,?,?,?,'pending',?)",
+                (attempt_id, workspace_id, run_id, request_hash, amount, amount, time.time()),
+            )
         return None
 
     def settle(self, attempt_id, response, cost):
@@ -134,9 +157,19 @@ class BudgetLedger:
                 raise BudgetError("attempt_not_pending")
             state = "settled" if cost is not None else "unknown"
             charged = cost if cost is not None else row["reserved"]
-            self.db.execute("UPDATE attempts SET charged=?,state=?,response=?,usage=?,model=?,provider_request_id=?,settled_at=? WHERE id=?",
-                            (charged, state, canonical(response), canonical(response.get("usage")), response.get("model"),
-                             response.get("provider_request_id"), time.time(), attempt_id))
+            self.db.execute(
+                "UPDATE attempts SET charged=?,state=?,response=?,usage=?,model=?,provider_request_id=?,settled_at=? WHERE id=?",
+                (
+                    charged,
+                    state,
+                    canonical(response),
+                    canonical(response.get("usage")),
+                    response.get("model"),
+                    response.get("provider_request_id"),
+                    time.time(),
+                    attempt_id,
+                ),
+            )
             if charged > row["reserved"]:
                 # 实际花费超过了预留额：照实记账，并暂停整个账本，等人确认。
                 self.db.execute("UPDATE authorization SET blocked=1")
@@ -147,10 +180,15 @@ class BudgetLedger:
         """调用失败时收尾。已经发出去的标为 unknown（费用不确定）；确实没发出去的才退还预留。"""
         with self.transaction():
             if dispatched:
-                self.db.execute("UPDATE attempts SET state='unknown',settled_at=? WHERE id=? AND state='pending'", (time.time(), attempt_id))
+                self.db.execute(
+                    "UPDATE attempts SET state='unknown',settled_at=? WHERE id=? AND state='pending'",
+                    (time.time(), attempt_id),
+                )
             else:
-                self.db.execute("UPDATE attempts SET state='not_dispatched',charged=0,settled_at=? WHERE id=? AND state='pending'",
-                                (time.time(), attempt_id))
+                self.db.execute(
+                    "UPDATE attempts SET state='not_dispatched',charged=0,settled_at=? WHERE id=? AND state='pending'",
+                    (time.time(), attempt_id),
+                )
 
     def summary(self, workspace_id=None, run_id=None):
         """汇总额度和用量。只返回数字，不返回任何模型请求或回复的内容。"""
@@ -163,12 +201,19 @@ class BudgetLedger:
         rows = self.db.execute("SELECT charged,state,usage FROM attempts" + clause, args).fetchall()
         config = self.db.execute("SELECT * FROM authorization").fetchone()
         usage = [json.loads(r["usage"]) for r in rows if r["usage"]]
-        return {"unit": "micro_cny", "cap": config["cap"], "workspace_cap": config["workspace_cap"],
-                "run_cap": config["run_cap"], "charged_or_reserved": sum(r["charged"] for r in rows),
-                "attempts": len(rows), "unknown_attempts": sum(r["state"] in ("pending", "unknown") for r in rows),
-                "input_tokens": sum(u.get("input_tokens", 0) for u in usage if u),
-                "output_tokens": sum(u.get("output_tokens", 0) for u in usage if u),
-                "blocked": bool(config["blocked"]), "cost_basis": "conservative_peak_estimate"}
+        return {
+            "unit": "micro_cny",
+            "cap": config["cap"],
+            "workspace_cap": config["workspace_cap"],
+            "run_cap": config["run_cap"],
+            "charged_or_reserved": sum(r["charged"] for r in rows),
+            "attempts": len(rows),
+            "unknown_attempts": sum(r["state"] in ("pending", "unknown") for r in rows),
+            "input_tokens": sum(u.get("input_tokens", 0) for u in usage if u),
+            "output_tokens": sum(u.get("output_tokens", 0) for u in usage if u),
+            "blocked": bool(config["blocked"]),
+            "cost_basis": "conservative_peak_estimate",
+        }
 
     def complete(self, provider, workspace_id, run_id, messages, tools, *, guard, estimate, cost):
         """唯一的付费调用入口：预留 → 外发 → 结算。传进来的内容必须已经去掉联系方式。
@@ -178,8 +223,9 @@ class BudgetLedger:
         request_hash = sha256(canonical([messages, tools, provider.metadata]).encode()).hexdigest()
         attempt_id = sha256((run_id + ":" + request_hash).encode()).hexdigest()
         guard("before_reservation")
-        previous = self.reserve(workspace_id, run_id, attempt_id, request_hash,
-                                estimate(messages, tools, provider.max_output_tokens))
+        previous = self.reserve(
+            workspace_id, run_id, attempt_id, request_hash, estimate(messages, tools, provider.max_output_tokens)
+        )
         if previous is not None:
             return previous
         dispatched = False
@@ -203,7 +249,11 @@ class BudgetLedger:
         request_hash = sha256(canonical([messages, tools, provider.metadata]).encode()).hexdigest()
         attempt_id = sha256((run_id + ":" + request_hash).encode()).hexdigest()
         row = self.db.execute("SELECT * FROM attempts WHERE id=?", (attempt_id,)).fetchone()
-        if row is None or (row["workspace_id"], row["run_id"], row["request_hash"]) != (workspace_id, run_id, request_hash):
+        if row is None or (row["workspace_id"], row["run_id"], row["request_hash"]) != (
+            workspace_id,
+            run_id,
+            request_hash,
+        ):
             raise BudgetError("checkpoint_request_mismatch")
         if row["state"] in ("pending", "unknown"):
             raise BudgetError("billing_unknown")

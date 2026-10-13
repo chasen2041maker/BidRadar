@@ -7,6 +7,7 @@
 
 prepare_egress 负责在外发前去掉联系方式；usage_cost 和 estimate_reservation 负责算钱。
 """
+
 from __future__ import annotations
 
 from http.client import HTTPSConnection, HTTPException
@@ -33,6 +34,7 @@ class ProviderError(Exception):
     usage_unknown=True 表示请求可能已经被处理并计费，但不知道花了多少：
     调用方必须保留预留的费用，并且不能自动重试。
     """
+
     def __init__(self, code, usage_unknown=False):
         super().__init__(code)
         self.code, self.usage_unknown = code, bool(usage_unknown)
@@ -96,8 +98,12 @@ def usage_cost(usage, peak=True):
     价目页：https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
     预留时假设缓存全部未命中；结算时按供应商实际报告的命中数算。
     """
-    if (not isinstance(usage, dict) or set(usage) != {"input_tokens", "output_tokens", "cached_tokens"}
-            or any(not _count(v) for v in usage.values()) or usage["cached_tokens"] > usage["input_tokens"]):
+    if (
+        not isinstance(usage, dict)
+        or set(usage) != {"input_tokens", "output_tokens", "cached_tokens"}
+        or any(not _count(v) for v in usage.values())
+        or usage["cached_tokens"] > usage["input_tokens"]
+    ):
         return None
     miss, hit, output = usage["input_tokens"] - usage["cached_tokens"], usage["cached_tokens"], usage["output_tokens"]
     numerator = miss * 200 + hit * 4 + output * 800
@@ -119,8 +125,9 @@ def estimate_reservation(messages, tools, max_output_tokens=4096):
     """一次调用需要预留多少钱：输入按估计值、输出按上限、缓存按全部未命中来算。"""
     if type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 4096:
         raise ProviderError("invalid_output_limit")
-    return usage_cost({"input_tokens": estimate_tokens(messages, tools), "output_tokens": max_output_tokens,
-                       "cached_tokens": 0})
+    return usage_cost(
+        {"input_tokens": estimate_tokens(messages, tools), "output_tokens": max_output_tokens, "cached_tokens": 0}
+    )
 
 
 def _usage(value):
@@ -128,12 +135,17 @@ def _usage(value):
     if not isinstance(value, dict):
         return None
     keys = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens", "total_tokens")
-    if (any(not _count(value.get(k)) for k in keys)
-            or value["prompt_tokens"] != value["prompt_cache_hit_tokens"] + value["prompt_cache_miss_tokens"]
-            or value["total_tokens"] != value["prompt_tokens"] + value["completion_tokens"]):
+    if (
+        any(not _count(value.get(k)) for k in keys)
+        or value["prompt_tokens"] != value["prompt_cache_hit_tokens"] + value["prompt_cache_miss_tokens"]
+        or value["total_tokens"] != value["prompt_tokens"] + value["completion_tokens"]
+    ):
         return None
-    return {"input_tokens": value["prompt_tokens"], "output_tokens": value["completion_tokens"],
-            "cached_tokens": value["prompt_cache_hit_tokens"]}
+    return {
+        "input_tokens": value["prompt_tokens"],
+        "output_tokens": value["completion_tokens"],
+        "cached_tokens": value["prompt_cache_hit_tokens"],
+    }
 
 
 class DeepSeekProvider:
@@ -145,12 +157,23 @@ class DeepSeekProvider:
     exchange 参数只给测试用，用来注入假的网络层：
         exchange(payload: bytes, timeout: float) -> (status, headers, body)
     """
+
     def __init__(self, api_key, *, requested_model=REQUESTED_MODEL, timeout=60, max_output_tokens=4096, exchange=None):
-        if not isinstance(api_key, str) or not 8 <= len(api_key) <= 512 or any(ord(c) <= 32 or ord(c) >= 127 for c in api_key):
+        if (
+            not isinstance(api_key, str)
+            or not 8 <= len(api_key) <= 512
+            or any(ord(c) <= 32 or ord(c) >= 127 for c in api_key)
+        ):
             raise ProviderError("invalid_api_key")
-        if (requested_model != REQUESTED_MODEL or isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-                or not math.isfinite(timeout) or not 0 < timeout <= 60
-                or type(max_output_tokens) is not int or not 1 <= max_output_tokens <= 4096):
+        if (
+            requested_model != REQUESTED_MODEL
+            or isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= 60
+            or type(max_output_tokens) is not int
+            or not 1 <= max_output_tokens <= 4096
+        ):
             raise ProviderError("invalid_provider_config")
         self._key, self.timeout, self.max_output_tokens = api_key, timeout, max_output_tokens
         self.requested_model = requested_model
@@ -159,10 +182,16 @@ class DeepSeekProvider:
     @property
     def metadata(self):
         """当前的模型参数。会参与请求指纹的计算，也会冻结进任务配置。"""
-        return {"provider": "deepseek", "requested_model": self.requested_model,
-                "official_resolution": OFFICIAL_RESOLUTION, "price_version": PRICE_VERSION,
-                "provider_version": VERSION, "temperature": TEMPERATURE,
-                "thinking": "disabled", "max_output_tokens": self.max_output_tokens}
+        return {
+            "provider": "deepseek",
+            "requested_model": self.requested_model,
+            "official_resolution": OFFICIAL_RESOLUTION,
+            "price_version": PRICE_VERSION,
+            "provider_version": VERSION,
+            "temperature": TEMPERATURE,
+            "thinking": "disabled",
+            "max_output_tokens": self.max_output_tokens,
+        }
 
     def _https_exchange(self, payload, timeout):
         """真正发 HTTPS 请求。每次读数据前都按剩余时间重设超时，保证总耗时不超过 timeout。"""
@@ -170,9 +199,19 @@ class DeepSeekProvider:
         connection = HTTPSConnection("api.deepseek.com", 443, timeout=timeout, context=ssl.create_default_context())
         response = None
         try:
-            connection.request("POST", "/chat/completions", body=payload, headers={
-                "Authorization": "Bearer " + self._key, "Content-Type": "application/json",
-                "Accept": "application/json", "Accept-Encoding": "identity", "Connection": "close"})
+            connection.request(
+                "POST",
+                "/chat/completions",
+                body=payload,
+                headers={
+                    "Authorization": "Bearer " + self._key,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Accept-Encoding": "identity",
+                    "Connection": "close",
+                },
+            )
+
             def remaining():
                 left = deadline - time.monotonic()
                 if left <= 0:
@@ -182,12 +221,18 @@ class DeepSeekProvider:
                     sock = getattr(getattr(response.fp, "raw", None), "_sock", None)
                 if sock is not None:
                     sock.settimeout(left)
+
             remaining()
             response = connection.getresponse()
             headers = {}
             for name, value in response.getheaders():
                 lower = name.lower()
-                if lower in headers and lower in ("content-length", "content-type", "content-encoding", "transfer-encoding"):
+                if lower in headers and lower in (
+                    "content-length",
+                    "content-type",
+                    "content-encoding",
+                    "transfer-encoding",
+                ):
                     raise ProviderError("invalid_provider_headers", True)
                 headers[lower] = value
             if "content-length" in headers and "transfer-encoding" in headers:
@@ -226,9 +271,14 @@ class DeepSeekProvider:
         """
         messages, tools = prepare_egress(messages, tools)
         estimate_tokens(messages, tools)
-        payload = {"model": self.requested_model, "messages": messages, "stream": False,
-                   "thinking": {"type": "disabled"}, "max_tokens": self.max_output_tokens,
-                   "temperature": TEMPERATURE}
+        payload = {
+            "model": self.requested_model,
+            "messages": messages,
+            "stream": False,
+            "thinking": {"type": "disabled"},
+            "max_tokens": self.max_output_tokens,
+            "temperature": TEMPERATURE,
+        }
         # 温度设为 0 只是降低随机性，同样的输入仍可能得到不同输出，也不保证正确。
         if tools:
             payload.update(tools=tools, tool_choice="auto")
@@ -247,24 +297,44 @@ class DeepSeekProvider:
         if status != 200:
             # 400/401/402/403/404/429 是明确的拒绝，请求没被处理；其他状态码说明结果不确定。
             # 异常里只放错误码，不放供应商返回的正文，更不会带上密钥。
-            code = {400: "provider_bad_request", 401: "provider_unauthorized", 402: "provider_insufficient_balance",
-                    403: "provider_forbidden", 404: "provider_model_unavailable", 429: "provider_rate_limited"}.get(status, "provider_unavailable")
+            code = {
+                400: "provider_bad_request",
+                401: "provider_unauthorized",
+                402: "provider_insufficient_balance",
+                403: "provider_forbidden",
+                404: "provider_model_unavailable",
+                429: "provider_rate_limited",
+            }.get(status, "provider_unavailable")
             raise ProviderError(code, status not in (400, 401, 402, 403, 404, 429))
-        if (not isinstance(headers, dict) or headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json"
-                or headers.get("content-encoding", "identity").lower() != "identity"
-                or not isinstance(body, bytes) or len(body) > MAX_RESPONSE_BYTES):
+        if (
+            not isinstance(headers, dict)
+            or headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json"
+            or headers.get("content-encoding", "identity").lower() != "identity"
+            or not isinstance(body, bytes)
+            or len(body) > MAX_RESPONSE_BYTES
+        ):
             raise ProviderError("invalid_provider_response", True)
         try:
             result = strict_json(body.decode("utf-8"), limit=MAX_RESPONSE_BYTES)
-            if (not isinstance(result, dict) or not isinstance(result.get("choices"), list) or len(result["choices"]) != 1
-                    or result.get("model") not in (REQUESTED_MODEL, "deepseek-flash", "deepseek-v4.1-flash")
-                    or not isinstance(result.get("id"), str) or not 1 <= len(result["id"]) <= 256):
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get("choices"), list)
+                or len(result["choices"]) != 1
+                or result.get("model") not in (REQUESTED_MODEL, "deepseek-flash", "deepseek-v4.1-flash")
+                or not isinstance(result.get("id"), str)
+                or not 1 <= len(result["id"]) <= 256
+            ):
                 raise ValueError()
             choice = result["choices"][0]
             message = choice["message"]
-            if (not isinstance(message, dict) or message.get("role") != "assistant"
-                    or message.get("content") is not None and not isinstance(message["content"], str)
-                    or choice.get("finish_reason") not in ("stop", "length", "tool_calls", "content_filter", "insufficient_system_resource")):
+            if (
+                not isinstance(message, dict)
+                or message.get("role") != "assistant"
+                or message.get("content") is not None
+                and not isinstance(message["content"], str)
+                or choice.get("finish_reason")
+                not in ("stop", "length", "tool_calls", "content_filter", "insufficient_system_resource")
+            ):
                 raise ValueError()
             calls = message.get("tool_calls")
             if calls is not None and (not isinstance(calls, list) or len(calls) > 16):
@@ -277,9 +347,15 @@ class DeepSeekProvider:
                 raise ValueError()
         except (ValueError, KeyError, TypeError, UnicodeError, EvidenceError):
             raise ProviderError("invalid_provider_response", True) from None
-        return {"message": safe_message, "usage": _usage(result.get("usage")), "model": result["model"],
-                "provider_request_id": result["id"], "finish_reason": choice["finish_reason"],
-                "requested_model": self.requested_model, "official_resolution": OFFICIAL_RESOLUTION,
-                "system_fingerprint": result.get("system_fingerprint")}
+        return {
+            "message": safe_message,
+            "usage": _usage(result.get("usage")),
+            "model": result["model"],
+            "provider_request_id": result["id"],
+            "finish_reason": choice["finish_reason"],
+            "requested_model": self.requested_model,
+            "official_resolution": OFFICIAL_RESOLUTION,
+            "system_fingerprint": result.get("system_fingerprint"),
+        }
 
     __call__ = complete

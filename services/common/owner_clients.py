@@ -3,6 +3,7 @@
 每个类对应一个服务，方法名和服务端的操作一一对应。
 这里只负责组装请求，权限检查由被调用的服务自己做。
 """
+
 from urllib.parse import urlencode
 
 from .local_http import LocalClient
@@ -12,13 +13,24 @@ class WorkspaceAccessClient(LocalClient):
     """调用 workspace：查权限、取档案和选择、拉事件。"""
 
     def authorize(self, actor_id, workspace_id, action):
-        return self.request("POST", "/internal/v1/authorize", {
-            "schema_version": 1, "actor_id": actor_id, "workspace_id": workspace_id, "action": action})
+        return self.request(
+            "POST",
+            "/internal/v1/authorize",
+            {"schema_version": 1, "actor_id": actor_id, "workspace_id": workspace_id, "action": action},
+        )
 
     def context(self, actor_id, workspace_id, profile_revision, selection_id=None):
-        return self.request("POST", "/internal/v1/context", {
-            "schema_version": 1, "actor_id": actor_id, "workspace_id": workspace_id,
-            "profile_revision": profile_revision, "selection_id": selection_id})
+        return self.request(
+            "POST",
+            "/internal/v1/context",
+            {
+                "schema_version": 1,
+                "actor_id": actor_id,
+                "workspace_id": workspace_id,
+                "profile_revision": profile_revision,
+                "selection_id": selection_id,
+            },
+        )
 
     def events(self, after=0, limit=100):
         return self.request("POST", "/internal/v1/events", {"schema_version": 1, "after": after, "limit": limit})
@@ -45,21 +57,33 @@ class ResearchClient(LocalClient):
         return self.request("POST", "/internal/v1/analyses", request)
 
     def run(self, run_id, workspace_id, actor_id):
-        return self.request("POST", "/internal/v1/runs/get", {"schema_version": 1,
-                            "run_id": run_id, "workspace_id": workspace_id, "actor_id": actor_id})
+        return self.request(
+            "POST",
+            "/internal/v1/runs/get",
+            {"schema_version": 1, "run_id": run_id, "workspace_id": workspace_id, "actor_id": actor_id},
+        )
 
     def command(self, workspace_id, actor_id, key):
-        return self.request("POST", "/internal/v1/commands/get", {"schema_version": 1,
-                            "key": key, "workspace_id": workspace_id, "actor_id": actor_id})
+        return self.request(
+            "POST",
+            "/internal/v1/commands/get",
+            {"schema_version": 1, "key": key, "workspace_id": workspace_id, "actor_id": actor_id},
+        )
 
     def cancel(self, run_id, workspace_id, actor_id, key):
-        return self.request("POST", "/internal/v1/runs/cancel", {"schema_version": 1,
-                            "run_id": run_id, "workspace_id": workspace_id, "actor_id": actor_id, "key": key})
+        return self.request(
+            "POST",
+            "/internal/v1/runs/cancel",
+            {"schema_version": 1, "run_id": run_id, "workspace_id": workspace_id, "actor_id": actor_id, "key": key},
+        )
 
 
 class TrackingClient(LocalClient):
     """调用 tracking：检查自动复核委托是否仍然有效。"""
 
     def check_delegation(self, actor_id, workspace_id, delegation):
-        return self.request("POST", "/internal/v1/delegations/check", {"schema_version": 1,
-                            "actor_id": actor_id, "workspace_id": workspace_id, "delegation": delegation})
+        return self.request(
+            "POST",
+            "/internal/v1/delegations/check",
+            {"schema_version": 1, "actor_id": actor_id, "workspace_id": workspace_id, "delegation": delegation},
+        )

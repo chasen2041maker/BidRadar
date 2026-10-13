@@ -3,6 +3,7 @@
 目录样本经 ingestion→processing 导入；服务各自持有独立目录/SQLite，运行时
 权限、目录、委托与研究均走HTTP。直接数据库写只用于模拟租约过期/进程断点。
 """
+
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
@@ -51,12 +52,15 @@ class FixtureTransport(DemoTransport):
         body = result.body.replace(NOTICE_URL.encode(), self.url.encode())
         if kwargs["kind"] == "notice":
             body = body.replace(b"12.34", ("12.34" if self.version == 1 else "56.78").encode())
-            body = body.replace(b"</div>", "<p>采购需求：软件开发及接口集成服务。</p><p>资格要求：须核查相关证明。</p></div>".encode())
+            body = body.replace(
+                b"</div>", "<p>采购需求：软件开发及接口集成服务。</p><p>资格要求：须核查相关证明。</p></div>".encode()
+            )
         return replace(result, url=url, final_url=url, body=body, fetched_at=f"2026-10-01T00:{self.version:02d}:00Z")
 
 
 class FakeProvider:
     """按工具协议返回脚本响应；故意没有真实Provider的密钥/网络属性。"""
+
     max_output_tokens = 512
     metadata = {"provider": "scripted_test_only", "requested_model": "scripted_test_only"}
 
@@ -72,10 +76,21 @@ class FakeProvider:
             raise self.failure
         if not tools:
             report = json.loads(messages[1]["content"])["report"]
-            message = {"role": "assistant", "content": json.dumps({"checks": [
-                {"finding_index": i, "verdict": "supported", "reason": "脚本仅核验协议，不是人工语义真值。"}
-                for i in range(len(report["findings"]))], "summary_supported": True, "answer_supported": True,
-                "questions_supported": True, "report_issues": []})}
+            message = {
+                "role": "assistant",
+                "content": json.dumps(
+                    {
+                        "checks": [
+                            {"finding_index": i, "verdict": "supported", "reason": "脚本仅核验协议，不是人工语义真值。"}
+                            for i in range(len(report["findings"]))
+                        ],
+                        "summary_supported": True,
+                        "answer_supported": True,
+                        "questions_supported": True,
+                        "report_issues": [],
+                    }
+                ),
+            }
             finish = "stop"
         else:
             evidence = []
@@ -87,18 +102,42 @@ class FakeProvider:
             else:
                 entry = evidence[0]
                 context = json.loads(messages[1]["content"])
-                report = {"summary": "软件项目相关性待核查，现有资料不足以确定参与条件。",
-                          "findings": [{"category": entry["category"], "requirement": entry["text"],
-                           "status": "unknown", "reason": "仅有公告片段，仍需核验企业声明和完整材料。",
-                           "evidence_ids": [entry["evidence_id"]], "profile_fields": [], "unknown_reason": "证明尚未核验。"}],
-                          "questions": ["证明尚未核验。"],
-                          "answer": "仅有公告片段，仍需核验企业声明和完整材料。" if context["kind"] == "question" else None}
+                report = {
+                    "summary": "软件项目相关性待核查，现有资料不足以确定参与条件。",
+                    "findings": [
+                        {
+                            "category": entry["category"],
+                            "requirement": entry["text"],
+                            "status": "unknown",
+                            "reason": "仅有公告片段，仍需核验企业声明和完整材料。",
+                            "evidence_ids": [entry["evidence_id"]],
+                            "profile_fields": [],
+                            "unknown_reason": "证明尚未核验。",
+                        }
+                    ],
+                    "questions": ["证明尚未核验。"],
+                    "answer": "仅有公告片段，仍需核验企业声明和完整材料。" if context["kind"] == "question" else None,
+                }
                 name, arguments = "finish_report", {"report": report}
-            message = {"role": "assistant", "content": None, "tool_calls": [{"type": "function",
-                       "id": "call-" + str(len(self.calls)), "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}]}
+            message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "id": "call-" + str(len(self.calls)),
+                        "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)},
+                    }
+                ],
+            }
             finish = "tool_calls"
-        return {"message": message, "usage": {"input_tokens": 100, "output_tokens": 20, "cached_tokens": 0},
-                "model": "scripted_test_only", "provider_request_id": "test-" + str(len(self.calls)), "finish_reason": finish}
+        return {
+            "message": message,
+            "usage": {"input_tokens": 100, "output_tokens": 20, "cached_tokens": 0},
+            "model": "scripted_test_only",
+            "provider_request_id": "test-" + str(len(self.calls)),
+            "finish_reason": finish,
+        }
 
 
 class ResearchRuntimeTests(unittest.TestCase):
@@ -109,7 +148,9 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.kdf = patch("services.workspace.store.PASSWORD_ITERATIONS", 1000)
         self.kdf.start()
         self.addCleanup(self.kdf.stop)
-        self.workspace, self.research, self.tracking = (self.root / name for name in ("workspace", "research", "tracking"))
+        self.workspace, self.research, self.tracking = (
+            self.root / name for name in ("workspace", "research", "tracking")
+        )
         self.budget = self.root / "authorized-budget" / "ledger.sqlite3"
         self.tokens = {name: secrets.token_urlsafe(32) for name in ("catalog", "wr", "wt", "rw", "rt", "tw", "tr")}
         with closing(WorkspaceStore(self.workspace)) as store:
@@ -130,25 +171,54 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.servers, self.threads = [], []
         self.addCleanup(self.shutdown)
         self.catalog_http = self.start(catalog_server(self.root / "catalog", token=self.tokens["catalog"]))
-        self.web = self.start(workspace_server(self.workspace, self.address(self.catalog_http), self.tokens["catalog"],
-                              internal_tokens={"research": self.tokens["wr"], "tracking": self.tokens["wt"]}))
+        self.web = self.start(
+            workspace_server(
+                self.workspace,
+                self.address(self.catalog_http),
+                self.tokens["catalog"],
+                internal_tokens={"research": self.tokens["wr"], "tracking": self.tokens["wt"]},
+            )
+        )
         self.access = WorkspaceAccessClient(self.address(self.web), self.tokens["wr"])
         self.tracking_access = WorkspaceAccessClient(self.address(self.web), self.tokens["wt"])
         self.catalog = CatalogEvidenceClient(self.address(self.catalog_http), self.tokens["catalog"])
-        self.tracking_http = self.start(tracking_server(self.tracking, self.tracking_access, self.catalog, None,
-                                         tokens={"workspace": self.tokens["tw"], "research": self.tokens["tr"]}))
+        self.tracking_http = self.start(
+            tracking_server(
+                self.tracking,
+                self.tracking_access,
+                self.catalog,
+                None,
+                tokens={"workspace": self.tokens["tw"], "research": self.tokens["tr"]},
+            )
+        )
         self.tracking_client = TrackingClient(self.address(self.tracking_http), self.tokens["tr"])
-        self.research_http = self.start(research_server(self.research, self.access, self.catalog, self.tracking_client,
-            tokens={"workspace": self.tokens["rw"], "tracking": self.tokens["rt"]}, budget_path=self.budget))
+        self.research_http = self.start(
+            research_server(
+                self.research,
+                self.access,
+                self.catalog,
+                self.tracking_client,
+                tokens={"workspace": self.tokens["rw"], "tracking": self.tokens["rt"]},
+                budget_path=self.budget,
+            )
+        )
         self.client = ResearchClient(self.address(self.research_http), self.tokens["rw"])
         self.delegated_client = ResearchClient(self.address(self.research_http), self.tokens["rt"])
         self.web.research_client = self.client
         self.web.tracking_client = LocalClient(self.address(self.tracking_http), self.tokens["tw"])
         self.login_data = self.login("member")
-        status, selected = self.browser("selections", {"profile_revision": 1,
-            "items": [{k: self.item[k] for k in ("notice_id", "observation_id")}], "key": "select"})
+        status, selected = self.browser(
+            "selections",
+            {
+                "profile_revision": 1,
+                "items": [{k: self.item[k] for k in ("notice_id", "observation_id")}],
+                "key": "select",
+            },
+        )
         self.assertEqual(status, 200, selected)
-        status, selected = self.browser("selections/" + selected["id"] + "/confirm", {"expected_version": 1, "key": "confirm"})
+        status, selected = self.browser(
+            "selections/" + selected["id"] + "/confirm", {"expected_version": 1, "key": "confirm"}
+        )
         self.assertEqual(status, 200, selected)
         self.selection = selected
 
@@ -157,7 +227,7 @@ class ResearchRuntimeTests(unittest.TestCase):
         return f"http://127.0.0.1:{server.server_port}"
 
     def start(self, server):
-        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         self.servers.append(server)
         self.threads.append(thread)
@@ -173,8 +243,10 @@ class ResearchRuntimeTests(unittest.TestCase):
     def add_notice(self, number, version=1):
         self.fixture_counter += 1
         with closing(Store(self.root / "ingestion")) as ingestion:
-            run, _ = ingestion.create_run({**demo_request(), "pages": 1, "attachments": False, "simulation": True},
-                                           "fixture-" + str(self.fixture_counter))
+            run, _ = ingestion.create_run(
+                {**demo_request(), "pages": 1, "attachments": False, "simulation": True},
+                "fixture-" + str(self.fixture_counter),
+            )
             execute(ingestion, run, FixtureTransport(number, version))
             bundle = normalize_bundle(export_bundle(ingestion, run))
         with closing(Catalog(self.root / "catalog")) as catalog:
@@ -207,8 +279,17 @@ class ResearchRuntimeTests(unittest.TestCase):
         return status, result
 
     def request(self, **changes):
-        return {"schema_version": 1, "actor_id": self.member, "workspace_id": self.a, "kind": "analysis", "mode": "agent",
-                "selection_id": self.selection["id"], "notice_id": self.item["notice_id"], "key": "analysis", **changes}
+        return {
+            "schema_version": 1,
+            "actor_id": self.member,
+            "workspace_id": self.a,
+            "kind": "analysis",
+            "mode": "agent",
+            "selection_id": self.selection["id"],
+            "notice_id": self.item["notice_id"],
+            "key": "analysis",
+            **changes,
+        }
 
     def tick(self, provider=None, *, root=None):
         return tick(root or self.research, self.access, self.catalog, self.tracking_client, provider, self.budget)
@@ -219,21 +300,29 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertEqual((caught.exception.status, caught.exception.code), (status, code))
 
     def test_queued_then_real_worker_thread_scripted_agent_and_browser_safe_report(self):
-        status, run = self.browser("research/analyses", {k: self.request()[k] for k in ("selection_id", "notice_id", "key", "mode")})
+        status, run = self.browser(
+            "research/analyses", {k: self.request()[k] for k in ("selection_id", "notice_id", "key", "mode")}
+        )
         self.assertEqual(status, 200, run)  # 工作台窄网关当前返回200；研究所属服务内部受理为202。
         self.assertEqual(run["state"], "queued")
         provider = FakeProvider()
         stop = threading.Event()
-        worker = threading.Thread(target=run_worker, args=(self.research, self.access, self.catalog, self.tracking_client, provider, self.budget), kwargs={"stop_event": stop}, daemon=True)
+        worker = threading.Thread(
+            target=run_worker,
+            args=(self.research, self.access, self.catalog, self.tracking_client, provider, self.budget),
+            kwargs={"stop_event": stop},
+            daemon=True,
+        )
         worker.start()
         try:
             import time
+
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 final = self.client.run(run["id"], self.a, self.member)
                 if final["state"] in ("succeeded", "failed", "partial", "waiting_input"):
                     break
-                stop.wait(.02)
+                stop.wait(0.02)
             self.assertEqual(final["state"], "succeeded", final)
         finally:
             stop.set()
@@ -268,7 +357,11 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertEqual(listed["items"][0]["freshness"], {"profile": "not_checked", "catalog": "not_checked"})
 
     def test_current_scope_selection_cross_company_viewer_and_command_conflict(self):
-        self.error(409, "notice_outside_selection", lambda: self.client.create_analysis(self.request(notice_id=self.second["notice_id"])))
+        self.error(
+            409,
+            "notice_outside_selection",
+            lambda: self.client.create_analysis(self.request(notice_id=self.second["notice_id"])),
+        )
         self.error(403, "forbidden", lambda: self.client.create_analysis(self.request(actor_id=self.viewer)))
         self.error(404, "not_found", lambda: self.client.create_analysis(self.request(workspace_id=self.b)))
         run = self.client.create_analysis(self.request())
@@ -294,8 +387,15 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in second["items"]], [created[0]["id"]])
         self.assertIsNone(second["next_before"])
         for wid, actor, cursor in ((self.b, self.other, created[0]["id"]), (self.a, self.member, "1" * 32)):
-            self.error(400, "invalid_cursor", lambda: self.client.request("POST", "/internal/v1/runs/list", {
-                "schema_version": 1, "workspace_id": wid, "actor_id": actor, "before": cursor, "limit": 2}))
+            self.error(
+                400,
+                "invalid_cursor",
+                lambda: self.client.request(
+                    "POST",
+                    "/internal/v1/runs/list",
+                    {"schema_version": 1, "workspace_id": wid, "actor_id": actor, "before": cursor, "limit": 2},
+                ),
+            )
 
     def test_accepted_command_replays_with_catalog_offline_and_no_second_task(self):
         run = self.client.create_analysis(self.request())
@@ -336,10 +436,12 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertEqual(provider.calls, [])
         self.assertIsNone(self.tick(provider))
         newer = self.client.create_analysis(self.request(key="after-rejoin"))
+
         def change_profile():
             with closing(WorkspaceStore(self.workspace)) as store:
                 p = store.propose_profile(self.admin, self.a, profile("虚构更新公司"), 1, "revision2")
                 store.confirm_profile(self.admin, self.a, p["id"], 1, "confirm2")
+
         provider.hook = change_profile
         final = self.tick(provider)
         self.assertEqual((final["state"], final["reason"]), ("waiting_input", "profile_revision_changed"))
@@ -354,8 +456,11 @@ class ResearchRuntimeTests(unittest.TestCase):
             store.db.execute("UPDATE runs SET lease_until=0 WHERE id=?", (created["id"],))
             new = store.claim("worker-new")
             self.assertGreater(new["lease_epoch"], old["lease_epoch"])
-            for operation in (lambda: store.checkpoint(old, {}), lambda: store.stop(old, "failed", "old"),
-                              lambda: store.finish(old, {"state": "partial", "report": {}, "trace": [], "quality": {}})):
+            for operation in (
+                lambda: store.checkpoint(old, {}),
+                lambda: store.stop(old, "failed", "old"),
+                lambda: store.finish(old, {"state": "partial", "report": {}, "trace": [], "quality": {}}),
+            ):
                 with self.assertRaisesRegex(ResearchError, "lease_lost"):
                     operation()
             store.stop(new, "waiting_input", "test_end")
@@ -365,6 +470,7 @@ class ResearchRuntimeTests(unittest.TestCase):
         from services.research.agent import VERSION, PROMPT_VERSION
         from services.research.evidence import VERSION as evidence_version
         from services.research.provider import EGRESS_VERSION, VERSION as provider_version, TEMPERATURE
+
         run = self.client.create_analysis(self.request())
         with closing(ResearchStore(self.research)) as store:
             frozen = store.load(self.a, run["id"])["manifest"]
@@ -383,6 +489,7 @@ class ResearchRuntimeTests(unittest.TestCase):
 
     def test_temperature_changes_or_legacy_configuration_block_before_next_dispatch(self):
         from services.research.provider import DeepSeekProvider
+
         metadata = DeepSeekProvider("synthetic-key-only").metadata
         for variant in ("old_temperature", "old_version", "missing_frozen_temperature", "changes_between_calls"):
             with self.subTest(variant=variant):
@@ -417,7 +524,10 @@ class ResearchRuntimeTests(unittest.TestCase):
             original = ledger.summary()
             self.assertEqual(original["unknown_attempts"], 1)
             self.assertGreater(original["charged_or_reserved"], 0)
-        with closing(ResearchStore(self.research)) as old, closing(ResearchStore(self.root / "fresh-research")) as fresh:
+        with (
+            closing(ResearchStore(self.research)) as old,
+            closing(ResearchStore(self.root / "fresh-research")) as fresh,
+        ):
             frozen = old.load(self.a, run["id"])
             request = deepcopy(frozen["request"])
             request["key"] = "new-business-database"
@@ -432,13 +542,17 @@ class ResearchRuntimeTests(unittest.TestCase):
 
     def test_settled_response_before_checkpoint_crash_reuses_exact_model_response(self):
         run = self.client.create_analysis(self.request())
+
         class Crash(BaseException):
             pass
+
         original = ResearchStore.checkpoint
+
         def crash_on_result(store, claimed, state):
             if state["phase"] == "model_result":
                 raise Crash()
             return original(store, claimed, state)
+
         provider = FakeProvider()
         with patch.object(ResearchStore, "checkpoint", crash_on_result), self.assertRaises(Crash):
             self.tick(provider)
@@ -448,21 +562,32 @@ class ResearchRuntimeTests(unittest.TestCase):
         final = self.tick(provider)
         self.assertEqual(final["state"], "succeeded", final)
         self.assertEqual(len(provider.calls), 3)  # 原首轮只发一次，其余是finish与语义核验。
-        self.assertEqual(sum(not any(m["role"] == "tool" for m in messages) and "工具" in messages[0]["content"]
-                             and "核验器" not in messages[0]["content"] for messages in provider.calls), 1)
+        self.assertEqual(
+            sum(
+                not any(m["role"] == "tool" for m in messages)
+                and "工具" in messages[0]["content"]
+                and "核验器" not in messages[0]["content"]
+                for messages in provider.calls
+            ),
+            1,
+        )
         with closing(BudgetLedger(self.budget)) as ledger:
             self.assertEqual(ledger.summary()["unknown_attempts"], 0)
             self.assertEqual(ledger.summary()["attempts"], 3)
 
     def test_semantic_checkpoint_recovery_reuses_its_response_and_has_no_new_provider_call(self):
         run = self.client.create_analysis(self.request())
+
         class Crash(BaseException):
             pass
+
         original = ResearchStore.checkpoint
+
         def crash_review_result(store, claimed, state):
             if state["phase"] == "review_result":
                 raise Crash()
             return original(store, claimed, state)
+
         provider = FakeProvider()
         with patch.object(ResearchStore, "checkpoint", crash_review_result), self.assertRaises(Crash):
             self.tick(provider)
@@ -480,15 +605,18 @@ class ResearchRuntimeTests(unittest.TestCase):
     def test_crashed_unknown_attempt_or_changed_provider_cannot_dispatch_on_resume(self):
         class Crash(BaseException):
             pass
+
         for changed in (False, True):
             request = self.request(key="crash-" + str(changed))
             run = self.client.create_analysis(request)
             provider = FakeProvider(failure=None if changed else Crash())
             original = ResearchStore.checkpoint
+
             def crash_on_result(store, claimed, state):
                 if state["phase"] == "model_result":
                     raise Crash()
                 return original(store, claimed, state)
+
             with patch.object(ResearchStore, "checkpoint", crash_on_result), self.assertRaises(Crash):
                 self.tick(provider)
             with closing(ResearchStore(self.research)) as store:
@@ -497,15 +625,31 @@ class ResearchRuntimeTests(unittest.TestCase):
             if changed:
                 provider.metadata = {**provider.metadata, "version": "changed-config"}
             final = self.tick(provider)
-            self.assertEqual((final["state"], final["reason"]), ("waiting_input", "checkpoint_request_mismatch" if changed else "billing_unknown"))
+            self.assertEqual(
+                (final["state"], final["reason"]),
+                ("waiting_input", "checkpoint_request_mismatch" if changed else "billing_unknown"),
+            )
             self.assertEqual(len(provider.calls), 1)
 
     def test_question_freezes_same_parent_scope_and_tracking_identity_has_no_manual_route(self):
         created = self.client.create_analysis(self.request())
         self.tick(FakeProvider())
-        question = {"schema_version": 1, "actor_id": self.member, "workspace_id": self.a, "notice_id": self.item["notice_id"],
-                    "key": "question", "kind": "question", "mode": "agent", "parent_run_id": created["id"], "question": "资格是否满足？"}
-        self.error(409, "parent_report_unavailable", lambda: self.client.create_analysis({**question, "notice_id": self.second["notice_id"]}))
+        question = {
+            "schema_version": 1,
+            "actor_id": self.member,
+            "workspace_id": self.a,
+            "notice_id": self.item["notice_id"],
+            "key": "question",
+            "kind": "question",
+            "mode": "agent",
+            "parent_run_id": created["id"],
+            "question": "资格是否满足？",
+        }
+        self.error(
+            409,
+            "parent_report_unavailable",
+            lambda: self.client.create_analysis({**question, "notice_id": self.second["notice_id"]}),
+        )
         accepted = self.client.create_analysis(question)
         final = self.tick(FakeProvider())
         self.assertEqual(final["id"], accepted["id"])
@@ -514,25 +658,49 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertTrue(final["report"]["answer"])
         self.error(403, "service_forbidden", lambda: self.delegated_client.create_analysis(self.request(key="forged")))
         self.error(403, "service_forbidden", lambda: self.delegated_client.run(created["id"], self.a, self.member))
-        self.error(403, "service_forbidden", lambda: self.delegated_client.cancel(created["id"], self.a, self.member, "forged"))
+        self.error(
+            403, "service_forbidden", lambda: self.delegated_client.cancel(created["id"], self.a, self.member, "forged")
+        )
 
     def test_real_tracking_delegation_accepts_only_matching_snapshot_then_stop_watch_blocks_worker(self):
         expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
-        status, watch = self.browser("tracking/watches/" + self.item["notice_id"], {"active": True, "auto_reassess": True,
-             "expected_version": 0, "key": "watch", "expires_at": expires, "scope": None})
+        status, watch = self.browser(
+            "tracking/watches/" + self.item["notice_id"],
+            {
+                "active": True,
+                "auto_reassess": True,
+                "expected_version": 0,
+                "key": "watch",
+                "expires_at": expires,
+                "scope": None,
+            },
+        )
         self.assertEqual(status, 200, watch)
         self.add_notice(1, 2)
         with closing(TrackingStore(self.tracking)) as store:
             service = TrackingService(store, self.tracking_access, self.catalog, self.delegated_client)
             service.poll("catalog")
             request = json.loads(store.db.execute("SELECT request FROM reassessments LIMIT 1").fetchone()[0])
-            self.error(409, "delegation_input_mismatch", lambda: self.delegated_client.create_analysis({**request, "profile_revision": 2}))
+            self.error(
+                409,
+                "delegation_input_mismatch",
+                lambda: self.delegated_client.create_analysis({**request, "profile_revision": 2}),
+            )
             delegated = service.dispatch_one()
             self.assertEqual(delegated["state"], "accepted", delegated)
         remote = self.delegated_client.run(delegated["run_id"], self.a, self.member)
         self.assertEqual(remote["kind"], "reassessment")
-        status, stopped = self.browser("tracking/watches/" + self.item["notice_id"], {"active": False, "auto_reassess": False,
-            "expected_version": watch["version"], "key": "stop", "expires_at": None, "scope": None})
+        status, stopped = self.browser(
+            "tracking/watches/" + self.item["notice_id"],
+            {
+                "active": False,
+                "auto_reassess": False,
+                "expected_version": watch["version"],
+                "key": "stop",
+                "expires_at": None,
+                "scope": None,
+            },
+        )
         self.assertEqual(status, 200, stopped)
         provider = FakeProvider()
         final = self.tick(provider)

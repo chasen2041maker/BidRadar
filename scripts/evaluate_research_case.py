@@ -10,6 +10,7 @@
 同一个 case-key 重复运行会复用原来的任务，不会再花一次钱；想重新测，换一个 case-key。
 命令执行成功只说明流程跑通了，报告质量要另外看。
 """
+
 import argparse
 from contextlib import closing
 from http.cookiejar import CookieJar
@@ -44,8 +45,13 @@ def main(argv=None):
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
     import re
-    if (not re.fullmatch(r"[a-f0-9]{64}", args.notice_id) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,60}", args.case_key)
-            or not 0 <= args.wait_seconds <= 360 or bool(args.parent_run_id) != bool(args.question)):
+
+    if (
+        not re.fullmatch(r"[a-f0-9]{64}", args.notice_id)
+        or not re.fullmatch(r"[a-zA-Z0-9_-]{1,60}", args.case_key)
+        or not 0 <= args.wait_seconds <= 360
+        or bool(args.parent_run_id) != bool(args.question)
+    ):
         parser.error("invalid case arguments")
     root = args.root.resolve()
     runtime = json.loads((root / "runtime.json").read_text(encoding="utf-8"))
@@ -53,14 +59,24 @@ def main(argv=None):
     if accounts.get("simulation") is not True or runtime.get("companies") != "fictional_only":
         raise ValueError("fictional_environment_required")
     if not args.execute:
-        print(json.dumps({"execute": False, "notice_id": args.notice_id, "company": args.company,
-                          "model_calls": 0, "instruction": "Only --execute submits bounded tasks"}))
+        print(
+            json.dumps(
+                {
+                    "execute": False,
+                    "notice_id": args.notice_id,
+                    "company": args.company,
+                    "model_calls": 0,
+                    "instruction": "Only --execute submits bounded tasks",
+                }
+            )
+        )
         return 0
     jar = CookieJar()
     opener = build_opener(ProxyHandler({}), HTTPCookieProcessor(jar), NoRedirect())
     origin = runtime["url"]
     if not re.fullmatch(r"http://127\.0\.0\.1:[0-9]{1,5}", origin):
         raise ValueError("invalid_runtime_url")
+
     def request(path, value=None):
         headers = {"Accept": "application/json"}
         raw = None
@@ -77,6 +93,7 @@ def main(argv=None):
             with exc:
                 detail = json.load(exc)
             raise RuntimeError(detail.get("error", {}).get("code", "http_error")) from None
+
     account = accounts["accounts"][0 if args.company == 0 else 3]
     request("/api/login", {"username": account["username"], "password": account["password"]})
     wid = accounts["workspaces"][args.company]["id"]
@@ -84,20 +101,41 @@ def main(argv=None):
     case_key = "eval-" + args.case_key
     runs = []
     if args.parent_run_id:
-        run = request(prefix + "research/questions", {"parent_run_id": args.parent_run_id, "question": args.question, "key": case_key})
+        run = request(
+            prefix + "research/questions",
+            {"parent_run_id": args.parent_run_id, "question": args.question, "key": case_key},
+        )
         runs.append(run)
     else:
         revision = request(prefix + "profile")["current"]["revision"]
         detail = request(prefix + "notices/" + args.notice_id)
         observation = detail["current"]["observation_id"]
-        selection = request(prefix + "selections", {"profile_revision": revision, "items": [{"notice_id": args.notice_id,
-                              "observation_id": observation}], "key": case_key + "-select"})
+        selection = request(
+            prefix + "selections",
+            {
+                "profile_revision": revision,
+                "items": [{"notice_id": args.notice_id, "observation_id": observation}],
+                "key": case_key + "-select",
+            },
+        )
         selected = request(prefix + "selections/" + selection["id"])
         if selected["state"] == "awaiting_decision":
-            selected = request(prefix + "selections/" + selected["id"] + "/confirm", {"expected_version": selected["version"], "key": case_key + "-confirm"})
+            selected = request(
+                prefix + "selections/" + selected["id"] + "/confirm",
+                {"expected_version": selected["version"], "key": case_key + "-confirm"},
+            )
         for mode in ("baseline", "agent"):
-            runs.append(request(prefix + "research/analyses", {"selection_id": selected["id"], "notice_id": args.notice_id,
-                                                               "mode": mode, "key": case_key + "-" + mode}))
+            runs.append(
+                request(
+                    prefix + "research/analyses",
+                    {
+                        "selection_id": selected["id"],
+                        "notice_id": args.notice_id,
+                        "mode": mode,
+                        "key": case_key + "-" + mode,
+                    },
+                )
+            )
     output_dir = root / "evaluations"
     output_dir.mkdir(exist_ok=True)
     output = output_dir / (args.case_key + ".json")
@@ -106,14 +144,34 @@ def main(argv=None):
         runs = [request(prefix + "research/runs/" + run["id"]) for run in runs]
         # 比较的是用户实际看到的报告；partial通常是规则降级，引用合法不等于AI候选通过。
         # 明列发布来源，避免CLI退出0或基线的正确引用被误记为真实AI质量验收。
-        outcomes = [{"id": run["id"], "state": run["state"], "mode": run["mode"], "reason": run["reason"],
-                     "ai_verified": bool((run.get("quality") or {}).get("verified")),
-                     "published_kind": ("verified_agent" if (run.get("quality") or {}).get("verified") else
-                                        "rule_baseline" if run["mode"] == "baseline" else
-                                        "conservative_fallback" if run.get("report") else "no_report")}
-                    for run in runs]
-        record = {"case_key": args.case_key, "workspace_id": wid, "sample_source": "catalog_frozen",
-                  "recorded_at": time.time(), "runs": runs, "outcomes": outcomes, "comparison": None}
+        outcomes = [
+            {
+                "id": run["id"],
+                "state": run["state"],
+                "mode": run["mode"],
+                "reason": run["reason"],
+                "ai_verified": bool((run.get("quality") or {}).get("verified")),
+                "published_kind": (
+                    "verified_agent"
+                    if (run.get("quality") or {}).get("verified")
+                    else "rule_baseline"
+                    if run["mode"] == "baseline"
+                    else "conservative_fallback"
+                    if run.get("report")
+                    else "no_report"
+                ),
+            }
+            for run in runs
+        ]
+        record = {
+            "case_key": args.case_key,
+            "workspace_id": wid,
+            "sample_source": "catalog_frozen",
+            "recorded_at": time.time(),
+            "runs": runs,
+            "outcomes": outcomes,
+            "comparison": None,
+        }
         # 此CLI是research所属验收工具，只读本服务自身任务库来核验冻结输入；不跨服务读库。
         with closing(ResearchStore(root / "research")) as store:
             manifests = [store.load(wid, run["id"])["manifest"] for run in runs]
@@ -123,12 +181,14 @@ def main(argv=None):
         elif len(runs) == 1 and runs[0]["report"]:
             record["comparison"] = evaluate_report(manifests[0], runs[0]["report"])
         output.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        if (all(run["state"] not in ("queued", "running", "retry_wait") for run in runs)
-                or time.monotonic() >= deadline):
+        if all(run["state"] not in ("queued", "running", "retry_wait") for run in runs) or time.monotonic() >= deadline:
             break
         time.sleep(2)
-    print(json.dumps({"file": str(output), "runs": outcomes,
-                      "budget": request(prefix + "research/budget")}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"file": str(output), "runs": outcomes, "budget": request(prefix + "research/budget")}, ensure_ascii=False
+        )
+    )
     return 0
 
 

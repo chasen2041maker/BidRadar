@@ -7,6 +7,7 @@
 范围、约数、没写时区的时刻都保留原文、不强行解析。
 这里不判断项目适不适合谁，也不判断还能不能投。纯函数，不联网、不调模型。
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -19,7 +20,13 @@ from .evidence_fields import body_entries, extract as extract_evidence
 
 VERSION = "procurement-facts-v3"
 MAX_JSON_BYTES = 32 * 1024 * 1024
-SOURCES = {"cn_ccgp", "cn_hainan", "tj_procurement_negotiation", "tj_procurement_consultation", "tj_procurement_correction"}
+SOURCES = {
+    "cn_ccgp",
+    "cn_hainan",
+    "tj_procurement_negotiation",
+    "tj_procurement_consultation",
+    "tj_procurement_correction",
+}
 KINDS = {"procurement", "correction", "award", "termination", "intention", "unknown"}
 LABELS = {
     "project_number": ("项目编号", "采购项目编号", "原公告的采购项目编号"),
@@ -105,9 +112,12 @@ def _date(text):
 
     只有日期就记日期精度，不补成零点；原文没写"北京时间"就不加时区。
     """
-    match = re.fullmatch(r"\s*(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})日?"
-                         r"(?:[ T\s]*(\d{1,2})[:时点](\d{1,2})(?:[:分](\d{1,2})秒?)?分?)?"
-                         r"\s*(?:[（(]?(北京时间)[）)]?)?\s*", text)
+    match = re.fullmatch(
+        r"\s*(\d{4})[-年/](\d{1,2})[-月/](\d{1,2})日?"
+        r"(?:[ T\s]*(\d{1,2})[:时点](\d{1,2})(?:[:分](\d{1,2})秒?)?分?)?"
+        r"\s*(?:[（(]?(北京时间)[）)]?)?\s*",
+        text,
+    )
     if not match:
         return None
     year, month, day, hour, minute, second, beijing = match.groups()
@@ -117,14 +127,21 @@ def _date(text):
         return None
     precision = "second" if second else ("minute" if hour else "date")
     value = date.strftime("%Y-%m-%d") if hour is None else date.isoformat(timespec=precision + "s")
-    return {"local": value, "precision": precision, "timezone": "+08:00" if beijing else None,
-            "timezone_basis": "原文明确北京时间" if beijing else None}
+    return {
+        "local": value,
+        "precision": precision,
+        "timezone": "+08:00" if beijing else None,
+        "timezone_basis": "原文明确北京时间" if beijing else None,
+    }
 
 
 def _money(text, label):
     """解析金额，返回 {amount（单位元）, currency, source_unit, scope}，不是明确的单一金额就返回 None。"""
     # 区间、约数、最高限价、外币、一段里有多个金额，都不解析，保留原文让人看。
-    match = re.fullmatch(r"\s*(?:人民币\s*)?[￥¥]?\s*((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?)\s*(万元|元)?(?:\s*[（(]人民币[）)])?\s*", text)
+    match = re.fullmatch(
+        r"\s*(?:人民币\s*)?[￥¥]?\s*((?:[0-9]+|[0-9]{1,3}(?:,[0-9]{3})+)(?:\.[0-9]+)?)\s*(万元|元)?(?:\s*[（(]人民币[）)])?\s*",
+        text,
+    )
     if not match:
         return None
     number, unit = match.groups()
@@ -147,15 +164,21 @@ def _fact(entries, name):
         return {"status": "missing", "value": None, "evidence": []}
     values = []
     for entry in evidence:
-        value = _date(entry["text"]) if name in DATE_FIELDS else (
-            _money(entry["text"], entry["label"]) if name == "budget" else entry["text"])
+        value = (
+            _date(entry["text"])
+            if name in DATE_FIELDS
+            else (_money(entry["text"], entry["label"]) if name == "budget" else entry["text"])
+        )
         if value is not None and value not in values:
             values.append(value)
     if len(values) > 1:
         return {"status": "conflicting", "value": None, "evidence": evidence}
     # 一条能解析、另一条解析不了，也不算确定：不能只挑对自己有利的那条。
-    if not values or any((_date(e["text"]) if name in DATE_FIELDS else
-                         _money(e["text"], e["label"]) if name == "budget" else e["text"]) is None for e in evidence):
+    if not values or any(
+        (_date(e["text"]) if name in DATE_FIELDS else _money(e["text"], e["label"]) if name == "budget" else e["text"])
+        is None
+        for e in evidence
+    ):
         return {"status": "unparsed", "value": None, "evidence": evidence}
     return {"status": "known", "value": values[0], "evidence": evidence}
 
@@ -163,9 +186,13 @@ def _fact(entries, name):
 def _notice_kind(title, source=None):
     """根据标题（以及来源）判断公告类型：采购、更正、结果、终止、意向或未知。"""
     kind = "unknown"
-    for pattern, kind in ((r"(更正|变更|澄清)公告", "correction"), (r"(废标|终止|中止)公告", "termination"),
-                          (r"(中标|成交)(结果)?公告", "award"), (r"采购意向", "intention"),
-                          (r"(?:(?:竞争性谈判|竞争性磋商|询价)(?:公告)?|(?:招标|采购)公告)", "procurement")):
+    for pattern, kind in (
+        (r"(更正|变更|澄清)公告", "correction"),
+        (r"(废标|终止|中止)公告", "termination"),
+        (r"(中标|成交)(结果)?公告", "award"),
+        (r"采购意向", "intention"),
+        (r"(?:(?:竞争性谈判|竞争性磋商|询价)(?:公告)?|(?:招标|采购)公告)", "procurement"),
+    ):
         if re.search(pattern + r"(?:[（(].*[）)])?$", title):
             break
     else:
@@ -180,10 +207,15 @@ def _notice_kind(title, source=None):
 
 def normalize_bundle(bundle):
     """把一个证据包整体规范化。任何一个文档格式不对，整个包都拒绝，目录不会导入半个包。"""
-    if (not isinstance(bundle, dict) or type(bundle.get("schema_version")) is not int or bundle["schema_version"] != 1
-            or bundle.get("kind") != "raw_evidence_bundle" or not isinstance(bundle.get("source_id"), str)
-            or bundle.get("source_id") not in SOURCES
-            or type(bundle.get("simulation")) is not bool):
+    if (
+        not isinstance(bundle, dict)
+        or type(bundle.get("schema_version")) is not int
+        or bundle["schema_version"] != 1
+        or bundle.get("kind") != "raw_evidence_bundle"
+        or not isinstance(bundle.get("source_id"), str)
+        or bundle.get("source_id") not in SOURCES
+        or type(bundle.get("simulation")) is not bool
+    ):
         raise ValueError("invalid_bundle_header")
     if len(canonical(bundle).encode()) > MAX_JSON_BYTES:
         raise ValueError("bundle_too_large")
@@ -222,15 +254,25 @@ def normalize_bundle(bundle):
         assessment = extra["budget_assessment"]
         if assessment["status"] == "known" and facts["budget"]["status"] != "known":
             claim = next(claim for claim in extra["money"] if claim["role"] == "budget" and claim["status"] == "parsed")
-            facts["budget"] = {"status": "known", "value": {"amount": claim["amount"], "currency": "CNY",
-                               "source_unit": claim["source_unit"], "scope": "unspecified"},
-                               "evidence": assessment["evidence"]}
+            facts["budget"] = {
+                "status": "known",
+                "value": {
+                    "amount": claim["amount"],
+                    "currency": "CNY",
+                    "source_unit": claim["source_unit"],
+                    "scope": "unspecified",
+                },
+                "evidence": assessment["evidence"],
+            }
         if assessment["status"] in ("conflicting", "context_required", "unparsed"):
             # 金额证据有冲突、需要结合上下文、或解析不了时，不输出项目预算。
             proof = assessment["evidence"] or [entry for claim in extra["money"] for entry in claim["evidence"]]
             if proof:
-                facts["budget"] = {"status": "conflicting" if assessment["status"] == "conflicting" else "unparsed",
-                                   "value": None, "evidence": proof}
+                facts["budget"] = {
+                    "status": "conflicting" if assessment["status"] == "conflicting" else "unparsed",
+                    "value": None,
+                    "evidence": proof,
+                }
         if notice_type == "correction":
             # 更正公告里常常同时出现旧的和新的日期、金额，分不清哪个是现在的值，所以只保留证据、不填值。
             # 项目编号和采购人仍然保留，用来和原公告建立关联。
@@ -250,20 +292,41 @@ def normalize_bundle(bundle):
                 references.append({"url": public_url(link.get("url")), "text": name, "locator": locator})
         # 公告 ID 由来源、是否演示、来源里的记录键共同决定：演示数据和真实数据永远不会混成同一条公告。
         notice_id = fingerprint([bundle["source_id"], bundle["simulation"], key])
-        observation = {"notice_id": notice_id, "source_id": bundle["source_id"], "simulation": bundle["simulation"],
-            "source_record_key": key, "identity_kind": identity, "source_url": url,
-            "capture_id": capture, "raw_sha256": digest, "parser_version": parser,
-            "normalizer_version": VERSION, "observed_at": observed, "title": title,
-            "notice_type": notice_type, "facts": facts, "references": references,
+        observation = {
+            "notice_id": notice_id,
+            "source_id": bundle["source_id"],
+            "simulation": bundle["simulation"],
+            "source_record_key": key,
+            "identity_kind": identity,
+            "source_url": url,
+            "capture_id": capture,
+            "raw_sha256": digest,
+            "parser_version": parser,
+            "normalizer_version": VERSION,
+            "observed_at": observed,
+            "title": title,
+            "notice_type": notice_type,
+            "facts": facts,
+            "references": references,
             "evidence_fields": extra,
             # 只记下附件引用的原文和位置，不访问链接，也不会把"有链接"写成"已下载"。
             "material_reference_evidence": [entry for entry in entries if entry["label"] in MATERIAL_LABELS],
             "material_status": content.get("material_status", "see_ingestion_evidence"),
-            "attribution": content.get("attribution"), "run_id": run_id}
+            "attribution": content.get("attribution"),
+            "run_id": run_id,
+        }
         # 观察 ID 是整个观察内容的哈希：内容（包括解析结果）一变，ID 就变。目录导入时会重新核对。
         observation["observation_id"] = fingerprint(observation)
         observations.append(observation)
-    return {"schema_version": 3, "kind": "normalized_observations", "normalizer_version": VERSION,
-            "run_id": run_id, "run_status": bundle["run_status"], "source_id": bundle["source_id"],
-            "simulation": bundle["simulation"], "coverage": "bounded_sample",
-            "observations": observations, "failures": failures}
+    return {
+        "schema_version": 3,
+        "kind": "normalized_observations",
+        "normalizer_version": VERSION,
+        "run_id": run_id,
+        "run_status": bundle["run_status"],
+        "source_id": bundle["source_id"],
+        "simulation": bundle["simulation"],
+        "coverage": "bounded_sample",
+        "observations": observations,
+        "failures": failures,
+    }

@@ -1,4 +1,5 @@
 """公共资料账本的离线恢复回归：仅操作临时目录，不联网、不使用真实资料。"""
+
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -39,11 +40,19 @@ class IngestionArchiveTests(unittest.TestCase):
         return run_id, token, self.store.next_task(run_id)
 
     def response(self, body=b"synthetic original\r\n\x00\xff", url=SEARCH_URL):
-        return SimpleNamespace(body=body, final_url=url, fetched_at="2026-09-30T10:00:00Z",
-                               http_status=200, attempts=1,
-                               headers={"Content-Type": "text/html; charset=utf-8",
-                                        "ETag": '"synthetic"', "Set-Cookie": "must-not-store",
-                                        "Authorization": "must-not-store"})
+        return SimpleNamespace(
+            body=body,
+            final_url=url,
+            fetched_at="2026-09-30T10:00:00Z",
+            http_status=200,
+            attempts=1,
+            headers={
+                "Content-Type": "text/html; charset=utf-8",
+                "ETag": '"synthetic"',
+                "Set-Cookie": "must-not-store",
+                "Authorization": "must-not-store",
+            },
+        )
 
     def test_same_key_and_equivalent_request_reuse_persistent_run(self):
         request = {"source_id": "cn_ccgp", "range": {"to": None, "from": "2026-09-01"}}
@@ -51,7 +60,8 @@ class IngestionArchiveTests(unittest.TestCase):
         self.assertTrue(created)
         second = self.open_store()
         repeated, created = second.create_run(
-            {"range": {"from": "2026-09-01", "to": None}, "source_id": "cn_ccgp"}, "same-key")
+            {"range": {"from": "2026-09-01", "to": None}, "source_id": "cn_ccgp"}, "same-key"
+        )
         self.assertEqual((repeated, created), (first, False))
         self.assertEqual(second.run(first)["request"], request)
         self.assertEqual(second.run(first)["status"], "queued")
@@ -71,8 +81,9 @@ class IngestionArchiveTests(unittest.TestCase):
     def test_record_preserves_original_bytes_hash_and_capture_metadata(self):
         run_id, token, task = self.started()
         response = self.response()
-        capture_id = self.store.record(run_id, token, task, response=response,
-                                       parsed={"status": "ok"}, parser_version="test-parser/1")
+        capture_id = self.store.record(
+            run_id, token, task, response=response, parsed={"status": "ok"}, parser_version="test-parser/1"
+        )
         capture = self.store.capture(capture_id)
         # 原件允许非UTF-8字节和NUL，不能经过解码/行尾整理后再计算指纹。
         self.assertEqual(capture["sha256"], sha256(response.body).hexdigest())
@@ -89,14 +100,15 @@ class IngestionArchiveTests(unittest.TestCase):
         captures = []
         for index, body in enumerate((b"version one", b"version two", b"version one")):
             run_id, token, task = self.started(f"version-{index}")
-            captures.append(self.store.capture(self.store.record(
-                run_id, token, task, response=self.response(body))))
+            captures.append(self.store.capture(self.store.record(run_id, token, task, response=self.response(body))))
         # 内容版本按URL+哈希复用，三次获取事实仍各自保留，不改旧版本。
         self.assertEqual(captures[0]["version_id"], captures[2]["version_id"])
         self.assertNotEqual(captures[0]["version_id"], captures[1]["version_id"])
         versions = self.store.db.execute("SELECT version,sha256 FROM versions ORDER BY version").fetchall()
-        self.assertEqual([tuple(row) for row in versions],
-                         [(1, sha256(b"version one").hexdigest()), (2, sha256(b"version two").hexdigest())])
+        self.assertEqual(
+            [tuple(row) for row in versions],
+            [(1, sha256(b"version one").hexdigest()), (2, sha256(b"version two").hexdigest())],
+        )
         self.assertEqual(len(list(self.store.blobs.glob("*.bin"))), 2)
         self.assertEqual(len({capture["id"] for capture in captures}), 3)
 
@@ -104,18 +116,17 @@ class IngestionArchiveTests(unittest.TestCase):
         captures = []
         for index, url in enumerate((SEARCH_URL, DETAIL_URL)):
             run_id, token, task = self.started(f"url-{index}", url=url)
-            captures.append(self.store.capture(self.store.record(
-                run_id, token, task, response=self.response(b"same bytes", url))))
+            captures.append(
+                self.store.capture(self.store.record(run_id, token, task, response=self.response(b"same bytes", url)))
+            )
         self.assertEqual(captures[0]["sha256"], captures[1]["sha256"])
         self.assertNotEqual(captures[0]["version_id"], captures[1]["version_id"])
         self.assertEqual(len(list(self.store.blobs.glob("*.bin"))), 1)
 
     def test_completed_task_and_deduplicated_following_survive_reopen(self):
         run_id, token, task = self.started()
-        following = {"kind": "detail", "url": DETAIL_URL, "parent_url": SEARCH_URL,
-                     "payload": {"title": "虚构采购"}}
-        capture_id = self.store.record(run_id, token, task, response=self.response(),
-                                       following=[following, following])
+        following = {"kind": "detail", "url": DETAIL_URL, "parent_url": SEARCH_URL, "payload": {"title": "虚构采购"}}
+        capture_id = self.store.record(run_id, token, task, response=self.response(), following=[following, following])
         self.store.release(run_id, token)
         self.store.close()
         recovered = self.open_store()
@@ -148,8 +159,9 @@ class IngestionArchiveTests(unittest.TestCase):
 
         with patch.object(self.store, "_enqueue", side_effect=interrupted):
             with self.assertRaises(KeyboardInterrupt):
-                self.store.record(run_id, token, task, response=self.response(),
-                                  following=[{"kind": "detail", "url": DETAIL_URL}])
+                self.store.record(
+                    run_id, token, task, response=self.response(), following=[{"kind": "detail", "url": DETAIL_URL}]
+                )
         self.assertEqual(self.store.report(run_id)["captures"], [])
         self.assertEqual(self.store.task_count(run_id, "detail"), 0)
         self.clock.return_value = 1121.0
@@ -163,8 +175,9 @@ class IngestionArchiveTests(unittest.TestCase):
         run_id, token, task = self.started()
         capture_id = self.store.record(run_id, token, task, response=self.response())
         with self.assertRaisesRegex(StoreError, "task_not_pending_in_run"):
-            self.store.record(run_id, token, task, response=self.response(),
-                              following=[{"kind": "detail", "url": DETAIL_URL}])
+            self.store.record(
+                run_id, token, task, response=self.response(), following=[{"kind": "detail", "url": DETAIL_URL}]
+            )
         self.assertEqual([item["id"] for item in self.store.report(run_id)["captures"]], [capture_id])
         self.assertEqual(self.store.task_count(run_id, "detail"), 0)
 
@@ -259,8 +272,7 @@ class IngestionArchiveTests(unittest.TestCase):
 
     def test_error_capture_preserves_unknown_body_and_status_without_fake_zero(self):
         run_id, token, task = self.started()
-        capture = self.store.capture(self.store.record(run_id, token, task,
-                                                     error="network_timeout", attempts=2))
+        capture = self.store.capture(self.store.record(run_id, token, task, error="network_timeout", attempts=2))
         self.assertEqual(capture["error_code"], "network_timeout")
         self.assertEqual(capture["attempts"], 2)
         for field in ("http_status", "sha256", "byte_count", "version_id", "parsed"):
@@ -287,8 +299,9 @@ class IngestionArchiveTests(unittest.TestCase):
 
     def test_replay_keeps_capture_original_parse_and_bytes_unchanged(self):
         run_id, token, task = self.started()
-        capture_id = self.store.record(run_id, token, task, response=self.response(),
-                                       parser_version="parser/1", parsed={"title": "旧解析"})
+        capture_id = self.store.record(
+            run_id, token, task, response=self.response(), parser_version="parser/1", parsed={"title": "旧解析"}
+        )
         before = self.store.capture(capture_id)
         replay = self.store.save_replay(capture_id, "parser/2", {"title": "修复后解析"})
         self.assertEqual(self.store.capture(capture_id), before)

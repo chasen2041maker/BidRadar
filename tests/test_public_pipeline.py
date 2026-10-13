@@ -1,4 +1,5 @@
 """两来源新增请求到归档/重放/导出的真实本地链；页面与HTTP均为合成数据。"""
+
 from contextlib import redirect_stdout
 import io
 import json
@@ -19,6 +20,7 @@ HAINAN = "https://ggzy.hainan.gov.cn/ggzy/ggzy/cggg/999991.jhtml"
 
 class FakePublicTransport:
     """不绕过生产校验来声称网络通过；这里只替换获取以验证持久流程。"""
+
     def __init__(self, source):
         self.source, self.calls = source, []
         self.interrupt_after = None
@@ -29,18 +31,33 @@ class FakePublicTransport:
             raise KeyboardInterrupt()
         self.calls.append((kind, url))
         if kind == "listing":
-            row = '<li><a href="' + CCGP + '">虚构软件平台</a>发布时间：<em>2026-09-30 12:00</em> 采购人：<em>虚构采购单位</em></li>'
-            other = '<li><a href="' + CCGP.replace("999991", "999992") + '">虚构道路工程</a>发布时间：<em>2026-09-30 12:00</em> 采购人：<em>虚构采购单位</em></li>'
-            html = '<ul class="c_list_bid">' + row + other + '</ul>'
+            row = (
+                '<li><a href="'
+                + CCGP
+                + '">虚构软件平台</a>发布时间：<em>2026-09-30 12:00</em> 采购人：<em>虚构采购单位</em></li>'
+            )
+            other = (
+                '<li><a href="'
+                + CCGP.replace("999991", "999992")
+                + '">虚构道路工程</a>发布时间：<em>2026-09-30 12:00</em> 采购人：<em>虚构采购单位</em></li>'
+            )
+            html = '<ul class="c_list_bid">' + row + other + "</ul>"
             if self.source == "cn_hainan":
-                html = ('<table class="newtable"><tr><td>1</td><td>测试地区</td><td><a href="' + HAINAN
-                        + '" title="虚构软件平台">虚构软件平台</a></td><td>2026-09-29</td></tr></table>')
+                html = (
+                    '<table class="newtable"><tr><td>1</td><td>测试地区</td><td><a href="'
+                    + HAINAN
+                    + '" title="虚构软件平台">虚构软件平台</a></td><td>2026-09-29</td></tr></table>'
+                )
         else:
-            body = '<p>项目编号：SYNTHETIC-001</p><p>采购人：虚构采购单位</p><p>预算金额：10万元</p>'
-            html = ('<h2 class="tc">虚构软件竞争性磋商公告</h2><div class="vF_detail_content">' + body + '</div>'
-                    if self.source == "cn_ccgp" else '<div class="newsTex"><h1>虚构软件公开招标公告</h1><div class="newsCon">' + body + '</div></div>')
-        return FetchResult(url, url, 200, {"content-type": "text/html; charset=utf-8"},
-                           html.encode(), "2026-09-30T00:00:00Z", 1)
+            body = "<p>项目编号：SYNTHETIC-001</p><p>采购人：虚构采购单位</p><p>预算金额：10万元</p>"
+            html = (
+                '<h2 class="tc">虚构软件竞争性磋商公告</h2><div class="vF_detail_content">' + body + "</div>"
+                if self.source == "cn_ccgp"
+                else '<div class="newsTex"><h1>虚构软件公开招标公告</h1><div class="newsCon">' + body + "</div></div>"
+            )
+        return FetchResult(
+            url, url, 200, {"content-type": "text/html; charset=utf-8"}, html.encode(), "2026-09-30T00:00:00Z", 1
+        )
 
 
 class PublicPipelineTests(unittest.TestCase):
@@ -90,8 +107,19 @@ class PublicPipelineTests(unittest.TestCase):
     def test_new_cli_requires_network_opt_in_and_persists_failure(self):
         output = io.StringIO()
         with redirect_stdout(output), patch("socket.socket", side_effect=AssertionError("缺授权禁止联网")):
-            code = main(["--store", str(self.root), "collect-public", "--source", "hainan",
-                         "--notice-url", HAINAN, "--key", "disabled"])
+            code = main(
+                [
+                    "--store",
+                    str(self.root),
+                    "collect-public",
+                    "--source",
+                    "hainan",
+                    "--notice-url",
+                    HAINAN,
+                    "--key",
+                    "disabled",
+                ]
+            )
         report = json.loads(output.getvalue().splitlines()[-1])
         self.assertEqual(3, code)
         self.assertEqual("network_opt_in_required", report["run"]["error_code"])
@@ -111,11 +139,13 @@ class PublicPipelineTests(unittest.TestCase):
         self.assertEqual(listing["url"], content["discovery_evidence"][0]["url"])
 
     def test_requests_reject_cross_source_unbounded_and_mode_changes(self):
-        for kwargs in ({"source_id": "cn_hainan", "notice_urls": [CCGP]},
-                       {"category": "zygg/jzxcs", "pages": 6},
-                       {"category": "zygg/jzxcs", "title_terms": [""]},
-                       {"notice_urls": [CCGP], "title_terms": ["软件"]},
-                       {"source_id": "other", "notice_urls": [CCGP]}):
+        for kwargs in (
+            {"source_id": "cn_hainan", "notice_urls": [CCGP]},
+            {"category": "zygg/jzxcs", "pages": 6},
+            {"category": "zygg/jzxcs", "title_terms": [""]},
+            {"notice_urls": [CCGP], "title_terms": ["软件"]},
+            {"source_id": "other", "notice_urls": [CCGP]},
+        ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 public_request_spec(**kwargs)
         request = public_request_spec(notice_urls=[CCGP], dns_mode="google-doh")

@@ -3,6 +3,7 @@
 关注浏览器新引入的边界：Cookie/Origin/CSRF、服务间迟到响应后的撤权、固定版本。
 不通过读取业务数据库替代HTTP结果；预置账号仅使用可信开发入口。
 """
+
 from contextlib import closing
 from http.client import HTTPConnection
 from http.cookies import SimpleCookie
@@ -28,9 +29,17 @@ PASSWORD = "Only-Fictional-HTTP-Test-2026!"
 
 
 def profile(name="虚构软件公司"):
-    return {"company_name": name, "city": None, "project_types": "软件开发", "capabilities": "知识库开发",
-            "delivery_constraints": "优先远程，不代表拒绝出差", "cases": None, "qualifications": None,
-            "staffing": None, "commercial_constraints": None}
+    return {
+        "company_name": name,
+        "city": None,
+        "project_types": "软件开发",
+        "capabilities": "知识库开发",
+        "delivery_constraints": "优先远程，不代表拒绝出差",
+        "cases": None,
+        "qualifications": None,
+        "staffing": None,
+        "commercial_constraints": None,
+    }
 
 
 class WorkbenchHTTPTests(unittest.TestCase):
@@ -68,7 +77,7 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.web = create_server(self.workspace, f"http://127.0.0.1:{self.catalog.server_port}", self.token)
         self.threads = []
         for server in (self.catalog, self.web):
-            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
             thread.start()
             self.threads.append(thread)
         self.origin = f"http://127.0.0.1:{self.web.server_port}"
@@ -108,8 +117,11 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.assertTrue(jar["br_session"]["httponly"])
         self.assertEqual(jar["br_session"]["samesite"], "Strict")
         self.assertNotIn("token", result)
-        return {"cookie": "; ".join(f"{k}={v.value}" for k, v in jar.items()), "csrf": jar["br_csrf"].value,
-                "token": jar["br_session"].value}
+        return {
+            "cookie": "; ".join(f"{k}={v.value}" for k, v in jar.items()),
+            "csrf": jar["br_csrf"].value,
+            "token": jar["br_session"].value,
+        }
 
     def route(self, action, wid=None):
         return f"/api/workspaces/{wid or self.a}/{action}"
@@ -117,6 +129,7 @@ class WorkbenchHTTPTests(unittest.TestCase):
     def test_internal_authority_generation_and_owner_events(self):
         from services.common.owner_clients import WorkspaceAccessClient
         from services.common.local_http import LocalHTTPError
+
         self.web.internal_tokens = {"research": "r" * 40, "tracking": "t" * 40}
         research = WorkspaceAccessClient(self.origin, "r" * 40)
         tracking = WorkspaceAccessClient(self.origin, "t" * 40)
@@ -147,6 +160,7 @@ class WorkbenchHTTPTests(unittest.TestCase):
     def test_service_credential_failure_does_not_invalidate_browser_session(self):
         from services.common.local_http import LocalHTTPError
         from unittest.mock import Mock
+
         login = self.login()
         self.web.research_client = Mock()
         self.web.research_client.request.side_effect = LocalHTTPError("unauthorized", 401)
@@ -156,8 +170,15 @@ class WorkbenchHTTPTests(unittest.TestCase):
         self.assertEqual(self.request("/api/session", login=login)[0], 200)
 
     def create_selection(self, login, key="selection-one"):
-        return self.request(self.route("selections"), login=login, data={"profile_revision": 1,
-            "items": [{k: self.item[k] for k in ("notice_id", "observation_id")}], "key": key})
+        return self.request(
+            self.route("selections"),
+            login=login,
+            data={
+                "profile_revision": 1,
+                "items": [{k: self.item[k] for k in ("notice_id", "observation_id")}],
+                "key": key,
+            },
+        )
 
     def test_real_http_profile_catalog_selection_replay_and_logout(self):
         login = self.login()
@@ -200,55 +221,89 @@ class WorkbenchHTTPTests(unittest.TestCase):
         _, _, selection = self.create_selection(member)
         self.assertEqual(self.request(self.route("profile"), login=other)[0], 403)
         self.assertEqual(self.request(self.route("selections/" + selection["id"], self.b), login=other)[0], 404)
-        status, _, _ = self.request(self.route("members/change"), login=admin,
-                                   data={"target_user_id": self.member, "role": "member", "active": False, "expected_version": 1})
+        status, _, _ = self.request(
+            self.route("members/change"),
+            login=admin,
+            data={"target_user_id": self.member, "role": "member", "active": False, "expected_version": 1},
+        )
         self.assertEqual(status, 200)
         self.assertEqual(self.create_selection(member)[0], 403)  # 同key重放也不能绕过撤权。
 
     def test_revoke_during_catalog_call_denies_write_and_late_read(self):
         login = self.login("member")
         original = self.web.catalog_client.validate_selection
+
         def revoke(items):
             result = original(items)
             store = WorkspaceStore(self.workspace)
-            store.change_member(self.admin, self.a, self.member, "member", False, next(m["version"] for m in store.members(self.admin, self.a) if m["user_id"] == self.member))
+            store.change_member(
+                self.admin,
+                self.a,
+                self.member,
+                "member",
+                False,
+                next(m["version"] for m in store.members(self.admin, self.a) if m["user_id"] == self.member),
+            )
             store.close()
             return result
+
         with patch.object(self.web.catalog_client, "validate_selection", side_effect=revoke):
             # 私有事务隐藏失去访问权的空间，与不存在对象一致返回404。
             self.assertEqual(self.create_selection(login)[0], 404)
         store = WorkspaceStore(self.workspace)
         self.assertEqual(store.selections(self.admin, self.a), [])
-        store.change_member(self.admin, self.a, self.member, "member", True, next(m["version"] for m in store.members(self.admin, self.a) if m["user_id"] == self.member))
+        store.change_member(
+            self.admin,
+            self.a,
+            self.member,
+            "member",
+            True,
+            next(m["version"] for m in store.members(self.admin, self.a) if m["user_id"] == self.member),
+        )
         store.close()
         original_detail = self.web.catalog_client.detail
+
         def revoke_read(identifier):
             result = original_detail(identifier)
             store = WorkspaceStore(self.workspace)
-            store.change_member(self.admin, self.a, self.member, "member", False, next(m["version"] for m in store.members(self.admin, self.a) if m["user_id"] == self.member))
+            store.change_member(
+                self.admin,
+                self.a,
+                self.member,
+                "member",
+                False,
+                next(m["version"] for m in store.members(self.admin, self.a) if m["user_id"] == self.member),
+            )
             store.close()
             return result
+
         with patch.object(self.web.catalog_client, "detail", side_effect=revoke_read):
             self.assertEqual(self.request(self.route("notices/" + self.item["notice_id"]), login=login)[0], 403)
 
     def test_logout_during_catalog_call_is_rechecked_inside_write(self):
         login = self.login()
         original = self.web.catalog_client.validate_selection
+
         def logout(items):
             result = original(items)
             store = WorkspaceStore(self.workspace)
             store.logout(login["token"])
             store.close()
             return result
+
         with patch.object(self.web.catalog_client, "validate_selection", side_effect=logout):
             self.assertEqual(self.create_selection(login)[0], 401)
 
     def test_invalid_fixed_version_empty_and_unsafe_payload_rejected(self):
         login = self.login()
-        for items in ([], [{"notice_id": self.item["notice_id"], "observation_id": "0" * 64}],
-                      [{"notice_id": self.item["notice_id"], "observation_id": self.item["observation_id"], "title": "伪造"}]):
-            status, _, _ = self.request(self.route("selections"), login=login,
-                                       data={"profile_revision": 1, "items": items, "key": "invalid"})
+        for items in (
+            [],
+            [{"notice_id": self.item["notice_id"], "observation_id": "0" * 64}],
+            [{"notice_id": self.item["notice_id"], "observation_id": self.item["observation_id"], "title": "伪造"}],
+        ):
+            status, _, _ = self.request(
+                self.route("selections"), login=login, data={"profile_revision": 1, "items": items, "key": "invalid"}
+            )
             self.assertIn(status, (400, 409))
         self.assertEqual(self.request(self.route("selections"), login=login)[2]["items"], [])
 
@@ -256,6 +311,7 @@ class WorkbenchHTTPTests(unittest.TestCase):
         login = self.login()
         _, _, saved = self.create_selection(login)
         from services.workspace.catalog_client import CatalogError
+
         with patch.object(self.web.catalog_client, "query", side_effect=CatalogError("catalog_unavailable", 503)):
             self.assertEqual(self.request(self.route("notices"), login=login)[0], 503)
         self.assertEqual(self.request(self.route("selections/" + saved["id"]), login=login)[2], saved)
@@ -264,7 +320,10 @@ class WorkbenchHTTPTests(unittest.TestCase):
         login = self.login()
         _, _, saved = self.create_selection(login)
         from services.workspace.catalog_client import CatalogError
-        with patch.object(self.web.catalog_client, "validate_selection", side_effect=CatalogError("catalog_unavailable", 503)) as validate:
+
+        with patch.object(
+            self.web.catalog_client, "validate_selection", side_effect=CatalogError("catalog_unavailable", 503)
+        ) as validate:
             self.assertEqual(self.create_selection(login)[2], saved)
             validate.assert_not_called()
             self.assertEqual(self.create_selection(login, "different-key")[0], 503)
@@ -272,9 +331,18 @@ class WorkbenchHTTPTests(unittest.TestCase):
     def test_host_origin_csrf_and_json_framing(self):
         login = self.login()
         self.assertEqual(self.request("/api/session", login=login, headers={"Host": "evil.example"})[0], 400)
-        self.assertEqual(self.request("/api/login", data={"username": "admin", "password": PASSWORD}, headers={"Origin": "https://evil.example"})[0], 403)
+        self.assertEqual(
+            self.request(
+                "/api/login",
+                data={"username": "admin", "password": PASSWORD},
+                headers={"Origin": "https://evil.example"},
+            )[0],
+            403,
+        )
         self.assertEqual(self.request("/api/logout", login=login, data={}, headers={"X-CSRF-Token": "wrong"})[0], 403)
-        self.assertEqual(self.request("/api/logout", login=login, data={}, headers={"Content-Type": "text/plain"})[0], 415)
+        self.assertEqual(
+            self.request("/api/logout", login=login, data={}, headers={"Content-Type": "text/plain"})[0], 415
+        )
         self.assertEqual(self.request("/api/logout", login=login, raw=b'{"x":1,"x":2}')[0], 400)
         self.assertEqual(self.request("/api/logout", login=login, raw=b'{"x":NaN}')[0], 400)
         self.assertEqual(self.request("/api/session", login=login, method="DELETE")[0], 405)
@@ -296,16 +364,32 @@ class WorkbenchHTTPTests(unittest.TestCase):
         login = self.login()
         self.assertEqual(self.request(self.route("notices?keyword=a&keyword=b"), login=login)[0], 400)
         self.assertEqual(self.request(self.route("notices?url=http://evil.example"), login=login)[0], 400)
-        self.assertEqual(self.request(self.route("members/change"), login=login,
-                         data={"target_user_id": self.admin, "role": "viewer", "active": True, "expected_version": 1})[0], 409)
+        self.assertEqual(
+            self.request(
+                self.route("members/change"),
+                login=login,
+                data={"target_user_id": self.admin, "role": "viewer", "active": True, "expected_version": 1},
+            )[0],
+            409,
+        )
 
     def test_stale_member_screen_cannot_restore_revoked_access(self):
         admin = self.login()
         before = self.request(self.route("members"), login=admin)[2]["items"]
         stale = next(m for m in before if m["user_id"] == self.member)
-        revoke = {"target_user_id": self.member, "role": stale["role"], "active": False, "expected_version": stale["version"]}
+        revoke = {
+            "target_user_id": self.member,
+            "role": stale["role"],
+            "active": False,
+            "expected_version": stale["version"],
+        }
         self.assertEqual(self.request(self.route("members/change"), login=admin, data=revoke)[0], 200)
-        stale_save = {"target_user_id": self.member, "role": "viewer", "active": True, "expected_version": stale["version"]}
+        stale_save = {
+            "target_user_id": self.member,
+            "role": "viewer",
+            "active": True,
+            "expected_version": stale["version"],
+        }
         self.assertEqual(self.request(self.route("members/change"), login=admin, data=stale_save)[0], 409)
         after = self.request(self.route("members"), login=admin)[2]["items"]
         self.assertFalse(next(m for m in after if m["user_id"] == self.member)["active"])

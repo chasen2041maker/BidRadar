@@ -6,6 +6,7 @@
 validate_selection 用于创建选择时核实公告：确认每条公告存在、并且还是用户看到的那个版本。
 核实和保存不在同一个事务里，所以保存之后目录仍可能变化，后续步骤要自己再核对版本。
 """
+
 from __future__ import annotations
 
 from http.client import HTTPConnection, HTTPException
@@ -62,20 +63,51 @@ def _decode(raw):
 
 def _observation(value):
     """检查一条公告观察的必填字段和格式，不合格就抛 ValueError。"""
-    required = {"observation_id", "notice_id", "source_id", "simulation", "source_record_key", "identity_kind",
-                "source_url", "capture_id", "raw_sha256", "parser_version", "normalizer_version", "observed_at",
-                "title", "notice_type", "facts", "references", "material_status", "attribution", "run_id"}
-    if (not isinstance(value, dict) or any(not isinstance(value.get(k), str) or not _HEX.fullmatch(value[k])
-            for k in ("notice_id", "observation_id"))
-            or not required.issubset(value) or value.get("notice_type") not in _KINDS
-            or not isinstance(value.get("title"), str) or len(value["title"]) > 2000
-            or not isinstance(value.get("source_url"), str) or len(value["source_url"]) > 4096
-            or type(value.get("simulation")) is not bool or not isinstance(value.get("facts"), dict)):
+    required = {
+        "observation_id",
+        "notice_id",
+        "source_id",
+        "simulation",
+        "source_record_key",
+        "identity_kind",
+        "source_url",
+        "capture_id",
+        "raw_sha256",
+        "parser_version",
+        "normalizer_version",
+        "observed_at",
+        "title",
+        "notice_type",
+        "facts",
+        "references",
+        "material_status",
+        "attribution",
+        "run_id",
+    }
+    if (
+        not isinstance(value, dict)
+        or any(
+            not isinstance(value.get(k), str) or not _HEX.fullmatch(value[k]) for k in ("notice_id", "observation_id")
+        )
+        or not required.issubset(value)
+        or value.get("notice_type") not in _KINDS
+        or not isinstance(value.get("title"), str)
+        or len(value["title"]) > 2000
+        or not isinstance(value.get("source_url"), str)
+        or len(value["source_url"]) > 4096
+        or type(value.get("simulation")) is not bool
+        or not isinstance(value.get("facts"), dict)
+    ):
         raise ValueError("invalid_observation")
     parts = urlsplit(value["source_url"])
-    if (parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None
-            or parts.password is not None or any(ord(c) <= 32 or ord(c) == 127 for c in value["source_url"])
-            or "\\" in value["source_url"]):
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or any(ord(c) <= 32 or ord(c) == 127 for c in value["source_url"])
+        or "\\" in value["source_url"]
+    ):
         raise ValueError("invalid_source_reference")
 
 
@@ -89,10 +121,16 @@ class CatalogClient:
             raise ValueError("invalid_catalog_address")
         if not isinstance(token, str) or re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token) is None:
             raise ValueError("invalid_service_token")
-        if (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 30
-                or type(max_bytes) is not int or not 1 <= max_bytes <= 32 * 1024 * 1024
-                or isinstance(selection_timeout, bool) or not isinstance(selection_timeout, (int, float))
-                or not 0 < selection_timeout <= 15):
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not 0 < timeout <= 30
+            or type(max_bytes) is not int
+            or not 1 <= max_bytes <= 32 * 1024 * 1024
+            or isinstance(selection_timeout, bool)
+            or not isinstance(selection_timeout, (int, float))
+            or not 0 < selection_timeout <= 15
+        ):
             raise ValueError("invalid_client_limits")
         self._port, self._token, self._timeout, self._max_bytes = int(match[1]), token, timeout, max_bytes
         self._selection_timeout = selection_timeout
@@ -108,23 +146,36 @@ class CatalogClient:
         connection = HTTPConnection("127.0.0.1", self._port, timeout=deadline - now)
         response = None
         try:
-            connection.request("GET", target, headers={"Authorization": "Bearer " + self._token,
-                                                       "Accept": "application/json", "Connection": "close"})
+            connection.request(
+                "GET",
+                target,
+                headers={"Authorization": "Bearer " + self._token, "Accept": "application/json", "Connection": "close"},
+            )
             sock = connection.sock
+
             def remaining():
                 seconds = deadline - time.monotonic()
                 if seconds <= 0:
                     raise TimeoutError()
                 sock.settimeout(seconds)
+
             remaining()
             response = connection.getresponse()
             # 遇到重定向直接报错（http.client 本身也不会自动跟随）；只接受未压缩的 JSON。
-            if (response.status in range(300, 400) or response.getheader("Content-Encoding") is not None
-                    or response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json"):
+            if (
+                response.status in range(300, 400)
+                or response.getheader("Content-Encoding") is not None
+                or response.getheader("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json"
+            ):
                 raise ValueError("unexpected_catalog_response")
             lengths = response.headers.get_all("Content-Length", [])
-            if (len(lengths) > 1 or lengths and response.getheader("Transfer-Encoding") is not None
-                    or lengths and (not lengths[0].isdigit() or int(lengths[0]) > self._max_bytes)):
+            if (
+                len(lengths) > 1
+                or lengths
+                and response.getheader("Transfer-Encoding") is not None
+                or lengths
+                and (not lengths[0].isdigit() or int(lengths[0]) > self._max_bytes)
+            ):
                 raise ValueError("response_size_limit")
             raw = bytearray()
             while not (lengths and len(raw) == int(lengths[0])):
@@ -140,12 +191,18 @@ class CatalogClient:
             payload = _decode(raw)
             if response.status != 200:
                 error = payload.get("error")
-                if (set(payload) != {"error"} or not isinstance(error, dict)
-                        or set(error) != {"code", "message"} or not isinstance(error["code"], str)
-                        or not isinstance(error["message"], str)):
+                if (
+                    set(payload) != {"error"}
+                    or not isinstance(error, dict)
+                    or set(error) != {"code", "message"}
+                    or not isinstance(error["code"], str)
+                    or not isinstance(error["message"], str)
+                ):
                     raise ValueError("invalid_error_shape")
-                accepted = {400: {"invalid_query", "invalid_cursor", "cursor_query_mismatch"},
-                            404: {"notice_not_found"}}
+                accepted = {
+                    400: {"invalid_query", "invalid_cursor", "cursor_query_mismatch"},
+                    404: {"notice_not_found"},
+                }
                 if error["code"] in accepted.get(response.status, set()):
                     raise CatalogError(error["code"], response.status)
                 raise CatalogError("catalog_unavailable", 503)
@@ -163,11 +220,18 @@ class CatalogClient:
 
         翻页时 cursor 必须和第一页使用相同的筛选条件。
         """
-        if (not isinstance(keyword, str) or len(keyword) > 200 or type(page_size) is not int
-                or not 1 <= page_size <= 100 or type(simulation) is not bool
-                or kind is not None and (not isinstance(kind, str) or kind not in _KINDS)
-                or cursor is not None and (not isinstance(cursor, str) or not 1 <= len(cursor) <= 5000)
-                or any(ord(c) < 32 or ord(c) == 127 for c in keyword + (cursor or ""))):
+        if (
+            not isinstance(keyword, str)
+            or len(keyword) > 200
+            or type(page_size) is not int
+            or not 1 <= page_size <= 100
+            or type(simulation) is not bool
+            or kind is not None
+            and (not isinstance(kind, str) or kind not in _KINDS)
+            or cursor is not None
+            and (not isinstance(cursor, str) or not 1 <= len(cursor) <= 5000)
+            or any(ord(c) < 32 or ord(c) == 127 for c in keyword + (cursor or ""))
+        ):
             raise CatalogError("invalid_query", 400)
         filters = {"keyword": keyword, "page_size": page_size, "simulation": str(simulation).lower()}
         if kind is not None:
@@ -176,20 +240,32 @@ class CatalogClient:
             filters["cursor"] = cursor
         result = self._request("/v1/notices?" + urlencode(filters))
         try:
-            if (set(result) != {"items", "total", "next_cursor", "as_of", "snapshot", "simulation", "recent_runs"}
-                    or not isinstance(result["items"], list) or len(result["items"]) > page_size
-                    or type(result["total"]) is not int or result["total"] < len(result["items"])
-                    or type(result["snapshot"]) is not int or result["snapshot"] < 0
-                    or type(result["simulation"]) is not bool or result["simulation"] != simulation
-                    or not isinstance(result["as_of"], str) or len(result["as_of"]) > 40
-                    or not isinstance(result["recent_runs"], list) or len(result["recent_runs"]) > 10
-                    or result["next_cursor"] is not None and (not isinstance(result["next_cursor"], str)
-                        or not 1 <= len(result["next_cursor"]) <= 5000)):
+            if (
+                set(result) != {"items", "total", "next_cursor", "as_of", "snapshot", "simulation", "recent_runs"}
+                or not isinstance(result["items"], list)
+                or len(result["items"]) > page_size
+                or type(result["total"]) is not int
+                or result["total"] < len(result["items"])
+                or type(result["snapshot"]) is not int
+                or result["snapshot"] < 0
+                or type(result["simulation"]) is not bool
+                or result["simulation"] != simulation
+                or not isinstance(result["as_of"], str)
+                or len(result["as_of"]) > 40
+                or not isinstance(result["recent_runs"], list)
+                or len(result["recent_runs"]) > 10
+                or result["next_cursor"] is not None
+                and (not isinstance(result["next_cursor"], str) or not 1 <= len(result["next_cursor"]) <= 5000)
+            ):
                 raise ValueError()
             ids = set()
             for item in result["items"]:
                 _observation(item)
-                if item["simulation"] != simulation or item["notice_id"] in ids or not isinstance(item.get("currentness"), dict):
+                if (
+                    item["simulation"] != simulation
+                    or item["notice_id"] in ids
+                    or not isinstance(item.get("currentness"), dict)
+                ):
                     raise ValueError()
                 ids.add(item["notice_id"])
         except (ValueError, KeyError, TypeError):
@@ -205,11 +281,16 @@ class CatalogClient:
             raise CatalogError("invalid_notice_id", 400)
         result = self._request("/v1/notices/" + notice_id, deadline=deadline)
         try:
-            if (set(result) != {"current", "history", "currentness", "relationships", "snapshot"}
-                    or not isinstance(result["history"], list) or not result["history"]
-                    or not isinstance(result["relationships"], list) or not isinstance(result["currentness"], dict)
-                    or type(result["snapshot"]) is not int or result["snapshot"] < 0
-                    or result["current"] != result["history"][0]):
+            if (
+                set(result) != {"current", "history", "currentness", "relationships", "snapshot"}
+                or not isinstance(result["history"], list)
+                or not result["history"]
+                or not isinstance(result["relationships"], list)
+                or not isinstance(result["currentness"], dict)
+                or type(result["snapshot"]) is not int
+                or result["snapshot"] < 0
+                or result["current"] != result["history"][0]
+            ):
                 raise ValueError()
             for observation in result["history"]:
                 _observation(observation)
@@ -229,9 +310,13 @@ class CatalogClient:
             raise CatalogError("invalid_selection", 400)
         seen, versions = set(), set()
         for item in items:
-            if (not isinstance(item, dict) or set(item) != {"notice_id", "observation_id"}
-                    or any(not isinstance(item[k], str) or not _HEX.fullmatch(item[k]) for k in item)
-                    or item["notice_id"] in seen or item["observation_id"] in versions):
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"notice_id", "observation_id"}
+                or any(not isinstance(item[k], str) or not _HEX.fullmatch(item[k]) for k in item)
+                or item["notice_id"] in seen
+                or item["observation_id"] in versions
+            ):
                 raise CatalogError("invalid_selection", 400)
             seen.add(item["notice_id"])
             versions.add(item["observation_id"])
@@ -246,7 +331,9 @@ class CatalogClient:
                 raise
             if current["observation_id"] != item["observation_id"]:
                 raise CatalogError("catalog_version_changed", 409)
-            snapshots.append({k: current[k] for k in ("notice_id", "observation_id", "title", "source_url", "simulation")})
+            snapshots.append(
+                {k: current[k] for k in ("notice_id", "observation_id", "title", "source_url", "simulation")}
+            )
         if time.monotonic() >= deadline:
             raise CatalogError("catalog_unavailable", 503)
         return snapshots

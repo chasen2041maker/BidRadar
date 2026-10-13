@@ -6,6 +6,7 @@
     所以没带查询参数的请求在 3.10 上会被误判成"参数格式错误"。
     这里把空串单独处理，让各个 Python 版本的行为一致。
 """
+
 from urllib.parse import parse_qsl
 
 

@@ -11,6 +11,7 @@
 
 只监听 127.0.0.1，没有导入接口，不下载原件，不调模型。每个请求单独开一个只读连接。
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,8 +29,8 @@ from services.common.query import parse_query_pairs
 from .store import Catalog, KINDS
 
 VERSION = "catalog-http-v1"
-MAX_RESPONSE_BYTES = 8 * 1024 * 1024   # 单个响应最大 8 MB
-MAX_TARGET = 8192                      # 请求路径加参数的最大长度
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024  # 单个响应最大 8 MB
+MAX_TARGET = 8192  # 请求路径加参数的最大长度
 TOKEN = re.compile(r"[A-Za-z0-9_-]{32,128}")
 
 
@@ -93,9 +94,14 @@ class _Handler(BaseHTTPRequestHandler):
         if not super().parse_request():
             return False
         raw_target = self.raw_requestline.split()[1]
-        if (len(raw_target) > MAX_TARGET or not raw_target.isascii()
-                or not raw_target.startswith(b"/") or raw_target.startswith(b"//")
-                or b"#" in raw_target or b"\\" in raw_target):
+        if (
+            len(raw_target) > MAX_TARGET
+            or not raw_target.isascii()
+            or not raw_target.startswith(b"/")
+            or raw_target.startswith(b"//")
+            or b"#" in raw_target
+            or b"\\" in raw_target
+        ):
             self._error("invalid_request_target", 414 if len(raw_target) > MAX_TARGET else 400)
             return False
         if len(self.headers) > 64 or sum(len(k) + len(v) for k, v in self.headers.items()) > 16384:
@@ -128,22 +134,35 @@ class _Handler(BaseHTTPRequestHandler):
         if len(query) > 7000 or re.search(r"%(?![0-9a-fA-F]{2})", query):
             raise _RequestError("invalid_query")
         try:
-            pairs = parse_query_pairs(query, keep_blank_values=True, strict_parsing=True,
-                              encoding="utf-8", errors="strict", max_num_fields=5)
+            pairs = parse_query_pairs(
+                query, keep_blank_values=True, strict_parsing=True, encoding="utf-8", errors="strict", max_num_fields=5
+            )
         except (ValueError, UnicodeError):
             raise _RequestError("invalid_query") from None
         values = dict(pairs)
-        if (len(values) != len(pairs) or set(values) - {"keyword", "kind", "page_size", "simulation", "cursor"}
-                or any(any(ord(c) < 32 or ord(c) == 127 for c in key + value) for key, value in pairs)):
+        if (
+            len(values) != len(pairs)
+            or set(values) - {"keyword", "kind", "page_size", "simulation", "cursor"}
+            or any(any(ord(c) < 32 or ord(c) == 127 for c in key + value) for key, value in pairs)
+        ):
             raise _RequestError("invalid_query")
         keyword, kind = values.get("keyword", ""), values.get("kind") or None
         page_size, simulation = values.get("page_size", "20"), values.get("simulation", "false")
         cursor = values.get("cursor") or None
-        if (len(keyword) > 200 or kind is not None and kind not in KINDS
-                or not re.fullmatch(r"[1-9][0-9]{0,2}", page_size) or int(page_size) > 100
-                or simulation not in ("true", "false") or cursor is not None and len(cursor) > 5000):
+        if (
+            len(keyword) > 200
+            or kind is not None
+            and kind not in KINDS
+            or not re.fullmatch(r"[1-9][0-9]{0,2}", page_size)
+            or int(page_size) > 100
+            or simulation not in ("true", "false")
+            or cursor is not None
+            and len(cursor) > 5000
+        ):
             raise _RequestError("invalid_query")
-        return dict(keyword=keyword, kind=kind, page_size=int(page_size), simulation=simulation == "true", cursor=cursor)
+        return dict(
+            keyword=keyword, kind=kind, page_size=int(page_size), simulation=simulation == "true", cursor=cursor
+        )
 
     def do_GET(self):
         """按路径分发到 Catalog 的对应方法。"""
@@ -175,7 +194,13 @@ class _Handler(BaseHTTPRequestHandler):
                     code = str(exc)
                     if code in ("notice_not_found", "observation_not_found"):
                         raise _RequestError(code, 404) from None
-                    if code in ("invalid_cursor", "cursor_query_mismatch", "invalid_snapshot", "invalid_query", "cursor_ahead"):
+                    if code in (
+                        "invalid_cursor",
+                        "cursor_query_mismatch",
+                        "invalid_snapshot",
+                        "invalid_query",
+                        "cursor_ahead",
+                    ):
                         raise _RequestError(code) from None
                     raise
             self._json(200, result)

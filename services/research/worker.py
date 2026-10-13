@@ -9,6 +9,7 @@
     - 费用结果不确定、权限变了、配置变了等：任务进入 waiting_input，等人处理，不自动重试。
     - 其他错误：任务记为 failed。
 """
+
 from contextlib import closing
 import sqlite3
 
@@ -43,33 +44,57 @@ def tick(root, access, catalog, tracking, provider, budget_path, *, worker_id="r
             else:
                 if provider is None:
                     raise ResearchError("model_not_configured")
+
                 def check_provider_config():
                     # 模型参数（温度、模型名、价格版本等）必须和任务冻结时一致。
                     # 否则恢复时会算出不同的请求指纹，等于把一个已扣费的请求换个身份重发。
                     if provider.metadata.get("provider") == "deepseek" and any(
-                            provider.metadata.get(key) != run["manifest"]["config"][key]
-                            for key in ("requested_model", "official_resolution", "price_version", "thinking",
-                                        "max_output_tokens", "provider_version", "temperature")):
+                        provider.metadata.get(key) != run["manifest"]["config"][key]
+                        for key in (
+                            "requested_model",
+                            "official_resolution",
+                            "price_version",
+                            "thinking",
+                            "max_output_tokens",
+                            "provider_version",
+                            "temperature",
+                        )
+                    ):
                         raise ResearchError("configuration_changed")
+
                 check_provider_config()
                 ledger = BudgetLedger(budget_path)
+
                 def complete(messages, tools):
                     check_provider_config()
                     # 先统一去掉联系方式，再估算费用、计算请求指纹；provider 里还会再去一遍，双保险。
                     clean_messages, clean_tools = prepare_egress(messages, tools)
-                    return ledger.complete(provider, run["workspace_id"], run["id"], clean_messages, clean_tools,
-                                           guard=guard, estimate=estimate_reservation, cost=usage_cost)
+                    return ledger.complete(
+                        provider,
+                        run["workspace_id"],
+                        run["id"],
+                        clean_messages,
+                        clean_tools,
+                        guard=guard,
+                        estimate=estimate_reservation,
+                        cost=usage_cost,
+                    )
+
                 def replay(messages, tools):
                     guard("before_model_replay")
                     check_provider_config()
                     clean_messages, clean_tools = prepare_egress(messages, tools)
                     return ledger.replay(provider, run["workspace_id"], run["id"], clean_messages, clean_tools)
+
                 complete.replay = replay  # 恢复专用：只从账本取回已有响应，不会发请求，也不会预留费用。
+
                 def checkpoint(value):
                     guard("checkpoint")
                     store.checkpoint(run, value)
-                result = run_agent(run["manifest"], complete, guard=guard, checkpoint=checkpoint,
-                                   resume=run["checkpoint"], max_steps=8)
+
+                result = run_agent(
+                    run["manifest"], complete, guard=guard, checkpoint=checkpoint, resume=run["checkpoint"], max_steps=8
+                )
                 result["quality"]["usage"] = ledger.summary(run["workspace_id"], run["id"])
                 result["quality"]["provider"] = provider.metadata
             guard("publish")
@@ -82,14 +107,29 @@ def tick(root, access, catalog, tracking, provider, budget_path, *, worker_id="r
                 code = "checkpoint_incomplete_no_replay"
             # 这些原因需要人来处理（重新授权、充值、确认档案等），任务停在 waiting_input。
             # 注意：被移出公司后再加回来，也不会让旧任务自动继续。
-            wait = {"authorization_changed", "profile_revision_changed", "delegation_invalid", "not_found", "forbidden",
-                    "budget_exhausted", "budget_suspended", "billing_unknown", "model_not_configured",
-                    "checkpoint_incomplete_no_replay", "checkpoint_request_mismatch", "checkpoint_request_not_dispatched",
-                    "configuration_changed"}
+            wait = {
+                "authorization_changed",
+                "profile_revision_changed",
+                "delegation_invalid",
+                "not_found",
+                "forbidden",
+                "budget_exhausted",
+                "budget_suspended",
+                "billing_unknown",
+                "model_not_configured",
+                "checkpoint_incomplete_no_replay",
+                "checkpoint_request_mismatch",
+                "checkpoint_request_not_dispatched",
+                "configuration_changed",
+            }
             if isinstance(exc, LocalHTTPError) and exc.status >= 500:
                 state = "retry_wait"
             else:
-                state = "waiting_input" if code in wait or isinstance(exc, ProviderError) and exc.usage_unknown else "failed"
+                state = (
+                    "waiting_input"
+                    if code in wait or isinstance(exc, ProviderError) and exc.usage_unknown
+                    else "failed"
+                )
             try:
                 store.stop(run, state, code)
             except ResearchError as stale:
@@ -107,7 +147,9 @@ def tick(root, access, catalog, tracking, provider, budget_path, *, worker_id="r
         return store.public(run["workspace_id"], run["id"])
 
 
-def run_worker(root, access, catalog, tracking, provider, budget_path, *, stop_event, worker_id="research-worker", config=None):
+def run_worker(
+    root, access, catalog, tracking, provider, budget_path, *, stop_event, worker_id="research-worker", config=None
+):
     """循环执行 tick，直到 stop_event 被设置。没有任务时每秒检查一次。"""
     while not stop_event.is_set():
         try:

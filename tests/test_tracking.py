@@ -1,4 +1,5 @@
 """虚构输入验证R2事务、授权、固定版本和恢复；不调用供应商或读取生产数据。"""
+
 from copy import deepcopy
 from contextlib import closing
 from hashlib import sha256
@@ -41,17 +42,34 @@ class Access:
             raise TrackingError("not_found", 404)
         if action in ("analyze", "track") and membership[0] == "viewer":
             raise TrackingError("forbidden", 403)
-        return {"role": membership[0], "membership_version": membership[1], "current_profile_revision": self.profiles[wid]}
+        return {
+            "role": membership[0],
+            "membership_version": membership[1],
+            "current_profile_revision": self.profiles[wid],
+        }
 
     def events(self, after, limit):
-        values = self.feed[after:after + limit]
-        return {"schema_version": 1, "items": values, "next_after": values[-1]["seq"] if values else after, "high_watermark": len(self.feed)}
+        values = self.feed[after : after + limit]
+        return {
+            "schema_version": 1,
+            "items": values,
+            "next_after": values[-1]["seq"] if values else after,
+            "high_watermark": len(self.feed),
+        }
 
     def emit(self, kind, *, profile=None, membership=None, actor=ACTOR):
         seq = len(self.feed) + 1
-        event = {"seq": seq, "event_id": "workspace-" + str(seq), "event_type": kind, "workspace_id": WID,
-                 "actor_id": ACTOR, "target_user_id": actor if membership else None, "profile_revision": profile,
-                 "membership_version": membership, "occurred_at": "2026-10-01T00:00:00Z"}
+        event = {
+            "seq": seq,
+            "event_id": "workspace-" + str(seq),
+            "event_type": kind,
+            "workspace_id": WID,
+            "actor_id": ACTOR,
+            "target_user_id": actor if membership else None,
+            "profile_revision": profile,
+            "membership_version": membership,
+            "occurred_at": "2026-10-01T00:00:00Z",
+        }
         self.feed.append(event)
         return event
 
@@ -61,15 +79,33 @@ class Catalog:
         self.data, self.feed = [], []
         self.add()
 
-    def add(self, *, title="虚构采购", raw=None, facts=None, extra=None, notice=NOTICE, kind="procurement", relations=None):
+    def add(
+        self, *, title="虚构采购", raw=None, facts=None, extra=None, notice=NOTICE, kind="procurement", relations=None
+    ):
         seq = len(self.data) + 1
-        observation = {"notice_id": notice, "observation_id": sha256((str(seq) + title).encode()).hexdigest(),
-                       "raw_sha256": raw or sha256(title.encode()).hexdigest(), "title": title, "notice_type": kind,
-                       "identity_kind": "source_url", "source_url": "https://example.test/fictional", "facts": facts or {},
-                       "evidence_fields": extra or {}, "references": [], "material_status": "not_obtained"}
+        observation = {
+            "notice_id": notice,
+            "observation_id": sha256((str(seq) + title).encode()).hexdigest(),
+            "raw_sha256": raw or sha256(title.encode()).hexdigest(),
+            "title": title,
+            "notice_type": kind,
+            "identity_kind": "source_url",
+            "source_url": "https://example.test/fictional",
+            "facts": facts or {},
+            "evidence_fields": extra or {},
+            "references": [],
+            "material_status": "not_obtained",
+        }
         self.data.append((observation, relations or []))
-        self.feed.append({"seq": seq, "event_id": "catalog-" + str(seq), "notice_id": notice,
-                          "observation_id": observation["observation_id"], "observed_at": "2026-10-01T00:00:00Z"})
+        self.feed.append(
+            {
+                "seq": seq,
+                "event_id": "catalog-" + str(seq),
+                "notice_id": notice,
+                "observation_id": observation["observation_id"],
+                "observed_at": "2026-10-01T00:00:00Z",
+            }
+        )
         return deepcopy(observation)
 
     def bundle(self, notice, snapshot=None):
@@ -78,15 +114,31 @@ class Catalog:
         if notice not in current:
             raise TrackingError("not_found", 404)
         item = current[notice][0]
-        related = [(other, relation) for other, relations in current.values() for relation in relations if relation.get("target_notice_id") == notice]
+        related = [
+            (other, relation)
+            for other, relations in current.values()
+            for relation in relations
+            if relation.get("target_notice_id") == notice
+        ]
         incoming = [other for other, relation in related if relation["status"] == "evidenced"]
-        return deepcopy({"notice_id": notice, "snapshot": snapshot, "current": item, "observations": [item] + incoming,
-                         "relationships": [relation for _, relation in related]})
+        return deepcopy(
+            {
+                "notice_id": notice,
+                "snapshot": snapshot,
+                "current": item,
+                "observations": [item] + incoming,
+                "relationships": [relation for _, relation in related],
+            }
+        )
 
     def changes(self, after, limit):
-        values = self.feed[after:after + limit]
-        return {"schema_version": 1, "items": deepcopy(values), "next_after": values[-1]["seq"] if values else after,
-                "high_watermark": len(self.feed)}
+        values = self.feed[after : after + limit]
+        return {
+            "schema_version": 1,
+            "items": deepcopy(values),
+            "next_after": values[-1]["seq"] if values else after,
+            "high_watermark": len(self.feed),
+        }
 
 
 class Research:
@@ -103,7 +155,11 @@ class Research:
         key = (request["workspace_id"], request["actor_id"], request["key"])
         if key not in self.runs:
             self.creates += 1
-            self.runs[key] = {"id": "run-" + str(self.creates), "state": "queued", "workspace_id": request["workspace_id"]}
+            self.runs[key] = {
+                "id": "run-" + str(self.creates),
+                "state": "queued",
+                "workspace_id": request["workspace_id"],
+            }
         if self.lose_response:
             self.lose_response = False
             raise TrackingError("dependency_unavailable", 503)
@@ -164,9 +220,18 @@ class TrackingTests(unittest.TestCase):
         self.assertIsNone(watch["expires_at"])
         self.service.set_watch(ACTOR, WID, NOTICE, False, 1, "stop")
         self.assertEqual(self.service.decision(ACTOR, WID, NOTICE)["current"], decision)
-        self.assertEqual(self.service.set_decision(ACTOR, WID, NOTICE, "dismissed", "人工决定不等于资质判断", 0, "decision"), decision)
-        self.error("idempotency_conflict", lambda: self.service.set_decision(ACTOR, WID, NOTICE, "follow_up", "", 0, "decision"))
-        self.error("decision_version_conflict", lambda: self.service.set_decision(ACTOR, WID, NOTICE, "follow_up", "", 0, "new"))
+        self.assertEqual(
+            self.service.set_decision(ACTOR, WID, NOTICE, "dismissed", "人工决定不等于资质判断", 0, "decision"),
+            decision,
+        )
+        self.error(
+            "idempotency_conflict",
+            lambda: self.service.set_decision(ACTOR, WID, NOTICE, "follow_up", "", 0, "decision"),
+        )
+        self.error(
+            "decision_version_conflict",
+            lambda: self.service.set_decision(ACTOR, WID, NOTICE, "follow_up", "", 0, "new"),
+        )
         with self.assertRaises(sqlite3.IntegrityError):
             self.store.db.execute("DELETE FROM decision_history")
 
@@ -181,18 +246,36 @@ class TrackingTests(unittest.TestCase):
     def test_watch_expiry_is_finite_and_invalid_scope_rejected(self):
         watch = self.watch(True)
         self.assertIsNotNone(watch["expires_at"])
-        self.error("invalid_delegation_expiry", lambda: self.service.set_watch(ACTOR, WID, NOTICE, True, 1, "forever", auto_reassess=True, expires_at="2999-01-01T00:00:00Z"))
-        self.error("invalid_watch_scope", lambda: self.service.set_watch(ACTOR, WID, NOTICE, True, 1, "scope", scope=["arbitrary_tool"]))
+        self.error(
+            "invalid_delegation_expiry",
+            lambda: self.service.set_watch(
+                ACTOR, WID, NOTICE, True, 1, "forever", auto_reassess=True, expires_at="2999-01-01T00:00:00Z"
+            ),
+        )
+        self.error(
+            "invalid_watch_scope",
+            lambda: self.service.set_watch(ACTOR, WID, NOTICE, True, 1, "scope", scope=["arbitrary_tool"]),
+        )
         self.error("watch_version_conflict", lambda: self.service.set_watch(ACTOR, WID, NOTICE, False, 0, "old"))
 
     def test_expired_or_tampered_delegation_does_not_dispatch_research(self):
         watch = self.changed()
         claim = self.service.claim("worker")
-        self.error("invalid_delegation", lambda: self.service.check_delegation(ACTOR, WID, {**claim["request"]["delegation"], "extra": True}))
-        self.error("delegation_invalid", lambda: self.service.check_delegation(ACTOR, WID, {**claim["request"]["delegation"], "input_fingerprint": "a" * 64}))
+        self.error(
+            "invalid_delegation",
+            lambda: self.service.check_delegation(ACTOR, WID, {**claim["request"]["delegation"], "extra": True}),
+        )
+        self.error(
+            "delegation_invalid",
+            lambda: self.service.check_delegation(
+                ACTOR, WID, {**claim["request"]["delegation"], "input_fingerprint": "a" * 64}
+            ),
+        )
         expiry = datetime.fromisoformat(watch["expires_at"].replace("Z", "+00:00")).timestamp()
         with patch("services.tracking.store.time.time", return_value=expiry + 1):
-            self.error("delegation_invalid", lambda: self.service.check_delegation(ACTOR, WID, claim["request"]["delegation"]))
+            self.error(
+                "delegation_invalid", lambda: self.service.check_delegation(ACTOR, WID, claim["request"]["delegation"])
+            )
         self.assertEqual(self.research.creates, 0)
 
     def test_notice_identity_warning_does_not_prohibit_tracking(self):
@@ -220,10 +303,12 @@ class TrackingTests(unittest.TestCase):
     def test_global_cursor_does_not_skip_new_watch_baseline_race(self):
         baseline = self.catalog.bundle(NOTICE)
         original = self.catalog.bundle
+
         def racing(notice, snapshot=None):
             self.catalog.add(title="baseline读取后到达")
             self.service.poll("catalog")
             return baseline
+
         with patch.object(self.catalog, "bundle", side_effect=racing):
             self.watch()
         self.assertEqual(self.store.cursor("catalog"), 2)
@@ -257,11 +342,21 @@ class TrackingTests(unittest.TestCase):
 
     def test_incoming_evidenced_and_candidate_relationships_preserve_scope(self):
         self.watch()
-        self.catalog.add(notice=OTHER, title="虚构更正", kind="correction", relations=[{"status": "candidate", "target_notice_id": NOTICE, "source_notice_id": OTHER}])
+        self.catalog.add(
+            notice=OTHER,
+            title="虚构更正",
+            kind="correction",
+            relations=[{"status": "candidate", "target_notice_id": NOTICE, "source_notice_id": OTHER}],
+        )
         self.service.poll("catalog")
         first = self.service.changes(ACTOR, WID)["items"][0]
         self.assertEqual(len(first["diff"]["after_observation_ids"]), 1)
-        self.catalog.add(notice=OTHER, title="虚构更正", kind="correction", relations=[{"status": "evidenced", "target_notice_id": NOTICE, "source_notice_id": OTHER}])
+        self.catalog.add(
+            notice=OTHER,
+            title="虚构更正",
+            kind="correction",
+            relations=[{"status": "evidenced", "target_notice_id": NOTICE, "source_notice_id": OTHER}],
+        )
         self.service.poll("catalog")
         self.assertEqual(len(self.service.changes(ACTOR, WID)["items"][-1]["diff"]["after_observation_ids"]), 2)
 
@@ -272,7 +367,11 @@ class TrackingTests(unittest.TestCase):
         self.service.poll("catalog")
         bad = {**self.catalog.feed[0], "event_id": "different"}
         self.error("event_conflict", lambda: self.service.consume_event("catalog", bad))
-        with patch.object(self.catalog, "changes", return_value={"schema_version": 2, "items": [], "next_after": 2, "high_watermark": 2}):
+        with patch.object(
+            self.catalog,
+            "changes",
+            return_value={"schema_version": 2, "items": [], "next_after": 2, "high_watermark": 2},
+        ):
             self.error("invalid_event_page", lambda: self.service.poll("catalog"))
 
     def test_rebuild_updates_projection_without_notifications_or_commands(self):
@@ -291,7 +390,9 @@ class TrackingTests(unittest.TestCase):
         self.access.emit("ProfileConfirmed", profile=2)
         self.service.poll("workspace")
         change = self.service.changes(ACTOR, WID)["items"][0]
-        self.assertEqual((change["profile_revision"], change["diff"]["kind"], change["stale"]), (2, "profile_change", True))
+        self.assertEqual(
+            (change["profile_revision"], change["diff"]["kind"], change["stale"]), (2, "profile_change", True)
+        )
         request = self.service.claim("worker")["request"]
         self.assertEqual(request["profile_revision"], 2)
         self.assertEqual(self.service.check_delegation(ACTOR, WID, request["delegation"])["profile_revision"], 2)
@@ -305,18 +406,26 @@ class TrackingTests(unittest.TestCase):
         self.ready()
         self.assertEqual(self.service.dispatch_one()["state"], "succeeded")
         self.assertIsNone(self.service.dispatch_one())
-        self.assertEqual([x["kind"] for x in self.service.notifications(ACTOR, WID)["items"]], ["change_detected", "reassessment_completed"])
+        self.assertEqual(
+            [x["kind"] for x in self.service.notifications(ACTOR, WID)["items"]],
+            ["change_detected", "reassessment_completed"],
+        )
         request = next(iter(self.store.db.execute("SELECT request FROM reassessments")))[0]
         import json
+
         request = json.loads(request)
         bundle = self.catalog.bundle(NOTICE, snapshot=2)
-        self.assertEqual(request["delegation"]["input_fingerprint"], input_fingerprint(NOTICE, 1, 2, [x["observation_id"] for x in bundle["observations"]]))
+        self.assertEqual(
+            request["delegation"]["input_fingerprint"],
+            input_fingerprint(NOTICE, 1, 2, [x["observation_id"] for x in bundle["observations"]]),
+        )
 
     def test_lost_create_response_reuses_command_after_restart(self):
         self.changed()
         self.research.lose_response = True
         self.assertEqual(self.service.dispatch_one()["state"], "pending")
-        self.reopen(); self.ready()
+        self.reopen()
+        self.ready()
         self.assertEqual(self.service.dispatch_one()["state"], "accepted")
         self.assertEqual(self.research.creates, 1)
 
@@ -327,8 +436,16 @@ class TrackingTests(unittest.TestCase):
 
         def create(request):
             bundle = self.catalog.bundle(NOTICE, snapshot=request["catalog_snapshot"])
-            return owner.create(request, fingerprint(request), {"profile": {"revision": 1},
-                                "observations": bundle["observations"], "catalog_snapshot": bundle["snapshot"]}, 1)
+            return owner.create(
+                request,
+                fingerprint(request),
+                {
+                    "profile": {"revision": 1},
+                    "observations": bundle["observations"],
+                    "catalog_snapshot": bundle["snapshot"],
+                },
+                1,
+            )
 
         def lookup(wid, actor, key):
             result = owner.command(wid, actor, key)
@@ -337,7 +454,10 @@ class TrackingTests(unittest.TestCase):
             return result
 
         # 使用真实research持久层的stop/public响应，避免测试夹具再造错终态契约。
-        with patch.object(self.research, "create_analysis", side_effect=create) as created, patch.object(self.research, "command", side_effect=lookup) as queried:
+        with (
+            patch.object(self.research, "create_analysis", side_effect=create) as created,
+            patch.object(self.research, "command", side_effect=lookup) as queried,
+        ):
             self.assertEqual(self.service.dispatch_one()["state"], "accepted")
             owner.stop(owner.claim("research-worker"), "waiting_input", "billing_unknown")
             self.ready()
@@ -345,11 +465,20 @@ class TrackingTests(unittest.TestCase):
             self.assertEqual((stopped["state"], stopped["reason"]), ("waiting_input", "billing_unknown"))
             self.assertIsNone(owner.claim("research-worker"))
             query_count = queried.call_count
-            self.reopen(); self.ready()
+            self.reopen()
+            self.ready()
             self.service.consume_event("catalog", self.catalog.feed[-1])
             self.assertIsNone(self.service.dispatch_one())
-            self.error("reassessment_version_conflict", lambda: self.service.retry_reassessment(ACTOR, WID, stopped["id"], stopped["version"], "no-new-charge"))
-            self.error("reassessment_version_conflict", lambda: self.service.cancel_reassessment(ACTOR, WID, stopped["id"], stopped["version"], "already-stopped"))
+            self.error(
+                "reassessment_version_conflict",
+                lambda: self.service.retry_reassessment(ACTOR, WID, stopped["id"], stopped["version"], "no-new-charge"),
+            )
+            self.error(
+                "reassessment_version_conflict",
+                lambda: self.service.cancel_reassessment(
+                    ACTOR, WID, stopped["id"], stopped["version"], "already-stopped"
+                ),
+            )
             # 后续失权/关闭watch不能抹去计费未知的历史终态，也不会把它变成可派送命令。
             self.access.members[(ACTOR, WID)] = ["member", 3]
             self.access.emit("AccessChanged", membership=3)
@@ -361,13 +490,17 @@ class TrackingTests(unittest.TestCase):
             self.assertEqual(created.call_count, 1)
             self.assertEqual(owner.db.execute("SELECT count(*) FROM runs").fetchone()[0], 1)
             raw = self.store.db.execute("SELECT result FROM reassessments WHERE id=?", (stopped["id"],)).fetchone()[0]
-            history = self.store.db.execute("SELECT payload FROM reassessment_history WHERE reassessment_id=? ORDER BY seq DESC LIMIT 1", (stopped["id"],)).fetchone()[0]
+            history = self.store.db.execute(
+                "SELECT payload FROM reassessment_history WHERE reassessment_id=? ORDER BY seq DESC LIMIT 1",
+                (stopped["id"],),
+            ).fetchone()[0]
             self.assertEqual(json.loads(raw)["reason"], "billing_unknown")
             self.assertEqual(json.loads(history)["reason"], "billing_unknown")
             self.assertEqual([x["kind"] for x in self.service.notifications(ACTOR, WID)["items"]], ["change_detected"])
 
     def test_cancelled_reconciliation_does_not_cancel_remote_waiting_input(self):
-        self.changed(); self.service.dispatch_one()
+        self.changed()
+        self.service.dispatch_one()
         for run in self.research.runs.values():
             run.update(state="waiting_input", reason="billing_unknown")
         self.service.set_watch(ACTOR, WID, NOTICE, False, 1, "stop")
@@ -409,7 +542,9 @@ class TrackingTests(unittest.TestCase):
         self.changed()
         current = self.service.dispatch_one()
         value = self.service.cancel_reassessment(ACTOR, WID, current["id"], current["version"], "cancel")
-        self.assertEqual(self.service.cancel_reassessment(ACTOR, WID, current["id"], current["version"], "cancel"), value)
+        self.assertEqual(
+            self.service.cancel_reassessment(ACTOR, WID, current["id"], current["version"], "cancel"), value
+        )
         self.service.reconcile_cancelled()
         self.assertEqual(self.research.cancels, 1)
         self.assertTrue(self.service.watch(ACTOR, WID, NOTICE)["watch"]["active"])
@@ -433,7 +568,9 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual([x["state"] for x in values], ["pending", "cancelled"])
         self.error("delegation_invalid", lambda: self.service.finish(old, {"id": "old-run", "state": "succeeded"}))
         self.assertEqual(len(self.service.changes(ACTOR, WID)["items"]), 2)
-        self.assertEqual([n["kind"] for n in self.service.notifications(ACTOR, WID)["items"]], ["change_detected", "change_detected"])
+        self.assertEqual(
+            [n["kind"] for n in self.service.notifications(ACTOR, WID)["items"]], ["change_detected", "change_detected"]
+        )
 
     def test_cancelled_request_not_found_can_be_reconciled_if_create_arrives_late(self):
         self.changed()
@@ -451,9 +588,11 @@ class TrackingTests(unittest.TestCase):
         self.changed()
         claim = self.service.claim("worker")
         original = self.catalog.bundle
+
         def cancelled(*args, **kwargs):
             self.service.set_watch(ACTOR, WID, NOTICE, False, 1, "stop")
             return original(*args, **kwargs)
+
         with patch.object(self.catalog, "bundle", side_effect=cancelled):
             self.error("delegation_invalid", lambda: self.service.finish(claim, {"id": "run", "state": "succeeded"}))
         self.assertEqual(len(self.service.notifications(ACTOR, WID)["items"]), 1)
@@ -462,7 +601,8 @@ class TrackingTests(unittest.TestCase):
         self.changed()
         with patch.object(self.research, "command", side_effect=TrackingError("dependency_unavailable", 503)):
             for _ in range(3):
-                self.ready(); self.service.dispatch_one()
+                self.ready()
+                self.service.dispatch_one()
         before = self.command()
         self.assertEqual(before["state"], "deferred")
         retried = self.service.retry_reassessment(ACTOR, WID, before["id"], before["version"], "retry")
@@ -507,8 +647,12 @@ store.notify = lambda *args, **kwargs: os._exit(73)
 service.poll('catalog')
 """
         # 在变化行已写入、提醒/游标尚未提交时硬退出；不用正常close冒充进程中断。
-        result = subprocess.run([sys.executable, "-c", script, str(self.root)], cwd=Path(__file__).resolve().parents[1],
-                                capture_output=True, timeout=15)
+        result = subprocess.run(
+            [sys.executable, "-c", script, str(self.root)],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            timeout=15,
+        )
         self.assertEqual(result.returncode, 73)
         self.store = TrackingStore(self.root)
         self.service = TrackingService(self.store, self.access, self.catalog, self.research)
@@ -520,32 +664,43 @@ service.poll('catalog')
 
     def test_diff_preserves_money_role_package_timezone_precision_and_unknown(self):
         before = self.catalog.bundle(NOTICE)
-        self.catalog.add(facts={"response_deadline": {"status": "unknown", "value": None}},
-                         extra={"money": [{"role": "unit_price", "amount": "5", "package": "C", "unit_basis": "人次"}]})
+        self.catalog.add(
+            facts={"response_deadline": {"status": "unknown", "value": None}},
+            extra={"money": [{"role": "unit_price", "amount": "5", "package": "C", "unit_basis": "人次"}]},
+        )
         difference = compare_bundles(before, self.catalog.bundle(NOTICE))
         self.assertIn("money", difference["scopes"])
         self.assertIn("deadline", difference["scopes"])
         self.assertEqual(difference["kind"], "material_change")
 
     def test_http_enforces_caller_identity_strict_body_and_current_company(self):
-        server = create_server(self.root, self.access, self.catalog, self.research,
-                               tokens={"workspace": "w" * 32, "research": "r" * 32})
-        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        server = create_server(
+            self.root, self.access, self.catalog, self.research, tokens={"workspace": "w" * 32, "research": "r" * 32}
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
         try:
             url = "http://127.0.0.1:" + str(server.server_port)
             work, research = LocalClient(url, "w" * 32), LocalClient(url, "r" * 32)
             body = {"schema_version": 1, "actor_id": ACTOR, "workspace_id": WID, "notice_id": NOTICE}
             self.assertIsNone(work.request("POST", "/internal/v1/watches/get", body)["watch"])
-            for client, value, status in ((research, body, 403), (work, {**body, "extra": 1}, 400), (work, {**body, "workspace_id": OTHER_WID}, 404)):
+            for client, value, status in (
+                (research, body, 403),
+                (work, {**body, "extra": 1}, 400),
+                (work, {**body, "workspace_id": OTHER_WID}, 404),
+            ):
                 with self.assertRaises(LocalHTTPError) as raised:
                     client.request("POST", "/internal/v1/watches/get", value)
                 self.assertEqual(raised.exception.status, status)
         finally:
-            server.shutdown(); server.server_close(); thread.join(2)
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
 
 
 class WorkspaceTrackingContractTests(unittest.TestCase):
     """真实owner建档/迁移经回环HTTP消费；两个服务各写自己的虚构开发库。"""
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.workspace_root = Path(self.temp.name) / "workspace"
@@ -566,9 +721,11 @@ class WorkspaceTrackingContractTests(unittest.TestCase):
         return self.owner.confirm_profile(self.actor, self.wid, proposal["id"], base, "confirm-" + str(base))
 
     def exercise_owner_feed(self):
-        server = create_workspace_server(self.workspace_root, "http://127.0.0.1:1", "c" * 32,
-                                         internal_tokens={"tracking": "t" * 32})
-        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        server = create_workspace_server(
+            self.workspace_root, "http://127.0.0.1:1", "c" * 32, internal_tokens={"tracking": "t" * 32}
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
         store = TrackingStore(self.tracking_root)
         try:
             client = WorkspaceAccessClient("http://127.0.0.1:" + str(server.server_port), "t" * 32)
@@ -577,8 +734,23 @@ class WorkspaceTrackingContractTests(unittest.TestCase):
             initial = client.events()
             self.assertEqual([x["event_type"] for x in initial["items"]], ["AccessChanged", "ProfileConfirmed"])
             profile = initial["items"][1]
-            self.assertEqual(set(profile), {"seq", "event_id", "event_type", "workspace_id", "actor_id", "target_user_id", "profile_revision", "membership_version", "occurred_at"})
-            self.assertEqual((profile["profile_revision"], profile["target_user_id"], profile["membership_version"]), (1, None, None))
+            self.assertEqual(
+                set(profile),
+                {
+                    "seq",
+                    "event_id",
+                    "event_type",
+                    "workspace_id",
+                    "actor_id",
+                    "target_user_id",
+                    "profile_revision",
+                    "membership_version",
+                    "occurred_at",
+                },
+            )
+            self.assertEqual(
+                (profile["profile_revision"], profile["target_user_id"], profile["membership_version"]), (1, None, None)
+            )
             self.assertTrue(profile["occurred_at"].endswith("Z"))
             service.set_watch(self.actor, self.wid, NOTICE, True, 0, "watch")
             self.confirm(1)
@@ -594,7 +766,10 @@ class WorkspaceTrackingContractTests(unittest.TestCase):
             self.assertEqual(len(service.notifications(self.actor, self.wid)["items"]), 2)
             self.assertEqual(research.creates, 0)
         finally:
-            store.close(); server.shutdown(); server.server_close(); thread.join(2)
+            store.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(2)
 
     def test_new_owner_profile_event_flows_through_http_and_worker(self):
         self.exercise_owner_feed()
@@ -608,8 +783,11 @@ class WorkspaceTrackingContractTests(unittest.TestCase):
         self.owner = WorkspaceStore(self.workspace_root)
         first = self.owner.events()
         self.assertEqual(self.owner.db.execute("PRAGMA user_version").fetchone()[0], 2)
-        self.assertEqual([x["event_id"] for x in first["items"]], [f"access:{self.wid}:{self.actor}:1", f"profile:{self.wid}:1"])
-        self.owner.close(); self.owner = WorkspaceStore(self.workspace_root)
+        self.assertEqual(
+            [x["event_id"] for x in first["items"]], [f"access:{self.wid}:{self.actor}:1", f"profile:{self.wid}:1"]
+        )
+        self.owner.close()
+        self.owner = WorkspaceStore(self.workspace_root)
         self.assertEqual(self.owner.events(), first)
         self.exercise_owner_feed()
 

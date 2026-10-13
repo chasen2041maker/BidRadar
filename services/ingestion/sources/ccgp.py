@@ -9,6 +9,7 @@ Copyright (c) 2026 ichthyoplanktonzyh
 只认识约定好的页面模板，模板变了就明确报错。
 附件只记下链接和名称，不解析文件内容，也不推断任何投标资格。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -79,8 +80,9 @@ class NoticePage:
     links: tuple[dict[str, str], ...] = ()
 
 
-def build_search_params(keyword: str, page: int = 1, *, start_date: str | None = None,
-                        end_date: str | None = None) -> dict[str, str]:
+def build_search_params(
+    keyword: str, page: int = 1, *, start_date: str | None = None, end_date: str | None = None
+) -> dict[str, str]:
     """生成 CCGP 搜索的查询参数（只生成，不发请求）。
 
     start_date / end_date 是按发布日期筛选，不是投标截止日期；不传就不限，不会自动填今天。
@@ -98,12 +100,21 @@ def build_search_params(keyword: str, page: int = 1, *, start_date: str | None =
     if dates[0] is not None and dates[1] is not None and dates[0] > dates[1]:
         raise ValueError("起始日期不能晚于结束日期")
     return {
-        "searchtype": "1", "page_index": str(page), "bidSort": "0",
-        "buyerName": "", "projectId": "", "pinMu": "0", "bidType": "0",
-        "dbselect": "bidx", "kw": keyword.strip(),
+        "searchtype": "1",
+        "page_index": str(page),
+        "bidSort": "0",
+        "buyerName": "",
+        "projectId": "",
+        "pinMu": "0",
+        "bidType": "0",
+        "dbselect": "bidx",
+        "kw": keyword.strip(),
         "start_time": start_date.replace("-", ":") if start_date else "",
         "end_time": end_date.replace("-", ":") if end_date else "",
-        "timeType": "6", "displayZone": "", "zoneId": "", "pppStatus": "0",
+        "timeType": "6",
+        "displayZone": "",
+        "zoneId": "",
+        "pppStatus": "0",
         "agentName": "",
     }
 
@@ -124,8 +135,9 @@ class _Node:
             yield node
             pending.extend(child for child in reversed(node.children) if isinstance(child, _Node))
 
-    def text(self, *, skip_listing_rows: bool = False, skip_notice_body: bool = False,
-             omit: _Node | None = None) -> str:
+    def text(
+        self, *, skip_listing_rows: bool = False, skip_notice_body: bool = False, omit: _Node | None = None
+    ) -> str:
         pending: list[_Node | str] = [self]
         parts: list[str] = []
         while pending:
@@ -136,10 +148,14 @@ class _Node:
                 if skip_notice_body and "vF_detail_content" in (item.attrs.get("class") or "").split():
                     continue
                 # 页面级访问提示与招标标题分开；验证码系统采购不是验证码挑战页。
-                if (skip_listing_rows and item.tag == "ul"
-                        and "vT-srch-result-list-bid" in (item.attrs.get("class") or "").split()):
-                    pending.extend(child for child in reversed(item.children)
-                                   if not isinstance(child, _Node) or child.tag != "li")
+                if (
+                    skip_listing_rows
+                    and item.tag == "ul"
+                    and "vT-srch-result-list-bid" in (item.attrs.get("class") or "").split()
+                ):
+                    pending.extend(
+                        child for child in reversed(item.children) if not isinstance(child, _Node) or child.tag != "li"
+                    )
                 else:
                     pending.extend(reversed(item.children))
         return re.sub(r"\s+", " ", "".join(parts)).strip()
@@ -199,8 +215,13 @@ def _notice_url(href: str | None) -> str | None:
         # 链接格式有问题就跳过这一条，不尝试修补，也不因为一个坏链接让整页解析失败。
         url = urljoin(SEARCH_URL, href)
         parts = urlsplit(url)
-        if (parts.scheme not in ("http", "https") or parts.hostname not in ("www.ccgp.gov.cn", "ccgp.gov.cn")
-                or parts.username is not None or parts.password is not None or parts.port is not None):
+        if (
+            parts.scheme not in ("http", "https")
+            or parts.hostname not in ("www.ccgp.gov.cn", "ccgp.gov.cn")
+            or parts.username is not None
+            or parts.password is not None
+            or parts.port is not None
+        ):
             return None
     except ValueError:
         return None
@@ -231,8 +252,11 @@ def parse_search_page(html: str) -> ListingResult:
     except (ValueError, AssertionError):
         # 页面格式不对就明确报解析失败，不能当成零条结果。
         return ListingResult(ParseStatus.PARSE_ERROR, (), ("malformed_html",), fingerprint)
-    containers = [node for node in document.root.walk()
-                  if node.tag == "ul" and "vT-srch-result-list-bid" in (node.attrs.get("class") or "").split()]
+    containers = [
+        node
+        for node in document.root.walk()
+        if node.tag == "ul" and "vT-srch-result-list-bid" in (node.attrs.get("class") or "").split()
+    ]
     # 先检查是不是验证码或限流页（这种页面可能也带着空列表），再处理结果。
     # 检查时跳过列表条目本身：采购标题里出现"验证码"（比如"验证码系统采购"）是正常的。
     challenge_text = document.root.text(skip_listing_rows=True)
@@ -243,8 +267,12 @@ def parse_search_page(html: str) -> ListingResult:
     rows = [node for node in containers[0].children if isinstance(node, _Node) and node.tag == "li"]
     if not rows:
         explicit_zero = re.search(r"共\s*0\s*条", document.root.text()) is not None
-        return ListingResult(ParseStatus.EMPTY if explicit_zero else ParseStatus.PARSE_ERROR, (),
-                             () if explicit_zero else ("empty_without_confirmation",), fingerprint)
+        return ListingResult(
+            ParseStatus.EMPTY if explicit_zero else ParseStatus.PARSE_ERROR,
+            (),
+            () if explicit_zero else ("empty_without_confirmation",),
+            fingerprint,
+        )
     items: list[NoticeCandidate] = []
     issues: list[str] = []
     for index, row in enumerate(rows, 1):
@@ -267,9 +295,17 @@ def parse_search_page(html: str) -> ListingResult:
                 fields[match[1]] = match[2].strip()
         # 只取第一段长得像日期的原文。不补时区，也不把它当成投标截止时间。
         published = parts[0] if re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(?:\s|$)", parts[0]) else None
-        items.append(NoticeCandidate(anchor.text(), url, raw, published,
-                                     fields.get("采购人"), fields.get("代理机构"),
-                                     f"ul.vT-srch-result-list-bid > li:nth-of-type({index})"))
+        items.append(
+            NoticeCandidate(
+                anchor.text(),
+                url,
+                raw,
+                published,
+                fields.get("采购人"),
+                fields.get("代理机构"),
+                f"ul.vT-srch-result-list-bid > li:nth-of-type({index})",
+            )
+        )
     status = ParseStatus.PARTIAL if items and issues else (ParseStatus.OK if items else ParseStatus.PARSE_ERROR)
     return ListingResult(status, tuple(items), tuple(issues), fingerprint)
 
@@ -297,19 +333,41 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
         return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("malformed_html",), fingerprint)
     nodes = list(document.root.walk())
     body = [node for node in nodes if "vF_detail_content" in (node.attrs.get("class") or "").split()]
-    title_node = next((node for node in nodes if node.tag == "h2"
-                       and {"title", "tc"}.intersection((node.attrs.get("class") or "").split())), None)
+    title_node = next(
+        (
+            node
+            for node in nodes
+            if node.tag == "h2" and {"title", "tc"}.intersection((node.attrs.get("class") or "").split())
+        ),
+        None,
+    )
     if title_node is None:
         title_node = next((node for node in nodes if node.tag == "h1"), None)
     # 先检查有没有验证码或访问限制提示。标题里出现"验证码"不算，但页面上有明确的访问提示时，
     # 即使页面上还残留着标题或旧正文，也要按"被拦截"处理。
     title = title_node.text() if title_node else None
-    title_challenge = bool(title and (any(word in title for word in (
-        "请输入验证码", "请填写验证码", "请完成验证", "请通过验证", "访问频繁", "访问过于频繁", "访问受限"))
-        or title in ("验证码", "人机验证", "安全验证")))
-    if title_challenge or any(word in document.root.text(skip_notice_body=True,
-                                                         omit=title_node if len(body) == 1 else None)
-                              for word in ("验证码", "访问频繁", "访问过于频繁", "访问受限")):
+    title_challenge = bool(
+        title
+        and (
+            any(
+                word in title
+                for word in (
+                    "请输入验证码",
+                    "请填写验证码",
+                    "请完成验证",
+                    "请通过验证",
+                    "访问频繁",
+                    "访问过于频繁",
+                    "访问受限",
+                )
+            )
+            or title in ("验证码", "人机验证", "安全验证")
+        )
+    )
+    if title_challenge or any(
+        word in document.root.text(skip_notice_body=True, omit=title_node if len(body) == 1 else None)
+        for word in ("验证码", "访问频繁", "访问过于频繁", "访问受限")
+    ):
         return NoticePage(ParseStatus.BLOCKED, None, None, (), ("access_challenge",), fingerprint)
     if len(body) != 1 or not body[0].text():
         return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("unexpected_notice_template",), fingerprint)
@@ -332,8 +390,9 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
             links.append({"url": original, "name": anchor.text(), "locator": "div.vF_detail_content a"})
         if re.search(r"\.(?:pdf|docx?|xlsx?|zip|rar|7z)$", parts.path, re.I) and link not in seen:
             seen.add(link)
-            attachments.append({"url": link, "name": anchor.text(), "locator": "div.vF_detail_content a",
-                                "status": "not_fetched"})
+            attachments.append(
+                {"url": link, "name": anchor.text(), "locator": "div.vF_detail_content a", "status": "not_fetched"}
+            )
     # 按段落和表格行分段，每段记下位置，processing 才能准确找到"预算金额""截止时间"这些字段。
     segments = []
     pending = [(body[0], "div.vF_detail_content")]
@@ -345,17 +404,20 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
             continue
         # 有些页面把表格嵌在段落里，要继续往下拆到表格行，否则表头单位和行里的数值就对不上了。
         if node.tag in ("p", "li", "tr", "h1", "h2", "h3", "h4") and not any(
-                child is not node and child.tag == "table" for child in node.walk()):
+            child is not node and child.tag == "table" for child in node.walk()
+        ):
             cells = [child.text() for child in node.children if isinstance(child, _Node) and child.tag in ("td", "th")]
             text = " | ".join(cells) if node.tag == "tr" else node.text()
             if text:
                 segments.append({"text": text, "locator": locator})
             continue
         children, inline, element_index = [], [], 0
+
         def flush_inline():
             if inline:
                 children.append(("".join(inline), f"{locator} text-run[{len(children) + 1}]"))
                 inline.clear()
+
         for child in node.children:
             if isinstance(child, str):
                 inline.append(child)
@@ -373,12 +435,31 @@ def parse_notice_page(html: str, url: str) -> NoticePage:
     if not segments:
         segments.append({"text": body[0].text(), "locator": "div.vF_detail_content"})
     # 页面顶部的摘要表只取白名单里的字段；电话、地址等联系信息不收录。
-    labels = {"采购项目名称", "品目", "采购单位", "采购人", "行政区域", "公告时间", "公告发布时间", "预算金额", "公告类型"}
+    labels = {
+        "采购项目名称",
+        "品目",
+        "采购单位",
+        "采购人",
+        "行政区域",
+        "公告时间",
+        "公告发布时间",
+        "预算金额",
+        "公告类型",
+    }
     metadata = []
     for index, node in enumerate((n for n in nodes if n.tag == "tr"), 1):
         cells = [child for child in node.children if isinstance(child, _Node) and child.tag in ("td", "th")]
         for label, value in zip(cells[::2], cells[1::2]):
             if label.text().rstrip("：:") in labels:
                 metadata.append({"label": label.text().rstrip("：:"), "text": value.text(), "locator": f"tr[{index}]"})
-    return NoticePage(ParseStatus.PARTIAL if issues else ParseStatus.OK, title, body[0].text(),
-                      tuple(attachments), tuple(issues), fingerprint, tuple(segments), tuple(metadata), tuple(links))
+    return NoticePage(
+        ParseStatus.PARTIAL if issues else ParseStatus.OK,
+        title,
+        body[0].text(),
+        tuple(attachments),
+        tuple(issues),
+        fingerprint,
+        tuple(segments),
+        tuple(metadata),
+        tuple(links),
+    )

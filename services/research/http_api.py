@@ -4,6 +4,7 @@
 接口只负责受理和查询任务，从不在请求里直接调模型；真正的研究由 worker 在后台完成。
 两个调用方能做的事不一样，例如只有 workspace 能查预算，tracking 只能操作自己发起的复核任务。
 """
+
 from services.common.local_http import LocalHTTPError, create_server as local_server
 from .budget import BudgetError, BudgetLedger
 from .service import ResearchService
@@ -17,18 +18,25 @@ def create_server(root, access, catalog, tracking, *, tokens, budget_path, port=
 
     def dispatch(method, path, body, identity):
         """处理一个已通过身份校验的请求。identity 是调用方的名字："workspace" 或 "tracking"。"""
-        if method != "POST" or not isinstance(body, dict) or type(body.get("schema_version")) is not int or body["schema_version"] != 1:
+        if (
+            method != "POST"
+            or not isinstance(body, dict)
+            or type(body.get("schema_version")) is not int
+            or body["schema_version"] != 1
+        ):
             raise LocalHTTPError("invalid_request", 400)
         store = ResearchStore(root)
         try:
             service = ResearchService(store, access, catalog, tracking, identity=identity, config=config)
             if path == "/internal/v1/analyses":
                 return 202, service.create_analysis(body)
-            routes = {"/internal/v1/runs/get": ("run", {"run_id"}),
-                      "/internal/v1/commands/get": ("command", {"key"}),
-                      "/internal/v1/runs/cancel": ("cancel", {"run_id", "key"}),
-                      "/internal/v1/runs/list": ("list_runs", {"before", "limit"}),
-                      "/internal/v1/budget": ("budget", set())}
+            routes = {
+                "/internal/v1/runs/get": ("run", {"run_id"}),
+                "/internal/v1/commands/get": ("command", {"key"}),
+                "/internal/v1/runs/cancel": ("cancel", {"run_id", "key"}),
+                "/internal/v1/runs/list": ("list_runs", {"before", "limit"}),
+                "/internal/v1/budget": ("budget", set()),
+            }
             if path not in routes:
                 raise ResearchError("not_found", 404)
             operation, fields = routes[path]

@@ -14,6 +14,7 @@
     notifications(_reads)    站内提醒，以及每个人的已读记录
 历史类的表只能插入，不能修改或删除（用触发器保证）。
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -47,7 +48,7 @@ def text(value, limit=128, *, empty=False):
     return value
 
 
-def integer(value, minimum=0, maximum=2**63-1):
+def integer(value, minimum=0, maximum=2**63 - 1):
     """检查是范围内的整数（bool 不算）。"""
     if type(value) is not int or not minimum <= value <= maximum:
         raise TrackingError("invalid_version")
@@ -68,7 +69,11 @@ def now():
 
 def utc(value=None):
     """把时间戳转成 UTC 的 ISO 8601 字符串，例如 2026-10-01T03:56:00Z。"""
-    return datetime.fromtimestamp(now() if value is None else value, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        datetime.fromtimestamp(now() if value is None else value, timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def new_id():
@@ -123,7 +128,10 @@ class TrackingStore:
                 raise TrackingError("invalid_store_directory")
             root.mkdir(parents=True, exist_ok=True)
             marker = root / ".bidradar-tracking-v1"
-            if any((root / name).is_symlink() for name in (marker.name, "tracking.sqlite3", "tracking.sqlite3-wal", "tracking.sqlite3-shm")):
+            if any(
+                (root / name).is_symlink()
+                for name in (marker.name, "tracking.sqlite3", "tracking.sqlite3-wal", "tracking.sqlite3-shm")
+            ):
                 raise TrackingError("invalid_store_directory")
             if not marker.exists() and any(root.iterdir()):
                 raise TrackingError("store_directory_not_empty")
@@ -138,10 +146,20 @@ class TrackingStore:
                     raise TrackingError("unsupported_store_version", 503)
                 for statement in SCHEMA:
                     self.db.execute(statement)
-                for table in ("inbox", "commands", "decision_history", "watch_history", "changes", "reassessment_history", "notifications"):
+                for table in (
+                    "inbox",
+                    "commands",
+                    "decision_history",
+                    "watch_history",
+                    "changes",
+                    "reassessment_history",
+                    "notifications",
+                ):
                     for action in ("UPDATE", "DELETE"):
-                        self.db.execute(f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{action.lower()} BEFORE {action} ON {table} "
-                                        "BEGIN SELECT RAISE(ABORT,'immutable_record'); END")
+                        self.db.execute(
+                            f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{action.lower()} BEFORE {action} ON {table} "
+                            "BEGIN SELECT RAISE(ABORT,'immutable_record'); END"
+                        )
                 self.db.execute("PRAGMA user_version=1")
         except (OSError, sqlite3.Error):
             self.close()
@@ -175,14 +193,18 @@ class TrackingStore:
         """查幂等键。返回 (请求指纹, 之前的结果或 None)。同一个键但请求不同，报 idempotency_conflict。"""
         text(key)
         digest = fingerprint(request)
-        row = self.db.execute("SELECT * FROM commands WHERE workspace_id=? AND operation=? AND key=?", (workspace_id, operation, key)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM commands WHERE workspace_id=? AND operation=? AND key=?", (workspace_id, operation, key)
+        ).fetchone()
         if row is not None and row["digest"] != digest:
             raise TrackingError("idempotency_conflict", 409)
         return digest, json.loads(row["result"]) if row else None
 
     def remember(self, workspace_id, operation, key, digest, result):
         """记下这个幂等键对应的结果，之后同样的请求直接返回它。"""
-        self.db.execute("INSERT INTO commands VALUES(?,?,?,?,?)", (workspace_id, operation, key, digest, canonical(result)))
+        self.db.execute(
+            "INSERT INTO commands VALUES(?,?,?,?,?)", (workspace_id, operation, key, digest, canonical(result))
+        )
         return result
 
     def cursor(self, owner):
@@ -192,7 +214,9 @@ class TrackingStore:
 
     def watch_row(self, workspace_id, watch_id):
         """读取一条关注记录，不存在就报 not_found。"""
-        row = self.db.execute("SELECT * FROM watches WHERE workspace_id=? AND id=?", (workspace_id, watch_id)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM watches WHERE workspace_id=? AND id=?", (workspace_id, watch_id)
+        ).fetchone()
         if row is None:
             raise TrackingError("not_found", 404)
         return row
@@ -201,13 +225,32 @@ class TrackingStore:
         """发一条站内提醒。同一个变化、同一种提醒只会有一条；重建历史（replay）时不发。"""
         if replay:
             return
-        value = {"schema_version": 1, "id": new_id(), "workspace_id": watch["workspace_id"], "watch_id": watch["id"],
-                 "change_id": change["id"], "kind": kind, "created_at": utc()}
-        self.db.execute("INSERT INTO notifications(id,workspace_id,watch_id,rule_version,fingerprint,kind,payload) VALUES(?,?,?,?,?,?,?) "
-                        "ON CONFLICT(watch_id,rule_version,fingerprint,kind) DO NOTHING",
-                        (value["id"], watch["workspace_id"], watch["id"], watch["rule_version"], change["fingerprint"], kind, canonical(value)))
+        value = {
+            "schema_version": 1,
+            "id": new_id(),
+            "workspace_id": watch["workspace_id"],
+            "watch_id": watch["id"],
+            "change_id": change["id"],
+            "kind": kind,
+            "created_at": utc(),
+        }
+        self.db.execute(
+            "INSERT INTO notifications(id,workspace_id,watch_id,rule_version,fingerprint,kind,payload) VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(watch_id,rule_version,fingerprint,kind) DO NOTHING",
+            (
+                value["id"],
+                watch["workspace_id"],
+                watch["id"],
+                watch["rule_version"],
+                change["fingerprint"],
+                kind,
+                canonical(value),
+            ),
+        )
 
     def reassessment_event(self, reassessment_id, state, reason=None, run_id=None):
         """给复核命令追加一条状态历史。"""
-        self.db.execute("INSERT INTO reassessment_history(reassessment_id,payload) VALUES(?,?)",
-                        (reassessment_id, canonical({"state": state, "reason": reason, "run_id": run_id, "recorded_at": utc()})))
+        self.db.execute(
+            "INSERT INTO reassessment_history(reassessment_id,payload) VALUES(?,?)",
+            (reassessment_id, canonical({"state": state, "reason": reason, "run_id": run_id, "recorded_at": utc()})),
+        )

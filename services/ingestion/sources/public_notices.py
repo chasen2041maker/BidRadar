@@ -6,6 +6,7 @@
 这个模块不联网，也不执行页面里的 JavaScript。DNS、robots、准入、请求限额、原件保存由 transport 和 archive 负责。
 能解析页面不代表获准持续采集。
 """
+
 from __future__ import annotations
 
 from hashlib import sha256
@@ -13,19 +14,25 @@ import re
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 from .ccgp import (
-    MAX_HTML_BYTES, ListingResult, NoticeCandidate, NoticePage, ParseStatus,
-    _Document, _HTMLResourceLimit, _Node, _notice_url, parse_notice_page,
+    MAX_HTML_BYTES,
+    ListingResult,
+    NoticeCandidate,
+    NoticePage,
+    ParseStatus,
+    _Document,
+    _HTMLResourceLimit,
+    _Node,
+    _notice_url,
+    parse_notice_page,
 )
 
 # 栏目代码 → 路径，2026-09-30 按官方网站核对（例如竞争性谈判栏目的路径是 jzxtpgg，不能按简称猜）。
 # 列在这里只说明路径对，不代表每个栏目都实际抓取验证过。
 _CCGP_CATEGORIES = frozenset(
-    f"{area}/{kind}" for area in ("zygg", "dfgg")
-    for kind in ("gkzb", "jzxcs", "jzxtpgg", "gzgg", "zbgg", "cjgg")
+    f"{area}/{kind}" for area in ("zygg", "dfgg") for kind in ("gkzb", "jzxcs", "jzxtpgg", "gzgg", "zbgg", "cjgg")
 )
 _HAINAN_CATEGORIES = frozenset(("cggg", "zfcgqtgg", "cgzbgg"))
-_HOSTS = {"cn_ccgp": ("www.ccgp.gov.cn", "ccgp.gov.cn"),
-          "cn_hainan": ("ggzy.hainan.gov.cn",)}
+_HOSTS = {"cn_ccgp": ("www.ccgp.gov.cn", "ccgp.gov.cn"), "cn_hainan": ("ggzy.hainan.gov.cn",)}
 _FILE_SUFFIX = re.compile(r"\.(?:pdf|docx?|xlsx?|zip|rar|7z)$", re.I)
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}(?::[0-9]{2})?)?")
 _CHALLENGE_WORDS = ("验证码", "访问频繁", "访问过于频繁", "访问受限")
@@ -33,14 +40,23 @@ _CHALLENGE_WORDS = ("验证码", "访问频繁", "访问过于频繁", "访问�
 
 def _parts(source: str, url: str, *, strict: bool = True):
     """拆分并检查 URL：只接受官方主机和标准端口。真正联网时 transport 还会再做一遍安全检查。"""
-    if (source not in _HOSTS or not isinstance(url, str) or not url
-            or any(ord(c) <= 32 or ord(c) == 127 for c in url) or "\\" in url):
+    if (
+        source not in _HOSTS
+        or not isinstance(url, str)
+        or not url
+        or any(ord(c) <= 32 or ord(c) == 127 for c in url)
+        or "\\" in url
+    ):
         return None
     try:
         parts = urlsplit(url)
-        if (parts.scheme not in ("http", "https") or parts.hostname not in _HOSTS[source]
-                or parts.username is not None or parts.password is not None
-                or parts.port not in (None, 80 if parts.scheme == "http" else 443)):
+        if (
+            parts.scheme not in ("http", "https")
+            or parts.hostname not in _HOSTS[source]
+            or parts.username is not None
+            or parts.password is not None
+            or parts.port not in (None, 80 if parts.scheme == "http" else 443)
+        ):
             return None
     except ValueError:
         return None
@@ -139,8 +155,11 @@ def _hainan_footer(node: _Node) -> bool:
     """是不是海南列表表格里最后那一行分页控件。"""
     cells = [n for n in node.children if isinstance(n, _Node) and n.tag == "td"]
     # 分页控件在表格最后一行、横跨四列的单元格里。只跳过这一行。
-    return (len(cells) == 1 and cells[0].attrs.get("colspan") == "4"
-            and re.match(r"共\s*[0-9]+\s*条记录", cells[0].text()) is not None)
+    return (
+        len(cells) == 1
+        and cells[0].attrs.get("colspan") == "4"
+        and re.match(r"共\s*[0-9]+\s*条记录", cells[0].text()) is not None
+    )
 
 
 def _outside_text(root: _Node, omit: list[_Node]) -> str:
@@ -157,15 +176,16 @@ def _outside_text(root: _Node, omit: list[_Node]) -> str:
     return " ".join(text)
 
 
-def _next_page(document: _Document, source: str, url: str,
-               identity: tuple[str, int]) -> tuple[str | None, list[str]]:
+def _next_page(document: _Document, source: str, url: str, identity: tuple[str, int]) -> tuple[str | None, list[str]]:
     category, page = identity
     found = []
     issues = []
     nodes = list(document.root.walk())
     # 只按核对过的固定格式读取分页配置，不执行页面脚本。
     if source == "cn_ccgp":
-        pattern = re.compile(r"\s*Pager\(\{size:([0-9]{1,6}),\s*current:([0-9]{1,6}),\s*prefix:'index',\s*suffix:'htm'\}\);?\s*")
+        pattern = re.compile(
+            r"\s*Pager\(\{size:([0-9]{1,6}),\s*current:([0-9]{1,6}),\s*prefix:'index',\s*suffix:'htm'\}\);?\s*"
+        )
         for node in nodes:
             if node.tag != "script":
                 continue
@@ -215,22 +235,36 @@ def parse_listing(html: str, url: str, source: str) -> ListingResult:
         return ListingResult(ParseStatus.PARSE_ERROR, (), ("invalid_listing_url",), fingerprint)
     container_tag, container_class = ("ul", "c_list_bid") if source == "cn_ccgp" else ("table", "newtable")
     containers = [n for n in document.root.walk() if n.tag == container_tag and _class(n, container_class)]
-    content_rows = [n for container in containers for n in container.walk()
-                    if n.tag == ("li" if source == "cn_ccgp" else "tr")
-                    and not _hainan_footer(n)]
+    content_rows = [
+        n
+        for container in containers
+        for n in container.walk()
+        if n.tag == ("li" if source == "cn_ccgp" else "tr") and not _hainan_footer(n)
+    ]
     if any(word in _outside_text(document.root, content_rows) for word in _CHALLENGE_WORDS):
         return ListingResult(ParseStatus.BLOCKED, (), ("access_challenge",), fingerprint)
     if len(containers) != 1:
         return ListingResult(ParseStatus.PARSE_ERROR, (), ("unexpected_listing_template",), fingerprint)
     container = containers[0]
-    rows = ([n for n in container.children if isinstance(n, _Node) and n.tag == "li"]
-            if source == "cn_ccgp" else [n for n in container.walk() if n.tag == "tr"
-                                       and any(isinstance(c, _Node) and c.tag == "td" for c in n.children)
-                                       and not _hainan_footer(n)])
+    rows = (
+        [n for n in container.children if isinstance(n, _Node) and n.tag == "li"]
+        if source == "cn_ccgp"
+        else [
+            n
+            for n in container.walk()
+            if n.tag == "tr"
+            and any(isinstance(c, _Node) and c.tag == "td" for c in n.children)
+            and not _hainan_footer(n)
+        ]
+    )
     if not rows:
         zero = re.search(r"共\s*0\s*条", document.root.text()) is not None
-        return ListingResult(ParseStatus.EMPTY if zero else ParseStatus.PARSE_ERROR, (),
-                             () if zero else ("empty_without_confirmation",), fingerprint)
+        return ListingResult(
+            ParseStatus.EMPTY if zero else ParseStatus.PARSE_ERROR,
+            (),
+            () if zero else ("empty_without_confirmation",),
+            fingerprint,
+        )
     items, errors, seen = [], [], set()
     for index, row in enumerate(rows, 1):
         if any(n is not row and n.tag == row.tag for n in row.walk()):
@@ -291,17 +325,20 @@ def _segments(body: _Node, selector: str) -> tuple[dict[str, str], ...]:
         if node.tag in ("script", "style", "input"):
             continue
         if node.tag in ("p", "li", "tr", "h1", "h2", "h3", "h4") and not any(
-                child is not node and child.tag == "table" for child in node.walk()):
+            child is not node and child.tag == "table" for child in node.walk()
+        ):
             cells = [n.text() for n in node.children if isinstance(n, _Node) and n.tag in ("td", "th")]
             text = " | ".join(cells) if node.tag == "tr" else node.text()
             if text:
                 segments.append({"text": text, "locator": locator})
             continue
         children, inline, index = [], [], 0
+
         def flush():
             if inline:
                 children.append(("".join(inline), f"{locator} text-run[{len(children) + 1}]"))
                 inline.clear()
+
         for child in node.children:
             if isinstance(child, str):
                 inline.append(child)
@@ -336,19 +373,31 @@ def _references(root: _Node, url: str, source: str, selector: str):
         try:
             target = urljoin(url, href)
             parts = urlsplit(target)
-            valid = (parts.scheme in ("http", "https") and parts.hostname is not None
-                     and parts.netloc.isascii()
-                     and parts.username is None and parts.password is None
-                     and parts.port in (None, 80 if parts.scheme == "http" else 443)
-                     and not any(ord(c) <= 32 or ord(c) == 127 for c in target) and "\\" not in target)
+            valid = (
+                parts.scheme in ("http", "https")
+                and parts.hostname is not None
+                and parts.netloc.isascii()
+                and parts.username is None
+                and parts.password is None
+                and parts.port in (None, 80 if parts.scheme == "http" else 443)
+                and not any(ord(c) <= 32 or ord(c) == 127 for c in target)
+                and "\\" not in target
+            )
         except ValueError:
             valid = False
         if not valid:
             issues.append("malformed_attachment_link")
             continue
         # 只编码中文等非 ASCII 字符，原有的协议、参数分隔符和已有的转义保持不变。
-        target = urlunsplit((parts.scheme, parts.netloc, quote(parts.path, safe="/%:@!$&'()*+,;=-._~"),
-                             quote(parts.query, safe="%=&?/:@!$'()*+,;~-._"), ""))
+        target = urlunsplit(
+            (
+                parts.scheme,
+                parts.netloc,
+                quote(parts.path, safe="/%:@!$&'()*+,;=-._~"),
+                quote(parts.query, safe="%=&?/:@!$'()*+,;~-._"),
+                "",
+            )
+        )
         original = canonical_notice_url(source, target)
         if original and original not in {link["url"] for link in links}:
             links.append({"url": original, "name": name, "locator": locator})
@@ -376,30 +425,69 @@ def parse_notice(html: str, url: str, source: str) -> NoticePage:
         selector = "div.vF_detail_main" if len(wrappers) == 1 else "div.vF_detail_content"
         attachments, links, reference_issues = _references(root, url, source, selector)
         errors = tuple(dict.fromkeys((*result.issues, *reference_issues)))
-        return NoticePage(ParseStatus.PARTIAL if errors else ParseStatus.OK, result.title, result.text,
-                          attachments, errors, fingerprint, result.segments, result.metadata, links)
+        return NoticePage(
+            ParseStatus.PARTIAL if errors else ParseStatus.OK,
+            result.title,
+            result.text,
+            attachments,
+            errors,
+            fingerprint,
+            result.segments,
+            result.metadata,
+            links,
+        )
     nodes = list(document.root.walk())
     wrappers = [n for n in nodes if n.tag == "div" and _class(n, "newsTex")]
     bodies = [n for n in nodes if n.tag == "div" and _class(n, "newsCon")]
-    titles = ([n for n in wrappers[0].children if isinstance(n, _Node) and n.tag == "h1"]
-              if len(wrappers) == 1 else [])
+    titles = [n for n in wrappers[0].children if isinstance(n, _Node) and n.tag == "h1"] if len(wrappers) == 1 else []
     title_node = titles[0] if len(titles) == 1 else None
     title = title_node.text() if title_node else None
-    title_challenge = bool(title and (title in ("验证码", "安全验证", "人机验证") or any(
-        word in title for word in ("请输入验证码", "请填写验证码", "请完成验证", "请通过验证", "访问受限", "访问频繁", "访问过于频繁"))))
+    title_challenge = bool(
+        title
+        and (
+            title in ("验证码", "安全验证", "人机验证")
+            or any(
+                word in title
+                for word in (
+                    "请输入验证码",
+                    "请填写验证码",
+                    "请完成验证",
+                    "请通过验证",
+                    "访问受限",
+                    "访问频繁",
+                    "访问过于频繁",
+                )
+            )
+        )
+    )
     # 标题里有"验证码"是正常的业务内容；但页面上另有验证提示时，仍按"被拦截"处理。
-    summaries = [n for n in wrappers[0].children if isinstance(n, _Node) and _class(n, "summary")] if len(wrappers) == 1 else []
+    summaries = (
+        [n for n in wrappers[0].children if isinstance(n, _Node) and _class(n, "summary")] if len(wrappers) == 1 else []
+    )
     omit = bodies + ([title_node] if title_node and len(bodies) == 1 else [])
     omit += [n for n in summaries if title and n.text() == title]
     if title_challenge or any(word in _outside_text(document.root, omit) for word in _CHALLENGE_WORDS):
         return NoticePage(ParseStatus.BLOCKED, None, None, (), ("access_challenge",), fingerprint)
-    if (len(wrappers) != 1 or len(bodies) != 1 or not bodies[0].text()
-            or not any(n is bodies[0] for n in wrappers[0].walk())):
+    if (
+        len(wrappers) != 1
+        or len(bodies) != 1
+        or not bodies[0].text()
+        or not any(n is bodies[0] for n in wrappers[0].walk())
+    ):
         return NoticePage(ParseStatus.PARSE_ERROR, None, None, (), ("unexpected_notice_template",), fingerprint)
     attachments, links, errors = _references(bodies[0], url, source, "div.newsCon")
     if not title:
         errors.append("missing_notice_title")
     segments = _segments(bodies[0], "div.newsCon")
     # 海南详情页的信息栏里没有发布时间。不拿正文里的截止日期来充数，发布时间从列表页取。
-    return NoticePage(ParseStatus.PARTIAL if errors else ParseStatus.OK, title, bodies[0].text(),
-                      attachments, tuple(errors), fingerprint, segments, (), links)
+    return NoticePage(
+        ParseStatus.PARTIAL if errors else ParseStatus.OK,
+        title,
+        bodies[0].text(),
+        attachments,
+        tuple(errors),
+        fingerprint,
+        segments,
+        (),
+        links,
+    )

@@ -1,4 +1,5 @@
 """天津接入负例与恢复验收：虚构令牌/响应，只验证安全边界和本地链路。"""
+
 from copy import deepcopy
 from dataclasses import replace
 import json
@@ -19,13 +20,20 @@ from services.catalog.store import Catalog
 
 
 def response_body(*, rows=None, total=1):
-    return json.dumps({"code": 200, "columnNames": ["公告标题", "项目编号", "采购人名称", "预算（万元）"],
-                       "list": rows if rows is not None else [["虚构软件竞争性谈判公告", "DEMO-002", "虚构单位", "8"]],
-                       "totalCount": total}, ensure_ascii=False).encode()
+    return json.dumps(
+        {
+            "code": 200,
+            "columnNames": ["公告标题", "项目编号", "采购人名称", "预算（万元）"],
+            "list": rows if rows is not None else [["虚构软件竞争性谈判公告", "DEMO-002", "虚构单位", "8"]],
+            "totalCount": total,
+        },
+        ensure_ascii=False,
+    ).encode()
 
 
 class FakeTianjin:
     source_id = tj.SOURCE_ID
+
     def __init__(self, body=None):
         self.calls = []
         self.body = body if body is not None else response_body()
@@ -56,9 +64,12 @@ class TianjinTransportTests(unittest.TestCase):
         return 200, {"content-type": "application/json", "set-cookie": "do-not-keep"}, response_body()
 
     def transport(self, **kwargs):
-        return tj.TianjinTransport(allow_network=True, token_file=self.token_path,
-                                  exchange=kwargs.get("exchange", self.exchange),
-                                  resolver=kwargs.get("resolver", lambda *args: ["1.1.1.1"]))
+        return tj.TianjinTransport(
+            allow_network=True,
+            token_file=self.token_path,
+            exchange=kwargs.get("exchange", self.exchange),
+            resolver=kwargs.get("resolver", lambda *args: ["1.1.1.1"]),
+        )
 
     def test_official_page_parameter_order_and_no_credentials_in_result(self):
         result = self.transport().fetch_page(3, 10, checkpoint=lambda: None)
@@ -93,34 +104,42 @@ class TianjinTransportTests(unittest.TestCase):
     def test_redirect_denial_and_error_are_single_attempt_and_never_leak(self):
         for status in (302, 401, 403, 429, 500):
             calls = []
+
             def exchange(*args):
                 calls.append(args[0])
                 return status, {"location": "https://untrusted.example"}, b""
+
             with self.subTest(status=status), self.assertRaises(FetchError) as error:
                 self.transport(exchange=exchange).fetch_page(1, 10, checkpoint=lambda: None)
             self.assertEqual(len(calls), 1)
             self.assertEqual(error.exception.attempts, 1)
             self.assertNotIn(self.fake_token, str(error.exception))
+
         def error_exchange(*args):
             raise RuntimeError(args[0])
+
         with self.assertRaises(FetchError) as error:
             self.transport(exchange=error_exchange).fetch_page(1, 10, checkpoint=lambda: None)
         self.assertNotIn(self.fake_token, str(error.exception))
 
     def test_credential_echo_and_html_never_reach_archive(self):
-        for headers, body in (({"content-type": "application/json"}, self.fake_token.encode()),
-                              ({"content-type": "application/json"}, b'{"authToken":"hidden"}'),
-                              ({"content-type": "text/html"}, b"login")):
+        for headers, body in (
+            ({"content-type": "application/json"}, self.fake_token.encode()),
+            ({"content-type": "application/json"}, b'{"authToken":"hidden"}'),
+            ({"content-type": "text/html"}, b"login"),
+        ):
             with self.assertRaises(FetchError):
                 self.transport(exchange=lambda *args: (200, headers, body)).fetch_page(1, 10, checkpoint=lambda: None)
 
     def test_cancel_after_dns_stops_request(self):
         count = 0
+
         def checkpoint():
             nonlocal count
             count += 1
             if count == 2:
                 raise RuntimeError("cancelled")
+
         with self.assertRaisesRegex(RuntimeError, "cancelled"):
             self.transport().fetch_page(1, 10, checkpoint=checkpoint)
         self.assertEqual(self.urls, [])
@@ -154,7 +173,9 @@ class TianjinTransportTests(unittest.TestCase):
         store = Store(Path(self.temp.name) / "duplicate-archive")
         try:
             run = store.create_run({**tj.request_spec(), "simulation": True}, "duplicate-test")[0]
-            result = tj.execute(store, run, self.transport(exchange=lambda *args: (200, {"content-type": "application/json"}, body)))
+            result = tj.execute(
+                store, run, self.transport(exchange=lambda *args: (200, {"content-type": "application/json"}, body))
+            )
             self.assertEqual(result["run"]["error_code"], "api_invalid_json")
             self.assertEqual(list(store.blobs.iterdir()), [])
             self.assertEqual(export_bundle(store, run)["documents"], [])
@@ -165,8 +186,7 @@ class TianjinTransportTests(unittest.TestCase):
 class TianjinParsingTests(unittest.TestCase):
     def test_observed_http_200_credential_rejection_is_a_typed_business_failure(self):
         body = json.dumps({"code": 500, "msg": "令牌不合法【失效或被禁用】", "data": None}).encode()
-        self.assertEqual(tj.parse_page(body, 2),
-                         {"status": "blocked", "issues": ["api_credential_rejected"]})
+        self.assertEqual(tj.parse_page(body, 2), {"status": "blocked", "issues": ["api_credential_rejected"]})
         # 不因500就猜成令牌错误；官方未知消息不回显到目录日志。
         self.assertEqual(tj.parse_page(b'{"code":500,"msg":"unknown"}', 2)["issues"], ["api_business_error"])
 
@@ -179,11 +199,13 @@ class TianjinParsingTests(unittest.TestCase):
 
     def test_unknown_shape_short_row_duplicate_columns_and_placeholder_rejected(self):
         sample = json.loads(response_body())
-        for modified in ({"code": 200, "data": []},
-                         {**sample, "list": [["虚构", "short"]]},
-                         {**sample, "columnNames": ["a", "a", "b", "c"]},
-                         {**sample, "list": [["该字段不支持预览", "x", "y", "z"]]},
-                         {**sample, "totalCount": True}):
+        for modified in (
+            {"code": 200, "data": []},
+            {**sample, "list": [["虚构", "short"]]},
+            {**sample, "columnNames": ["a", "a", "b", "c"]},
+            {**sample, "list": [["该字段不支持预览", "x", "y", "z"]]},
+            {**sample, "totalCount": True},
+        ):
             with self.subTest(value=modified):
                 self.assertEqual(tj.parse_page(json.dumps(modified).encode(), 10)["status"], "parse_error")
 
@@ -255,11 +277,13 @@ class TianjinPipelineTests(unittest.TestCase):
 
     def test_interrupt_resumes_only_uncommitted_page(self):
         run = self.run_id(pages=2, page_size=1)
+
         class Interrupt(FakeTianjin):
             def fetch_page(self, page_number, page_size, **kwargs):
                 if page_number == 2:
                     raise KeyboardInterrupt
                 return super().fetch_page(page_number, page_size, **kwargs)
+
         with self.assertRaises(KeyboardInterrupt):
             tj.execute(self.store, run, Interrupt(response_body(total=2)))
         self.assertEqual(self.store.run(run)["status"], "queued")
@@ -271,11 +295,13 @@ class TianjinPipelineTests(unittest.TestCase):
     def test_cancel_in_flight_prevents_commit_and_next_page(self):
         run = self.run_id(pages=2, page_size=1)
         store = self.store
+
         class Cancel(FakeTianjin):
             def fetch_page(self, *args, **kwargs):
                 result = super().fetch_page(*args, **kwargs)
                 store.cancel(run)
                 return result
+
         fake = Cancel()
         result = tj.execute(store, run, fake)
         self.assertEqual(result["run"]["status"], "cancelled")

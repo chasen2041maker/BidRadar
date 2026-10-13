@@ -5,6 +5,7 @@
     python -m services.catalog query --keyword 系统开发
 不调模型，只读写目录自己的数据库。
 """
+
 import argparse
 import json
 from pathlib import Path
@@ -45,8 +46,14 @@ def main(argv=None):
                 raise ValueError("bundle_too_large")
             result = store.import_bundle(json.loads(raw.decode("utf-8-sig")))
         elif args.command == "query":
-            result = store.query(keyword=args.keyword, kind=args.kind, page_size=args.page_size,
-                                 simulation=args.simulation, as_of=args.as_of, cursor=args.cursor)
+            result = store.query(
+                keyword=args.keyword,
+                kind=args.kind,
+                page_size=args.page_size,
+                simulation=args.simulation,
+                as_of=args.as_of,
+                cursor=args.cursor,
+            )
         else:
             result = store.detail(args.notice_id, as_of=args.as_of)
         print(json.dumps(result, ensure_ascii=False))

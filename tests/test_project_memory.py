@@ -1,4 +1,5 @@
 """Isolated positive and negative tests; never touch project or production data."""
+
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,7 +17,9 @@ class ProjectMemoryTests(unittest.TestCase):
             text = "# Test\n" + "".join(h + "\n" for h in HEADINGS.get(name, ()))
             path.write_text(text, encoding="utf-8")
         self.write("CLAUDE.md", "@AGENTS.md\n")
-        self.write(".agents/skills/bidradar-handoff/SKILL.md", "---\nname: bidradar-handoff\ndescription: Test handoff\n---\n")
+        self.write(
+            ".agents/skills/bidradar-handoff/SKILL.md", "---\nname: bidradar-handoff\ndescription: Test handoff\n---\n"
+        )
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -145,8 +148,9 @@ class ProjectMemoryTests(unittest.TestCase):
         path = self.root / ".agents/skills/bidradar-handoff/SKILL.md"
         for newline in (b"\n", b"\r\n"):
             with self.subTest(newline=newline):
-                path.write_bytes(newline.join((b"---", b"name: bidradar-handoff",
-                                              b"description: Test handoff", b"---", b"")))
+                path.write_bytes(
+                    newline.join((b"---", b"name: bidradar-handoff", b"description: Test handoff", b"---", b""))
+                )
                 self.assertEqual(check(self.root), [])
 
     def test_skill_metadata_rejects_invalid_description(self):
@@ -154,8 +158,7 @@ class ProjectMemoryTests(unittest.TestCase):
         path = self.root / ".agents/skills/bidradar-handoff/SKILL.md"
         for description in (b"", b"Test\rinjected", b"Test\r", b"Test\r\ninjected"):
             with self.subTest(description=description):
-                path.write_bytes(b"---\r\nname: bidradar-handoff\r\ndescription: "
-                                 + description + b"\r\n---\r\n")
+                path.write_bytes(b"---\r\nname: bidradar-handoff\r\ndescription: " + description + b"\r\n---\r\n")
                 self.assertTrue(any("front matter" in e for e in check(self.root)))
 
     def test_crlf_safety_checks_remain_active(self):

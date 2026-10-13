@@ -4,6 +4,7 @@
 DemoTransport生成并经真实ingestion→processing→catalog入库；服务间的目录、
 权限、委托及研究调用全部走HTTP。此测试不证明真实模型效果或生产可靠性。
 """
+
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import replace
@@ -27,6 +28,7 @@ import test_research_runtime as runtime_fixture
 
 class BudgetReplayTransport(runtime_fixture.FixtureTransport):
     """固定虚构公告只改预算；A→B→A保留三个独立观察，不访问公告URL。"""
+
     def __init__(self, version, amount):
         super().__init__(1, version)
         self.amount = amount
@@ -34,8 +36,9 @@ class BudgetReplayTransport(runtime_fixture.FixtureTransport):
     def fetch(self, url, **kwargs):
         result = super().fetch(url, **kwargs)
         if kwargs["kind"] == "notice":
-            result = replace(result, body=result.body.replace(b"12.34", self.amount.encode())
-                             .replace(b"56.78", self.amount.encode()))
+            result = replace(
+                result, body=result.body.replace(b"12.34", self.amount.encode()).replace(b"56.78", self.amount.encode())
+            )
         return result
 
 
@@ -55,8 +58,10 @@ class TrackingHTTPReplayTests(unittest.TestCase):
     def add_budget(self, version, amount):
         r = self.runtime
         with closing(Store(r.root / "ingestion")) as owner:
-            run, _ = owner.create_run({**demo_request(), "pages": 1, "attachments": False, "simulation": True},
-                                      "tracking-budget-" + str(version))
+            run, _ = owner.create_run(
+                {**demo_request(), "pages": 1, "attachments": False, "simulation": True},
+                "tracking-budget-" + str(version),
+            )
             execute(owner, run, BudgetReplayTransport(version, amount))
             bundle = normalize_bundle(export_bundle(owner, run))
         with closing(Catalog(r.root / "catalog")) as owner:
@@ -82,15 +87,19 @@ class TrackingHTTPReplayTests(unittest.TestCase):
         r = self.runtime
         nid = r.item["notice_id"]
         self.assertIs(r.item["simulation"], True)
-        initial = self.browser("research/analyses", {"selection_id": r.selection["id"], "notice_id": nid,
-                                                     "key": "frozen-original", "mode": "baseline"})
+        initial = self.browser(
+            "research/analyses",
+            {"selection_id": r.selection["id"], "notice_id": nid, "key": "frozen-original", "mode": "baseline"},
+        )
         old = r.tick()
         self.assertEqual((old["id"], old["state"]), (initial["id"], "partial"))
         frozen_report, frozen_scope = deepcopy(old["report"]), deepcopy(old["scope"])
 
         # 人工决定不隐式启用watch；全局事件游标可前进，但公司不会收到提醒或复核。
-        self.browser("tracking/decisions/" + nid, {"state": "follow_up", "reason": "虚构回放验收",
-                                                  "expected_version": 0, "key": "decision"})
+        self.browser(
+            "tracking/decisions/" + nid,
+            {"state": "follow_up", "reason": "虚构回放验收", "expected_version": 0, "key": "decision"},
+        )
         self.add_budget(2, "15.00")
         self.tick()
         self.assertEqual(self.browser("tracking/notifications")["items"], [])
@@ -99,8 +108,17 @@ class TrackingHTTPReplayTests(unittest.TestCase):
         baseline = self.add_budget(3, "12.34")
         self.tick()
         expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
-        watch = self.browser("tracking/watches/" + nid, {"active": True, "auto_reassess": True,
-                             "expected_version": 0, "key": "explicit-watch", "expires_at": expires, "scope": ["money"]})
+        watch = self.browser(
+            "tracking/watches/" + nid,
+            {
+                "active": True,
+                "auto_reassess": True,
+                "expected_version": 0,
+                "key": "explicit-watch",
+                "expires_at": expires,
+                "scope": ["money"],
+            },
+        )
 
         # 在一次轮询之前提交A→B→A，必须记录两次差异；不能只比较latest而丢掉B。
         changed = self.add_budget(4, "15.00")
@@ -124,7 +142,8 @@ class TrackingHTTPReplayTests(unittest.TestCase):
         notifications = self.browser("tracking/notifications")["items"]
         self.assertEqual([x["kind"] for x in notifications], ["change_detected", "change_detected"])
         self.assertEqual({x["change_id"] for x in notifications}, {x["id"] for x in changes})
-        self.replay_catalog_events(); self.tick()
+        self.replay_catalog_events()
+        self.tick()
         self.assertEqual(self.browser("tracking/notifications")["items"], notifications)
         # 慢机器可能已到正常对账时间，version允许前进；命令身份/状态不得重复。
         identity = lambda items: [(x["id"], x["state"], x["command_key"], x["run_id"]) for x in items]
@@ -148,20 +167,33 @@ class TrackingHTTPReplayTests(unittest.TestCase):
         # 只推进tracking调度时间越过5秒对账间隔；不sleep或直接改业务库状态。
         with patch("services.tracking.service.now", return_value=time.time() + 6):
             self.assertEqual(self.tick()["reassessment"]["state"], "succeeded")
-        self.replay_catalog_events(); self.tick()
+        self.replay_catalog_events()
+        self.tick()
         complete = self.browser("tracking/notifications")["items"]
-        self.assertEqual([x["kind"] for x in complete], ["change_detected", "change_detected", "reassessment_completed"])
+        self.assertEqual(
+            [x["kind"] for x in complete], ["change_detected", "change_detected", "reassessment_completed"]
+        )
         self.assertEqual(len({x["id"] for x in complete}), 3)
         preserved = self.browser("research/runs/" + initial["id"])
         self.assertEqual((preserved["report"], preserved["scope"]), (frozen_report, frozen_scope))
         self.assertEqual(preserved["freshness"]["catalog"], "changed")
 
         # 关闭watch不改人工决定，也不因后来再变成B自动产生提醒或新模型任务。
-        self.browser("tracking/watches/" + nid, {"active": False, "auto_reassess": False,
-                     "expected_version": watch["version"], "key": "explicit-stop", "expires_at": None, "scope": ["money"]})
+        self.browser(
+            "tracking/watches/" + nid,
+            {
+                "active": False,
+                "auto_reassess": False,
+                "expected_version": watch["version"],
+                "key": "explicit-stop",
+                "expires_at": None,
+                "scope": ["money"],
+            },
+        )
         before_jobs = self.browser("tracking/reassessments")["items"]
         self.add_budget(6, "15.00")
-        self.tick(); self.replay_catalog_events()
+        self.tick()
+        self.replay_catalog_events()
         self.assertEqual(self.browser("tracking/notifications")["items"], complete)
         self.assertEqual(self.browser("tracking/reassessments")["items"], before_jobs)
         self.assertIsNone(r.tick(self.provider))

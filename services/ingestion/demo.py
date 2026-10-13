@@ -2,6 +2,7 @@
 
 用来在不联网的情况下跑通整条采集流程。演示成功只说明本地流程是通的，不代表真实来源能用。
 """
+
 from services.ingestion.archive import utc_now
 from services.ingestion.pipeline import request_spec
 from services.ingestion.transport import FetchError, FetchResult
@@ -22,6 +23,7 @@ class DemoPolicy:
 
 class DemoTransport:
     """假的抓取器，返回格式和真实的 Transport 一样，但完全不碰网络。"""
+
     policy = DemoPolicy()
 
     def __init__(self):
@@ -32,15 +34,21 @@ class DemoTransport:
             checkpoint()
         self.calls.append((url, kind))
         if kind == "listing":
-            body = ('<ul class="vT-srch-result-list-bid"><li><a href="' + NOTICE_URL
-                    + '">虚构软件采购演示</a><span>2026-09-30 | 采购人：虚构单位</span></li></ul>').encode()
+            body = (
+                '<ul class="vT-srch-result-list-bid"><li><a href="'
+                + NOTICE_URL
+                + '">虚构软件采购演示</a><span>2026-09-30 | 采购人：虚构单位</span></li></ul>'
+            ).encode()
             media = "text/html; charset=utf-8"
         elif kind == "notice" and url == NOTICE_URL:
-            body = ('<h2 class="tc">虚构软件采购演示招标公告</h2><div class="vF_detail_content">'
-                    '<p>全部文字仅用于演示，非真实采购机会。</p>'
-                    '<p>项目编号：DEMO-001</p><p>采购单位：虚构单位</p><p>预算金额：12.34万元</p>'
-                    '<p>投标截止时间：2026-10-10 09:30（北京时间）</p><a href="' + ATTACHMENT_URL
-                    + '">虚构测试附件</a></div>').encode()
+            body = (
+                '<h2 class="tc">虚构软件采购演示招标公告</h2><div class="vF_detail_content">'
+                "<p>全部文字仅用于演示，非真实采购机会。</p>"
+                "<p>项目编号：DEMO-001</p><p>采购单位：虚构单位</p><p>预算金额：12.34万元</p>"
+                '<p>投标截止时间：2026-10-10 09:30（北京时间）</p><a href="'
+                + ATTACHMENT_URL
+                + '">虚构测试附件</a></div>'
+            ).encode()
             media = "text/html; charset=utf-8"
         elif kind == "attachment" and url == ATTACHMENT_URL:
             body = b"%PDF-1.4\n% synthetic fixture; not a procurement document\n%%EOF"

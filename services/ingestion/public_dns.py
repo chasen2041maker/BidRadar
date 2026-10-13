@@ -6,6 +6,7 @@
 只解析固定的几个采购网站域名；允许有限长度的 CNAME 链，最终只接受公网 IPv4 地址。
 连接时仍按原域名校验 HTTPS 证书。
 """
+
 from __future__ import annotations
 
 import ipaddress
@@ -44,31 +45,49 @@ def resolve_public_dns(host, port, timeout=10, *, exchange=None):
     """
     if host not in HOSTS or port not in (80, 443):
         raise FetchError("dns_target_not_allowed")
-    url = "https://dns.google/resolve?" + urlencode(
-        {"name": host, "type": "A", "edns_client_subnet": "0.0.0.0/0"})
+    url = "https://dns.google/resolve?" + urlencode({"name": host, "type": "A", "edns_client_subnet": "0.0.0.0/0"})
     try:
         status, headers, body = (exchange or _exchange)(url, "8.8.8.8", min(timeout, 10), 65536)
     except Exception:
         raise FetchError("doh_transport_error") from None
-    if (status != 200 or len(body) > 65536 or
-            headers.get("content-type", "").split(";", 1)[0].strip().lower() not in
-            ("application/json", "application/x-javascript")):
+    if (
+        status != 200
+        or len(body) > 65536
+        or headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        not in ("application/json", "application/x-javascript")
+    ):
         raise FetchError("doh_response_rejected")
     try:
         payload = json.loads(body.decode("utf-8"), object_pairs_hook=_unique)
-        if (not isinstance(payload, dict) or type(payload.get("Status")) is not int
-                or payload["Status"] != 0 or payload.get("TC") is not False or payload.get("CD") is not False):
+        if (
+            not isinstance(payload, dict)
+            or type(payload.get("Status")) is not int
+            or payload["Status"] != 0
+            or payload.get("TC") is not False
+            or payload.get("CD") is not False
+        ):
             raise ValueError()
         question, answers = payload.get("Question"), payload.get("Answer")
-        if (not isinstance(question, list) or len(question) != 1 or
-                _name(question[0]["name"]) != host or type(question[0]["type"]) is not int or
-                question[0]["type"] != 1 or not isinstance(answers, list) or not 1 <= len(answers) <= 24):
+        if (
+            not isinstance(question, list)
+            or len(question) != 1
+            or _name(question[0]["name"]) != host
+            or type(question[0]["type"]) is not int
+            or question[0]["type"] != 1
+            or not isinstance(answers, list)
+            or not 1 <= len(answers) <= 24
+        ):
             raise ValueError()
         records = {}
         for record in answers:
-            if (not isinstance(record, dict) or type(record.get("type")) is not int or record["type"] not in (1, 5)
-                    or type(record.get("TTL")) is not int or record["TTL"] <= 0
-                    or not isinstance(record.get("data"), str)):
+            if (
+                not isinstance(record, dict)
+                or type(record.get("type")) is not int
+                or record["type"] not in (1, 5)
+                or type(record.get("TTL")) is not int
+                or record["TTL"] <= 0
+                or not isinstance(record.get("data"), str)
+            ):
                 raise ValueError()
             owner = _name(record["name"])
             if record["type"] == 1:

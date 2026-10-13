@@ -3,6 +3,7 @@
 两层检查分开做：先看调用方是哪个服务（大部分接口只给 workspace，
 委托检查接口只给 research），再由 TrackingService 检查这个人在这家公司的当前权限。
 """
+
 from services.common.local_http import LocalHTTPError, create_server as local_server
 
 from .service import TrackingService
@@ -22,12 +23,18 @@ def create_server(root, access, catalog, research, *, tokens, port=0, host="127.
             "/internal/v1/decisions/get": ("decision", {"notice_id"}),
             "/internal/v1/decisions/set": ("set_decision", {"notice_id", "state", "reason", "expected_version", "key"}),
             "/internal/v1/watches/get": ("watch", {"notice_id"}),
-            "/internal/v1/watches/set": ("set_watch", {"notice_id", "active", "auto_reassess", "expected_version", "key", "expires_at", "scope"}),
+            "/internal/v1/watches/set": (
+                "set_watch",
+                {"notice_id", "active", "auto_reassess", "expected_version", "key", "expires_at", "scope"},
+            ),
             "/internal/v1/changes": ("changes", {"after", "limit"}),
             "/internal/v1/notifications": ("notifications", {"after", "limit"}),
             "/internal/v1/notifications/read": ("mark_read", {"notification_id"}),
             "/internal/v1/reassessments/list": ("reassessments", set()),
-            "/internal/v1/reassessments/cancel": ("cancel_reassessment", {"reassessment_id", "expected_version", "key"}),
+            "/internal/v1/reassessments/cancel": (
+                "cancel_reassessment",
+                {"reassessment_id", "expected_version", "key"},
+            ),
             "/internal/v1/reassessments/retry": ("retry_reassessment", {"reassessment_id", "expected_version", "key"}),
             "/internal/v1/delegations/check": ("check_delegation", {"delegation"}),
         }

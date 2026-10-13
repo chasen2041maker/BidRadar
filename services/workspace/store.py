@@ -17,6 +17,7 @@ v2 计划把它拆开，见 docs/v2-blueprint.md 第 4 节。
 阅读顺序：login / bind_session → _authorize → propose_profile / confirm_profile → create_selection。
 现在用 SQLite 做本地开发，正式的身份系统、PostgreSQL 和行级安全（RLS）都还没做。
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -32,17 +33,25 @@ import time
 from urllib.parse import urlsplit
 
 
-PASSWORD_ITERATIONS = 600_000          # PBKDF2 迭代次数
-SESSION_SECONDS = 8 * 60 * 60          # 登录会话有效期：8 小时
-LOGIN_WINDOW_SECONDS = 15 * 60         # 登录失败计数的时间窗口：15 分钟
-LOGIN_FAILURE_LIMIT = 5                # 窗口内最多失败 5 次，超过就暂时锁定
-LIST_LIMIT = 200                       # 列表接口最多返回的条数
+PASSWORD_ITERATIONS = 600_000  # PBKDF2 迭代次数
+SESSION_SECONDS = 8 * 60 * 60  # 登录会话有效期：8 小时
+LOGIN_WINDOW_SECONDS = 15 * 60  # 登录失败计数的时间窗口：15 分钟
+LOGIN_FAILURE_LIMIT = 5  # 窗口内最多失败 5 次，超过就暂时锁定
+LIST_LIMIT = 200  # 列表接口最多返回的条数
 # 企业档案的九个字段及各自的长度上限。
-PROFILE_LIMITS = {"company_name": 200, "city": 200, "project_types": 4000, "capabilities": 4000,
-                  "delivery_constraints": 4000, "cases": 4000, "qualifications": 4000,
-                  "staffing": 4000, "commercial_constraints": 4000}
+PROFILE_LIMITS = {
+    "company_name": 200,
+    "city": 200,
+    "project_types": 4000,
+    "capabilities": 4000,
+    "delivery_constraints": 4000,
+    "cases": 4000,
+    "qualifications": 4000,
+    "staffing": 4000,
+    "commercial_constraints": 4000,
+}
 ROLES = frozenset(("admin", "member", "viewer"))
-WRITERS = frozenset(("admin", "member"))   # 能修改数据的角色（只读成员除外）
+WRITERS = frozenset(("admin", "member"))  # 能修改数据的角色（只读成员除外）
 
 
 class WorkspaceError(Exception):
@@ -80,8 +89,7 @@ def _utc(epoch):
 
 def _text(value, limit, *, empty=False):
     """检查是合法的字符串：不超长、不含空字符；empty=False 时不能全是空白。"""
-    if (not isinstance(value, str) or len(value) > limit or (not empty and not value.strip())
-            or "\x00" in value):
+    if not isinstance(value, str) or len(value) > limit or (not empty and not value.strip()) or "\x00" in value:
         raise WorkspaceError("invalid_input")
     try:
         value.encode("utf-8")
@@ -144,8 +152,14 @@ def _items(value):
         url = _text(item["source_url"], 4096)
         try:
             parts = urlsplit(url)
-            if (parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password
-                    or any(ord(char) <= 32 for char in url) or "\\" in url):
+            if (
+                parts.scheme not in ("http", "https")
+                or not parts.hostname
+                or parts.username
+                or parts.password
+                or any(ord(char) <= 32 for char in url)
+                or "\\" in url
+            ):
                 raise ValueError()
         except ValueError:
             raise WorkspaceError("invalid_selection_url") from None
@@ -284,19 +298,32 @@ class WorkspaceStore:
                 # 从第 1 版升级时，把已有的成员变更和档案确认补记成事件，供 tracking 服务消费。
                 # 事件 ID 由业务内容决定，重复执行也不会插出重复的事件。
                 if version < 2:
-                    self.db.execute("INSERT OR IGNORE INTO owner_events(event_id,event_type,workspace_id,actor_id,target_user_id,"
-                                "membership_version,occurred_at) SELECT 'access:'||workspace_id||':'||user_id||':'||version,"
-                                "'AccessChanged',workspace_id,actor_id,user_id,version,"
-                                "strftime('%Y-%m-%dT%H:%M:%SZ',recorded_at,'unixepoch') FROM membership_events ORDER BY recorded_at,workspace_id,user_id,version")
-                    self.db.execute("INSERT OR IGNORE INTO owner_events(event_id,event_type,workspace_id,actor_id,profile_revision,"
-                                "occurred_at) SELECT 'profile:'||workspace_id||':'||revision,'ProfileConfirmed',workspace_id,"
-                                "confirmed_by,revision,strftime('%Y-%m-%dT%H:%M:%SZ',confirmed_at,'unixepoch') "
-                                "FROM profile_revisions ORDER BY confirmed_at,workspace_id,revision")
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO owner_events(event_id,event_type,workspace_id,actor_id,target_user_id,"
+                        "membership_version,occurred_at) SELECT 'access:'||workspace_id||':'||user_id||':'||version,"
+                        "'AccessChanged',workspace_id,actor_id,user_id,version,"
+                        "strftime('%Y-%m-%dT%H:%M:%SZ',recorded_at,'unixepoch') FROM membership_events ORDER BY recorded_at,workspace_id,user_id,version"
+                    )
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO owner_events(event_id,event_type,workspace_id,actor_id,profile_revision,"
+                        "occurred_at) SELECT 'profile:'||workspace_id||':'||revision,'ProfileConfirmed',workspace_id,"
+                        "confirmed_by,revision,strftime('%Y-%m-%dT%H:%M:%SZ',confirmed_at,'unixepoch') "
+                        "FROM profile_revisions ORDER BY confirmed_at,workspace_id,revision"
+                    )
                 # 用触发器防止历史记录被程序误改。这只是防误操作，挡不住能直接改数据库文件的人。
-                for table in ("membership_events", "profile_proposals", "profile_revisions", "selection_history", "commands", "owner_events"):
+                for table in (
+                    "membership_events",
+                    "profile_proposals",
+                    "profile_revisions",
+                    "selection_history",
+                    "commands",
+                    "owner_events",
+                ):
                     for action in ("UPDATE", "DELETE"):
-                        self.db.execute(f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{action.lower()} "
-                                        f"BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT,'immutable_record'); END")
+                        self.db.execute(
+                            f"CREATE TRIGGER IF NOT EXISTS immutable_{table}_{action.lower()} "
+                            f"BEFORE {action} ON {table} BEGIN SELECT RAISE(ABORT,'immutable_record'); END"
+                        )
                 self.db.execute("PRAGMA user_version=2")
         except (OSError, sqlite3.Error):
             self.close()
@@ -346,8 +373,10 @@ class WorkspaceStore:
 
     def _session_user(self, token_hash):
         """按令牌哈希找到未过期的会话对应的用户。"""
-        row = self.db.execute("SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id "
-                              "WHERE s.token_hash=? AND s.expires_at>?", (token_hash, _now())).fetchone()
+        row = self.db.execute(
+            "SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?",
+            (token_hash, _now()),
+        ).fetchone()
         if row is None:
             raise WorkspaceError("authentication_required", 401)
         return self._user(row)
@@ -366,8 +395,9 @@ class WorkspaceStore:
         self._check_user(user_id)
         if not isinstance(workspace_id, str):
             raise WorkspaceError("not_found", 404)
-        row = self.db.execute("SELECT role FROM memberships WHERE workspace_id=? AND user_id=? AND active=1",
-                              (workspace_id, user_id)).fetchone()
+        row = self.db.execute(
+            "SELECT role FROM memberships WHERE workspace_id=? AND user_id=? AND active=1", (workspace_id, user_id)
+        ).fetchone()
         # 公司不存在、不是本公司成员、已被移出，一律返回"不存在"，
         # 免得别人通过不同的错误信息猜出某家公司是否存在。
         if row is None:
@@ -403,8 +433,10 @@ class WorkspaceStore:
             if self.db.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
                 raise WorkspaceError("user_exists", 409)
             user_id = _id()
-            self.db.execute("INSERT INTO users VALUES(?,?,?,?,?,?,?)",
-                            (user_id, username, display_name, salt, digest, PASSWORD_ITERATIONS, _now()))
+            self.db.execute(
+                "INSERT INTO users VALUES(?,?,?,?,?,?,?)",
+                (user_id, username, display_name, salt, digest, PASSWORD_ITERATIONS, _now()),
+            )
             return user_id
 
     def bootstrap_workspace(self, name, admin_user_id):
@@ -415,7 +447,9 @@ class WorkspaceStore:
             self._check_user(admin_user_id)
             workspace_id, now = _id(), _now()
             self.db.execute("INSERT INTO workspaces(id,name,created_at) VALUES(?,?,?)", (workspace_id, name, now))
-            self.db.execute("INSERT INTO memberships VALUES(?,?,?,?,?,?)", (workspace_id, admin_user_id, "admin", 1, now, 1))
+            self.db.execute(
+                "INSERT INTO memberships VALUES(?,?,?,?,?,?)", (workspace_id, admin_user_id, "admin", 1, now, 1)
+            )
             self._membership_event(workspace_id, admin_user_id, 1, None, None, None, "admin", True, now)
             return workspace_id
 
@@ -428,7 +462,9 @@ class WorkspaceStore:
             self._check_user(user_id)
             if not self.db.execute("SELECT 1 FROM workspaces WHERE id=?", (workspace_id,)).fetchone():
                 raise WorkspaceError("not_found", 404)
-            if self.db.execute("SELECT 1 FROM memberships WHERE workspace_id=? AND user_id=?", (workspace_id, user_id)).fetchone():
+            if self.db.execute(
+                "SELECT 1 FROM memberships WHERE workspace_id=? AND user_id=?", (workspace_id, user_id)
+            ).fetchone():
                 raise WorkspaceError("member_exists", 409)
             now = _now()
             self.db.execute("INSERT INTO memberships VALUES(?,?,?,?,?,?)", (workspace_id, user_id, role, 1, now, 1))
@@ -453,10 +489,16 @@ class WorkspaceStore:
         with self._transaction(write=True):
             now, key = _now(), _hash(name)
             limit = self.db.execute("SELECT * FROM login_limits WHERE username_key=?", (key,)).fetchone()
-            if limit and now - limit["window_started"] < LOGIN_WINDOW_SECONDS and limit["failures"] >= LOGIN_FAILURE_LIMIT:
+            if (
+                limit
+                and now - limit["window_started"] < LOGIN_WINDOW_SECONDS
+                and limit["failures"] >= LOGIN_FAILURE_LIMIT
+            ):
                 failure = WorkspaceError("login_limited", 429)
             else:
-                row = self.db.execute("SELECT * FROM users WHERE username=?", (name,)).fetchone() if valid_name else None
+                row = (
+                    self.db.execute("SELECT * FROM users WHERE username=?", (name,)).fetchone() if valid_name else None
+                )
                 # 用户不存在也照样算一次密码哈希，让响应时间和"密码错误"一样。
                 salt = bytes(row["password_salt"]) if row else b"\x00" * 16
                 iterations = row["password_iterations"] if row else PASSWORD_ITERATIONS
@@ -464,16 +506,26 @@ class WorkspaceStore:
                 expected = bytes(row["password_hash"]) if row else b"\x00" * len(computed)
                 accepted = hmac.compare_digest(computed, expected) and row is not None and valid_password
                 if not accepted:
-                    started = limit["window_started"] if limit and now - limit["window_started"] < LOGIN_WINDOW_SECONDS else now
+                    started = (
+                        limit["window_started"]
+                        if limit and now - limit["window_started"] < LOGIN_WINDOW_SECONDS
+                        else now
+                    )
                     failures = limit["failures"] + 1 if limit and started == limit["window_started"] else 1
-                    self.db.execute("INSERT INTO login_limits VALUES(?,?,?) ON CONFLICT(username_key) DO UPDATE "
-                                    "SET window_started=excluded.window_started,failures=excluded.failures", (key, started, failures))
+                    self.db.execute(
+                        "INSERT INTO login_limits VALUES(?,?,?) ON CONFLICT(username_key) DO UPDATE "
+                        "SET window_started=excluded.window_started,failures=excluded.failures",
+                        (key, started, failures),
+                    )
                     failure = WorkspaceError("invalid_credentials", 401)
                 else:
                     self.db.execute("DELETE FROM login_limits WHERE username_key=?", (key,))
                     self.db.execute("DELETE FROM sessions WHERE expires_at<=?", (now,))
                     token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-                    self.db.execute("INSERT INTO sessions VALUES(?,?,?,?,?)", (_hash(token), _hash(csrf), row["id"], now, now + SESSION_SECONDS))
+                    self.db.execute(
+                        "INSERT INTO sessions VALUES(?,?,?,?,?)",
+                        (_hash(token), _hash(csrf), row["id"], now, now + SESSION_SECONDS),
+                    )
                     result = {"token": token, "csrf_token": csrf, "user": self._user(row)}
         # 在事务外抛出失败：如果在事务里抛，刚记下的失败次数会被回滚。
         if failure is not None:
@@ -501,7 +553,11 @@ class WorkspaceStore:
             if self._session_bound and token_hash != self._session_hash:
                 raise WorkspaceError("authentication_required", 401)
             row = self.db.execute("SELECT csrf_hash FROM sessions WHERE token_hash=?", (token_hash,)).fetchone()
-            if not isinstance(csrf, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", csrf) or not hmac.compare_digest(row["csrf_hash"], _hash(csrf)):
+            if (
+                not isinstance(csrf, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{43}", csrf)
+                or not hmac.compare_digest(row["csrf_hash"], _hash(csrf))
+            ):
                 raise WorkspaceError("csrf_failed", 403)
 
     def logout(self, token):
@@ -516,40 +572,87 @@ class WorkspaceStore:
         """此人有效加入的所有公司，以及在每家公司的角色。"""
         with self._transaction():
             self._check_user(user_id)
-            rows = self._bounded(self.db.execute("SELECT w.id AS workspace_id,w.name,m.role FROM workspaces w "
-                "JOIN memberships m ON m.workspace_id=w.id WHERE m.user_id=? AND m.active=1 ORDER BY w.created_at,w.id", (user_id,)))
+            rows = self._bounded(
+                self.db.execute(
+                    "SELECT w.id AS workspace_id,w.name,m.role FROM workspaces w "
+                    "JOIN memberships m ON m.workspace_id=w.id WHERE m.user_id=? AND m.active=1 ORDER BY w.created_at,w.id",
+                    (user_id,),
+                )
+            )
             return [dict(row) for row in rows]
 
     def members(self, user_id, workspace_id):
         """本公司的全部成员（含已移出的）。"""
         with self._transaction():
             self._authorize(user_id, workspace_id)
-            rows = self._bounded(self.db.execute("SELECT m.user_id,u.username,u.display_name,m.role,m.active,m.version FROM memberships m "
-                "JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? ORDER BY u.username", (workspace_id,)))
+            rows = self._bounded(
+                self.db.execute(
+                    "SELECT m.user_id,u.username,u.display_name,m.role,m.active,m.version FROM memberships m "
+                    "JOIN users u ON u.id=m.user_id WHERE m.workspace_id=? ORDER BY u.username",
+                    (workspace_id,),
+                )
+            )
             return [{**dict(row), "active": bool(row["active"])} for row in rows]
 
-    def _membership_event(self, workspace_id, target_user_id, version, actor_id, old_role, old_active, role, active, now):
+    def _membership_event(
+        self, workspace_id, target_user_id, version, actor_id, old_role, old_active, role, active, now
+    ):
         """记录一次成员变更：写审计记录，并发一个 AccessChanged 事件给 tracking。
 
         和变更本身在同一个事务里提交。命令行初始化记为 bootstrap，不冒充成管理员操作。
         """
-        self.db.execute("INSERT INTO membership_events VALUES(?,?,?,?,?,?,?,?,?,?)",
-                        (workspace_id, target_user_id, version, actor_id, "bootstrap" if actor_id is None else "user",
-                         old_role, old_active, role, int(active), now))
-        self.db.execute("INSERT INTO owner_events(event_id,event_type,workspace_id,actor_id,target_user_id,membership_version,occurred_at) "
-                        "VALUES(?,?,?,?,?,?,?)", (f"access:{workspace_id}:{target_user_id}:{version}", "AccessChanged", workspace_id,
-                                                 actor_id, target_user_id, version, _utc(now)))
+        self.db.execute(
+            "INSERT INTO membership_events VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                workspace_id,
+                target_user_id,
+                version,
+                actor_id,
+                "bootstrap" if actor_id is None else "user",
+                old_role,
+                old_active,
+                role,
+                int(active),
+                now,
+            ),
+        )
+        self.db.execute(
+            "INSERT INTO owner_events(event_id,event_type,workspace_id,actor_id,target_user_id,membership_version,occurred_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                f"access:{workspace_id}:{target_user_id}:{version}",
+                "AccessChanged",
+                workspace_id,
+                actor_id,
+                target_user_id,
+                version,
+                _utc(now),
+            ),
+        )
 
     def member_history(self, user_id, workspace_id, target_user_id):
         """管理员查看某个成员的变更历史。已被移出的成员，历史仍然保留在公司里。"""
         with self._transaction():
             self._authorize(user_id, workspace_id, {"admin"})
-            if not self.db.execute("SELECT 1 FROM memberships WHERE workspace_id=? AND user_id=?", (workspace_id, target_user_id)).fetchone():
+            if not self.db.execute(
+                "SELECT 1 FROM memberships WHERE workspace_id=? AND user_id=?", (workspace_id, target_user_id)
+            ).fetchone():
                 raise WorkspaceError("not_found", 404)
-            rows = self._bounded(self.db.execute("SELECT * FROM membership_events WHERE workspace_id=? AND user_id=? ORDER BY version",
-                                                (workspace_id, target_user_id)))
-            return [{**dict(row), "old_active": None if row["old_active"] is None else bool(row["old_active"]),
-                     "new_active": bool(row["new_active"]), "recorded_at": _utc(row["recorded_at"])} for row in rows]
+            rows = self._bounded(
+                self.db.execute(
+                    "SELECT * FROM membership_events WHERE workspace_id=? AND user_id=? ORDER BY version",
+                    (workspace_id, target_user_id),
+                )
+            )
+            return [
+                {
+                    **dict(row),
+                    "old_active": None if row["old_active"] is None else bool(row["old_active"]),
+                    "new_active": bool(row["new_active"]),
+                    "recorded_at": _utc(row["recorded_at"]),
+                }
+                for row in rows
+            ]
 
     def change_member(self, user_id, workspace_id, target_user_id, role, active, expected_version):
         """管理员修改成员的角色或启用状态。公司至少要保留一个有效管理员。"""
@@ -558,8 +661,11 @@ class WorkspaceStore:
             if not isinstance(role, str) or role not in ROLES or type(active) is not bool:
                 raise WorkspaceError("invalid_membership")
             expected_version = _integer(expected_version, 1)
-            target = self.db.execute("SELECT m.*,u.username,u.display_name FROM memberships m JOIN users u ON u.id=m.user_id "
-                                    "WHERE m.workspace_id=? AND m.user_id=?", (workspace_id, target_user_id)).fetchone()
+            target = self.db.execute(
+                "SELECT m.*,u.username,u.display_name FROM memberships m JOIN users u ON u.id=m.user_id "
+                "WHERE m.workspace_id=? AND m.user_id=?",
+                (workspace_id, target_user_id),
+            ).fetchone()
             if target is None:
                 raise WorkspaceError("not_found", 404)
             # 先核对版本号。管理员 A 刚把某人移出，管理员 B 用没刷新的旧页面改角色，
@@ -567,19 +673,34 @@ class WorkspaceStore:
             if target["version"] != expected_version:
                 raise WorkspaceError("membership_version_conflict", 409)
             if target["active"] and target["role"] == "admin" and (not active or role != "admin"):
-                count = self.db.execute("SELECT count(*) FROM memberships WHERE workspace_id=? AND active=1 AND role='admin'", (workspace_id,)).fetchone()[0]
+                count = self.db.execute(
+                    "SELECT count(*) FROM memberships WHERE workspace_id=? AND active=1 AND role='admin'",
+                    (workspace_id,),
+                ).fetchone()[0]
                 if count <= 1:
                     raise WorkspaceError("last_admin", 409)
             now, version = _now(), expected_version + 1
-            self.db.execute("UPDATE memberships SET role=?,active=?,updated_at=?,version=? WHERE workspace_id=? AND user_id=?",
-                            (role, int(active), now, version, workspace_id, target_user_id))
-            self._membership_event(workspace_id, target_user_id, version, user_id, target["role"], target["active"], role, active, now)
-            return {"user_id": target_user_id, "username": target["username"], "display_name": target["display_name"],
-                    "role": role, "active": active, "version": version}
+            self.db.execute(
+                "UPDATE memberships SET role=?,active=?,updated_at=?,version=? WHERE workspace_id=? AND user_id=?",
+                (role, int(active), now, version, workspace_id, target_user_id),
+            )
+            self._membership_event(
+                workspace_id, target_user_id, version, user_id, target["role"], target["active"], role, active, now
+            )
+            return {
+                "user_id": target_user_id,
+                "username": target["username"],
+                "display_name": target["display_name"],
+                "role": role,
+                "active": active,
+                "version": version,
+            }
 
     def _current_revision(self, workspace_id):
         """公司当前正式档案的版本号；0 表示还没有正式档案。"""
-        return self.db.execute("SELECT current_profile_revision FROM workspaces WHERE id=?", (workspace_id,)).fetchone()[0]
+        return self.db.execute(
+            "SELECT current_profile_revision FROM workspaces WHERE id=?", (workspace_id,)
+        ).fetchone()[0]
 
     def authorize(self, user_id, workspace_id, action):
         """供其他服务调用：此人能否在这家公司执行 action（read / analyze / track / admin）。
@@ -592,23 +713,31 @@ class WorkspaceStore:
         roles = ROLES if action == "read" else ({"admin"} if action == "admin" else WRITERS)
         with self._transaction():
             role = self._authorize(user_id, workspace_id, roles)
-            version = self.db.execute("SELECT version FROM memberships WHERE workspace_id=? AND user_id=?",
-                                      (workspace_id, user_id)).fetchone()[0]
-            return {"role": role, "membership_version": version,
-                    "current_profile_revision": self._current_revision(workspace_id)}
+            version = self.db.execute(
+                "SELECT version FROM memberships WHERE workspace_id=? AND user_id=?", (workspace_id, user_id)
+            ).fetchone()[0]
+            return {
+                "role": role,
+                "membership_version": version,
+                "current_profile_revision": self._current_revision(workspace_id),
+            }
 
     def context(self, user_id, workspace_id, profile_revision, selection_id=None):
         """供研究服务调用：返回指定版本的档案（以及选择），同时告诉调用方当前最新的版本号。"""
         with self._transaction():
             self._authorize(user_id, workspace_id)
             _integer(profile_revision, 1)
-            row = self.db.execute("SELECT * FROM profile_revisions WHERE workspace_id=? AND revision=?",
-                                  (workspace_id, profile_revision)).fetchone()
+            row = self.db.execute(
+                "SELECT * FROM profile_revisions WHERE workspace_id=? AND revision=?", (workspace_id, profile_revision)
+            ).fetchone()
             if row is None:
                 raise WorkspaceError("not_found", 404)
             selection = self._selection(workspace_id, _text(selection_id, 128)) if selection_id is not None else None
-            return {"profile": self._revision(row), "current_profile_revision": self._current_revision(workspace_id),
-                    "selection": selection}
+            return {
+                "profile": self._revision(row),
+                "current_profile_revision": self._current_revision(workspace_id),
+                "selection": selection,
+            }
 
     def events(self, after=0, limit=100):
         """供 tracking 服务拉取事件（档案确认、成员变更），按序号分页。事件里不含档案内容。"""
@@ -619,10 +748,15 @@ class WorkspaceStore:
             high = self.db.execute("SELECT coalesce(max(seq),0) FROM owner_events").fetchone()[0]
             if after > high:
                 raise WorkspaceError("cursor_ahead")
-            rows = self.db.execute("SELECT * FROM owner_events WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
-                                   (after, high, limit)).fetchall()
-            return {"schema_version": 1, "items": [dict(r) for r in rows],
-                    "next_after": rows[-1]["seq"] if rows else after, "high_watermark": high}
+            rows = self.db.execute(
+                "SELECT * FROM owner_events WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?", (after, high, limit)
+            ).fetchall()
+            return {
+                "schema_version": 1,
+                "items": [dict(r) for r in rows],
+                "next_after": rows[-1]["seq"] if rows else after,
+                "high_watermark": high,
+            }
 
     def _command(self, workspace_id, operation, key, payload):
         """查幂等键：返回 (请求指纹, 当时的结果或 None)。同一个键但内容不同，报冲突。
@@ -631,52 +765,96 @@ class WorkspaceStore:
         """
         _text(key, 128)
         request_hash = _hash(_json(payload))
-        row = self.db.execute("SELECT * FROM commands WHERE workspace_id=? AND operation=? AND command_key=?", (workspace_id, operation, key)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM commands WHERE workspace_id=? AND operation=? AND command_key=?",
+            (workspace_id, operation, key),
+        ).fetchone()
         if row and row["request_hash"] != request_hash:
             raise WorkspaceError("idempotency_conflict", 409)
         return request_hash, json.loads(row["result"]) if row else None
 
     def _remember(self, workspace_id, operation, key, request_hash, result):
         """记下幂等键对应的结果。"""
-        self.db.execute("INSERT INTO commands VALUES(?,?,?,?,?,?)", (workspace_id, operation, key, request_hash, _json(result), _now()))
+        self.db.execute(
+            "INSERT INTO commands VALUES(?,?,?,?,?,?)",
+            (workspace_id, operation, key, request_hash, _json(result), _now()),
+        )
         return result
 
     @staticmethod
     def _revision(row):
         """一个正式档案版本。附带的几个状态说明：内容由企业确认，但证明材料没有提供，也没有核验过。"""
-        return {"workspace_id": row["workspace_id"], "revision": row["revision"], "proposal_id": row["proposal_id"],
-                "payload": json.loads(row["payload"]), "confirmed_by": row["confirmed_by"], "confirmed_at": _utc(row["confirmed_at"]),
-                "declaration_status": "user_confirmed", "proof_status": "not_provided", "read_status": "not_attempted", "validity_status": "not_checked"}
+        return {
+            "workspace_id": row["workspace_id"],
+            "revision": row["revision"],
+            "proposal_id": row["proposal_id"],
+            "payload": json.loads(row["payload"]),
+            "confirmed_by": row["confirmed_by"],
+            "confirmed_at": _utc(row["confirmed_at"]),
+            "declaration_status": "user_confirmed",
+            "proof_status": "not_provided",
+            "read_status": "not_attempted",
+            "validity_status": "not_checked",
+        }
 
     def _proposal(self, row):
         """一个档案修改提议，以及它是否已被确认成正式版本。"""
-        confirmed = self.db.execute("SELECT revision FROM profile_revisions WHERE workspace_id=? AND proposal_id=?", (row["workspace_id"], row["id"])).fetchone()
-        return {"id": row["id"], "workspace_id": row["workspace_id"], "base_revision": row["base_revision"],
-                "payload": json.loads(row["payload"]), "proposed_by": row["proposed_by"], "created_at": _utc(row["created_at"]),
-                "status": "confirmed" if confirmed else "proposed", "confirmed_revision": confirmed[0] if confirmed else None}
+        confirmed = self.db.execute(
+            "SELECT revision FROM profile_revisions WHERE workspace_id=? AND proposal_id=?",
+            (row["workspace_id"], row["id"]),
+        ).fetchone()
+        return {
+            "id": row["id"],
+            "workspace_id": row["workspace_id"],
+            "base_revision": row["base_revision"],
+            "payload": json.loads(row["payload"]),
+            "proposed_by": row["proposed_by"],
+            "created_at": _utc(row["created_at"]),
+            "status": "confirmed" if confirmed else "proposed",
+            "confirmed_revision": confirmed[0] if confirmed else None,
+        }
 
     def profile(self, user_id, workspace_id):
         """当前正式档案、全部历史版本和全部提议。"""
         with self._transaction():
             self._authorize(user_id, workspace_id)
-            revisions = self._bounded(self.db.execute("SELECT * FROM profile_revisions WHERE workspace_id=? ORDER BY revision DESC", (workspace_id,)))
-            proposals = self._bounded(self.db.execute("SELECT * FROM profile_proposals WHERE workspace_id=? ORDER BY created_at DESC,id", (workspace_id,)))
+            revisions = self._bounded(
+                self.db.execute(
+                    "SELECT * FROM profile_revisions WHERE workspace_id=? ORDER BY revision DESC", (workspace_id,)
+                )
+            )
+            proposals = self._bounded(
+                self.db.execute(
+                    "SELECT * FROM profile_proposals WHERE workspace_id=? ORDER BY created_at DESC,id", (workspace_id,)
+                )
+            )
             history = [self._revision(row) for row in revisions]
-            return {"current": history[0] if history else None, "history": history, "proposals": [self._proposal(row) for row in proposals]}
+            return {
+                "current": history[0] if history else None,
+                "history": history,
+                "proposals": [self._proposal(row) for row in proposals],
+            }
 
     def propose_profile(self, user_id, workspace_id, payload, base_revision, key):
         """提交一份档案修改提议。base_revision 必须是当前正式版本，否则说明别人刚改过，需要刷新。"""
         with self._transaction(write=True):
             self._authorize(user_id, workspace_id, WRITERS)
             payload, base_revision = _profile_payload(payload), _integer(base_revision)
-            request_hash, cached = self._command(workspace_id, "propose_profile", key, [user_id, payload, base_revision])
+            request_hash, cached = self._command(
+                workspace_id, "propose_profile", key, [user_id, payload, base_revision]
+            )
             if cached is not None:
                 return cached
             if self._current_revision(workspace_id) != base_revision:
                 raise WorkspaceError("profile_revision_conflict", 409)
             proposal_id = _id()
-            self.db.execute("INSERT INTO profile_proposals VALUES(?,?,?,?,?,?)", (proposal_id, workspace_id, base_revision, _json(payload), user_id, _now()))
-            result = self._proposal(self.db.execute("SELECT * FROM profile_proposals WHERE id=?", (proposal_id,)).fetchone())
+            self.db.execute(
+                "INSERT INTO profile_proposals VALUES(?,?,?,?,?,?)",
+                (proposal_id, workspace_id, base_revision, _json(payload), user_id, _now()),
+            )
+            result = self._proposal(
+                self.db.execute("SELECT * FROM profile_proposals WHERE id=?", (proposal_id,)).fetchone()
+            )
             return self._remember(workspace_id, "propose_profile", key, request_hash, result)
 
     def confirm_profile(self, user_id, workspace_id, proposal_id, expected_revision, key):
@@ -685,38 +863,85 @@ class WorkspaceStore:
             self._authorize(user_id, workspace_id, {"admin"})
             _text(proposal_id, 128)
             expected_revision = _integer(expected_revision)
-            request_hash, cached = self._command(workspace_id, "confirm_profile", key, [user_id, proposal_id, expected_revision])
+            request_hash, cached = self._command(
+                workspace_id, "confirm_profile", key, [user_id, proposal_id, expected_revision]
+            )
             if cached is not None:
                 return cached
-            proposal = self.db.execute("SELECT * FROM profile_proposals WHERE workspace_id=? AND id=?", (workspace_id, proposal_id)).fetchone()
+            proposal = self.db.execute(
+                "SELECT * FROM profile_proposals WHERE workspace_id=? AND id=?", (workspace_id, proposal_id)
+            ).fetchone()
             if proposal is None:
                 raise WorkspaceError("not_found", 404)
             if self.db.execute("SELECT 1 FROM profile_revisions WHERE proposal_id=?", (proposal_id,)).fetchone():
                 raise WorkspaceError("proposal_already_confirmed", 409)
-            if self._current_revision(workspace_id) != expected_revision or proposal["base_revision"] != expected_revision:
+            if (
+                self._current_revision(workspace_id) != expected_revision
+                or proposal["base_revision"] != expected_revision
+            ):
                 raise WorkspaceError("profile_revision_conflict", 409)
             revision = expected_revision + 1
-            self.db.execute("INSERT INTO profile_revisions VALUES(?,?,?,?,?,?)", (workspace_id, revision, proposal_id, proposal["payload"], user_id, _now()))
+            self.db.execute(
+                "INSERT INTO profile_revisions VALUES(?,?,?,?,?,?)",
+                (workspace_id, revision, proposal_id, proposal["payload"], user_id, _now()),
+            )
             self.db.execute("UPDATE workspaces SET current_profile_revision=? WHERE id=?", (revision, workspace_id))
-            self.db.execute("INSERT INTO owner_events(event_id,event_type,workspace_id,actor_id,profile_revision,occurred_at) "
-                            "VALUES(?,?,?,?,?,?)", (f"profile:{workspace_id}:{revision}", "ProfileConfirmed", workspace_id,
-                                                   user_id, revision, _utc(_now())))
-            result = self._revision(self.db.execute("SELECT * FROM profile_revisions WHERE workspace_id=? AND revision=?", (workspace_id, revision)).fetchone())
+            self.db.execute(
+                "INSERT INTO owner_events(event_id,event_type,workspace_id,actor_id,profile_revision,occurred_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (
+                    f"profile:{workspace_id}:{revision}",
+                    "ProfileConfirmed",
+                    workspace_id,
+                    user_id,
+                    revision,
+                    _utc(_now()),
+                ),
+            )
+            result = self._revision(
+                self.db.execute(
+                    "SELECT * FROM profile_revisions WHERE workspace_id=? AND revision=?", (workspace_id, revision)
+                ).fetchone()
+            )
             return self._remember(workspace_id, "confirm_profile", key, request_hash, result)
 
     def _selection(self, workspace_id, selection_id):
         """一个选择的完整信息：公告列表、当前状态和状态历史。"""
-        row = self.db.execute("SELECT * FROM selections WHERE workspace_id=? AND id=?", (workspace_id, selection_id)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM selections WHERE workspace_id=? AND id=?", (workspace_id, selection_id)
+        ).fetchone()
         if row is None:
             raise WorkspaceError("not_found", 404)
-        events = self._bounded(self.db.execute("SELECT * FROM selection_history WHERE workspace_id=? AND selection_id=? ORDER BY version", (workspace_id, selection_id)))
-        history = [{"version": event["version"], "state": event["state"], "actor_id": event["actor_id"], "recorded_at": _utc(event["recorded_at"]),
-                    "catalog_checked_at": event["catalog_checked_at"]} for event in events]
+        events = self._bounded(
+            self.db.execute(
+                "SELECT * FROM selection_history WHERE workspace_id=? AND selection_id=? ORDER BY version",
+                (workspace_id, selection_id),
+            )
+        )
+        history = [
+            {
+                "version": event["version"],
+                "state": event["state"],
+                "actor_id": event["actor_id"],
+                "recorded_at": _utc(event["recorded_at"]),
+                "catalog_checked_at": event["catalog_checked_at"],
+            }
+            for event in events
+        ]
         current = history[-1]
-        return {"id": row["id"], "workspace_id": workspace_id, "profile_revision": row["profile_revision"],
-                "items": json.loads(row["items"]), "created_by": row["created_by"], "created_at": _utc(row["created_at"]),
-                "state": current["state"], "version": current["version"], "catalog_checked_at": current["catalog_checked_at"],
-                "updated_at": current["recorded_at"], "history": history}
+        return {
+            "id": row["id"],
+            "workspace_id": workspace_id,
+            "profile_revision": row["profile_revision"],
+            "items": json.loads(row["items"]),
+            "created_by": row["created_by"],
+            "created_at": _utc(row["created_at"]),
+            "state": current["state"],
+            "version": current["version"],
+            "catalog_checked_at": current["catalog_checked_at"],
+            "updated_at": current["recorded_at"],
+            "history": history,
+        }
 
     def selection(self, user_id, workspace_id, selection_id):
         """查看一个选择。"""
@@ -729,7 +954,11 @@ class WorkspaceStore:
         """本公司的全部选择，新的在前。"""
         with self._transaction():
             self._authorize(user_id, workspace_id)
-            rows = self._bounded(self.db.execute("SELECT id FROM selections WHERE workspace_id=? ORDER BY created_at DESC,id", (workspace_id,)))
+            rows = self._bounded(
+                self.db.execute(
+                    "SELECT id FROM selections WHERE workspace_id=? ORDER BY created_at DESC,id", (workspace_id,)
+                )
+            )
             return [self._selection(workspace_id, row["id"]) for row in rows]
 
     def create_selection(self, user_id, workspace_id, profile_revision, items, key, *, checked_at=None):
@@ -741,16 +970,26 @@ class WorkspaceStore:
         with self._transaction(write=True):
             self._authorize(user_id, workspace_id, WRITERS)
             profile_revision, items = _integer(profile_revision, 1), _items(items)
-            request_hash, cached = self._command(workspace_id, "create_selection", key, [user_id, profile_revision, items])
+            request_hash, cached = self._command(
+                workspace_id, "create_selection", key, [user_id, profile_revision, items]
+            )
             if cached is not None:
                 return cached
             if self._current_revision(workspace_id) != profile_revision:
                 raise WorkspaceError("profile_revision_conflict", 409)
             now, selection_id = _now(), _id()
             checked = _checked_at(checked_at, now)
-            self.db.execute("INSERT INTO selections VALUES(?,?,?,?,?,?,?)", (selection_id, workspace_id, profile_revision, _json(items), user_id, now, 1))
-            self.db.execute("INSERT INTO selection_history VALUES(?,?,?,?,?,?,?)", (workspace_id, selection_id, 1, "awaiting_decision", user_id, now, checked))
-            return self._remember(workspace_id, "create_selection", key, request_hash, self._selection(workspace_id, selection_id))
+            self.db.execute(
+                "INSERT INTO selections VALUES(?,?,?,?,?,?,?)",
+                (selection_id, workspace_id, profile_revision, _json(items), user_id, now, 1),
+            )
+            self.db.execute(
+                "INSERT INTO selection_history VALUES(?,?,?,?,?,?,?)",
+                (workspace_id, selection_id, 1, "awaiting_decision", user_id, now, checked),
+            )
+            return self._remember(
+                workspace_id, "create_selection", key, request_hash, self._selection(workspace_id, selection_id)
+            )
 
     def replay_selection(self, user_id, workspace_id, profile_revision, items, key):
         """重复提交同一个创建请求时，直接返回第一次的结果；没有记录就返回 None。
@@ -761,7 +1000,10 @@ class WorkspaceStore:
             self._authorize(user_id, workspace_id, WRITERS)
             profile_revision, references = _integer(profile_revision, 1), _item_references(items)
             _text(key, 128)
-            row = self.db.execute("SELECT result FROM commands WHERE workspace_id=? AND operation='create_selection' AND command_key=?", (workspace_id, key)).fetchone()
+            row = self.db.execute(
+                "SELECT result FROM commands WHERE workspace_id=? AND operation='create_selection' AND command_key=?",
+                (workspace_id, key),
+            ).fetchone()
             if row is None:
                 return None
             cached = json.loads(row["result"])
@@ -769,7 +1011,9 @@ class WorkspaceStore:
             if cached["profile_revision"] != profile_revision or recorded != references:
                 raise WorkspaceError("idempotency_conflict", 409)
             # 用当时保存的完整内容和当前操作人重新算一次指纹：别的成员拿同一个键来，指纹对不上。
-            _, result = self._command(workspace_id, "create_selection", key, [user_id, profile_revision, cached["items"]])
+            _, result = self._command(
+                workspace_id, "create_selection", key, [user_id, profile_revision, cached["items"]]
+            )
             return result
 
     def _transition_selection(self, user_id, workspace_id, selection_id, expected_version, key, state, checked_at=None):
@@ -779,7 +1023,9 @@ class WorkspaceStore:
             _text(selection_id, 128)
             expected_version = _integer(expected_version, 1)
             operation = "confirm_selection" if state == "selected" else "cancel_selection"
-            request_hash, cached = self._command(workspace_id, operation, key, [user_id, selection_id, expected_version])
+            request_hash, cached = self._command(
+                workspace_id, operation, key, [user_id, selection_id, expected_version]
+            )
             if cached is not None:
                 return cached
             current = self._selection(workspace_id, selection_id)
@@ -789,13 +1035,23 @@ class WorkspaceStore:
                 raise WorkspaceError("profile_revision_conflict", 409)
             now = _now()
             checked = _checked_at(checked_at, now) if state == "selected" else current["catalog_checked_at"]
-            self.db.execute("INSERT INTO selection_history VALUES(?,?,?,?,?,?,?)", (workspace_id, selection_id, expected_version + 1, state, user_id, now, checked))
-            self.db.execute("UPDATE selections SET current_version=? WHERE workspace_id=? AND id=?", (expected_version + 1, workspace_id, selection_id))
-            return self._remember(workspace_id, operation, key, request_hash, self._selection(workspace_id, selection_id))
+            self.db.execute(
+                "INSERT INTO selection_history VALUES(?,?,?,?,?,?,?)",
+                (workspace_id, selection_id, expected_version + 1, state, user_id, now, checked),
+            )
+            self.db.execute(
+                "UPDATE selections SET current_version=? WHERE workspace_id=? AND id=?",
+                (expected_version + 1, workspace_id, selection_id),
+            )
+            return self._remember(
+                workspace_id, operation, key, request_hash, self._selection(workspace_id, selection_id)
+            )
 
     def confirm_selection(self, user_id, workspace_id, selection_id, expected_version, key, *, checked_at=None):
         """确认选择。确认后才能对其中的公告发起研究。"""
-        return self._transition_selection(user_id, workspace_id, selection_id, expected_version, key, "selected", checked_at)
+        return self._transition_selection(
+            user_id, workspace_id, selection_id, expected_version, key, "selected", checked_at
+        )
 
     def cancel_selection(self, user_id, workspace_id, selection_id, expected_version, key):
         """取消选择。"""

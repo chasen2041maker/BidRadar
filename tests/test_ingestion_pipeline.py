@@ -1,4 +1,5 @@
 """阶段验收：真实本地账本和归档配虚构传输，绝不把模拟结果称为站点接通。"""
+
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -57,15 +58,19 @@ class PipelineTests(unittest.TestCase):
 
     def test_equivalent_listing_and_explicit_urls_share_task_identity_and_version(self):
         uppercase = NOTICE_URL.replace("https://www.ccgp.gov.cn", "HTTPS://WWW.CCGP.GOV.CN")
+
         class RepeatedCase(DemoTransport):
             def fetch(self, url, **kwargs):
                 response = super().fetch(url, **kwargs)
                 if kwargs["kind"] != "listing":
                     return response
-                rows = ''.join('<li><a href="' + link + '">虚构系统</a><span>日期未知</span></li>'
-                               for link in (NOTICE_URL, uppercase + "#section"))
-                body = ('<ul class="vT-srch-result-list-bid">' + rows + '</ul>').encode()
+                rows = "".join(
+                    '<li><a href="' + link + '">虚构系统</a><span>日期未知</span></li>'
+                    for link in (NOTICE_URL, uppercase + "#section")
+                )
+                body = ('<ul class="vT-srch-result-list-bid">' + rows + "</ul>").encode()
                 return FetchResult(url, url, 200, response.headers, body, response.fetched_at, 1)
+
         transport = RepeatedCase()
         report = execute(self.store, self.register(request_spec(keyword="软件", max_notices=1)), transport)
         self.assertEqual(self.store.task_count(report["run"]["id"], "notice"), 1)
@@ -74,21 +79,27 @@ class PipelineTests(unittest.TestCase):
         # 原始列表证据保留大小写；用于入队、身份、内容版本的地址则共用规范规则。
         self.assertIn("WWW.CCGP", report["captures"][0]["parsed"]["items"][1]["url"])
         notice = next(c for c in report["captures"] if c["kind"] == "notice")
-        explicit = execute(self.store, self.register(request_spec(notice_urls=[uppercase]), "explicit"), DemoTransport())
+        explicit = execute(
+            self.store, self.register(request_spec(notice_urls=[uppercase]), "explicit"), DemoTransport()
+        )
         self.assertEqual(explicit["captures"][0]["version_id"], notice["version_id"])
         self.assertEqual(explicit["captures"][0]["parsed"]["notice_id"], notice["parsed"]["notice_id"])
         parsed = parse_capture("notice", self.store.read_blob(notice["sha256"]), notice["headers"], uppercase)
         self.assertEqual(parsed["notice_id"], notice["parsed"]["notice_id"])
-        self.assertNotEqual(request_spec(notice_urls=[NOTICE_URL])["notice_urls"],
-                            request_spec(notice_urls=[NOTICE_URL.replace("https:", "http:")])["notice_urls"])
+        self.assertNotEqual(
+            request_spec(notice_urls=[NOTICE_URL])["notice_urls"],
+            request_spec(notice_urls=[NOTICE_URL.replace("https:", "http:")])["notice_urls"],
+        )
 
     def test_process_interruption_resumes_without_repeating_committed_page(self):
         run_id = self.register()
+
         class Interrupted(DemoTransport):
             def fetch(self, url, **kwargs):
                 if len(self.calls) == 1:
                     raise KeyboardInterrupt
                 return super().fetch(url, **kwargs)
+
         with self.assertRaises(KeyboardInterrupt):
             execute(self.store, run_id, Interrupted())
         self.assertEqual(self.store.run(run_id)["status"], "queued")
@@ -100,11 +111,13 @@ class PipelineTests(unittest.TestCase):
     def test_cancel_during_fetch_cannot_publish_or_schedule_following(self):
         run_id = self.register()
         store = self.store
+
         class Cancelled(DemoTransport):
             def fetch(self, url, **kwargs):
                 result = super().fetch(url, **kwargs)
                 store.cancel(run_id)
                 return result
+
         result = execute(self.store, run_id, Cancelled())
         self.assertEqual(result["run"]["status"], "cancelled")
         self.assertEqual(result["captures"], [])
@@ -115,6 +128,7 @@ class PipelineTests(unittest.TestCase):
             def fetch(self, url, **kwargs):
                 self.calls.append((url, kwargs["kind"]))
                 raise FetchError("access_blocked", 429, 1)
+
         transport = Blocked()
         report = execute(self.store, self.register(), transport)
         self.assertEqual(report["run"]["status"], "blocked")
@@ -125,8 +139,16 @@ class PipelineTests(unittest.TestCase):
     def test_captcha_html_is_archived_and_blocks_run(self):
         class Captcha(DemoTransport):
             def fetch(self, url, **kwargs):
-                return FetchResult(url, url, 200, {"content-type": "text/html"},
-                                   "<h1>请输入验证码</h1>".encode(), "2026-09-30T00:00:00Z", 1)
+                return FetchResult(
+                    url,
+                    url,
+                    200,
+                    {"content-type": "text/html"},
+                    "<h1>请输入验证码</h1>".encode(),
+                    "2026-09-30T00:00:00Z",
+                    1,
+                )
+
         report = execute(self.store, self.register(), Captcha())
         self.assertEqual(report["run"]["status"], "blocked")
         self.assertEqual(report["captures"][0]["parsed"]["status"], "blocked")
@@ -138,6 +160,7 @@ class PipelineTests(unittest.TestCase):
                 if kwargs["kind"] == "attachment":
                     raise FetchError("timeout", None, 2)
                 return super().fetch(url, **kwargs)
+
         report = execute(self.store, self.register(), FailedAttachment())
         self.assertEqual(report["run"]["status"], "partial")
         notice = next(row for row in report["captures"] if row["kind"] == "notice")
@@ -156,6 +179,7 @@ class PipelineTests(unittest.TestCase):
         class Deny:
             def authorize(self, url, kind):
                 raise FetchError("url_not_authorized")
+
         transport = DemoTransport()
         transport.policy = Deny()
         report = execute(self.store, self.register(), transport)
@@ -169,10 +193,16 @@ class PipelineTests(unittest.TestCase):
             def fetch(self, url, **kwargs):
                 r = super().fetch(url, **kwargs)
                 if kwargs["kind"] == "listing":
-                    row = ('<li><a href="' + NOTICE_URL.replace("99990001", "99990002")
-                           + '">另一虚构项目</a><span>日期未知</span></li>').encode()
-                    return FetchResult(r.url, r.final_url, 200, r.headers, r.body.replace(b"</ul>", row + b"</ul>"), r.fetched_at, 1)
+                    row = (
+                        '<li><a href="'
+                        + NOTICE_URL.replace("99990001", "99990002")
+                        + '">另一虚构项目</a><span>日期未知</span></li>'
+                    ).encode()
+                    return FetchResult(
+                        r.url, r.final_url, 200, r.headers, r.body.replace(b"</ul>", row + b"</ul>"), r.fetched_at, 1
+                    )
                 return r
+
         request = request_spec(keyword="软件", max_notices=1, attachments=True)
         report = execute(self.store, self.register(request), TwoNotices())
         self.assertEqual(report["run"]["status"], "partial")
@@ -181,8 +211,10 @@ class PipelineTests(unittest.TestCase):
     def test_decode_failure_preserves_original_bytes(self):
         class Undecodable(DemoTransport):
             def fetch(self, url, **kwargs):
-                return FetchResult(url, url, 200, {"content-type": "text/html; charset=utf-8"},
-                                   b"\xff\xfe", "2026-09-30T00:00:00Z", 1)
+                return FetchResult(
+                    url, url, 200, {"content-type": "text/html; charset=utf-8"}, b"\xff\xfe", "2026-09-30T00:00:00Z", 1
+                )
+
         report = execute(self.store, self.register(request_spec(keyword="软件")), Undecodable())
         self.assertEqual(report["run"]["status"], "failed")
         capture = report["captures"][0]
@@ -202,19 +234,26 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(parsed["issues"], ["attachment_is_html"])
 
     def test_request_contract_rejects_unknown_and_unbounded_inputs(self):
-        for kwargs in ({}, {"keyword": "软件", "pages": True}, {"keyword": "软件", "pages": 6},
-                       {"notice_urls": ["http://127.0.0.1/a.htm"]}, {"keyword": "软件", "notice_urls": [NOTICE_URL]},
-                       {"notice_urls": [NOTICE_URL], "pages": 2}):
+        for kwargs in (
+            {},
+            {"keyword": "软件", "pages": True},
+            {"keyword": "软件", "pages": 6},
+            {"notice_urls": ["http://127.0.0.1/a.htm"]},
+            {"keyword": "软件", "notice_urls": [NOTICE_URL]},
+            {"notice_urls": [NOTICE_URL], "pages": 2},
+        ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 request_spec(**kwargs)
 
     def test_cli_demo_show_verify_replay_and_idempotency(self):
         self.store.close()
+
         def call(*args):
             output = io.StringIO()
             with redirect_stdout(output), patch("socket.socket", side_effect=AssertionError("离线CLI不得联网")):
                 code = main(["--store", str(self.root), *args])
             return code, [json.loads(line) for line in output.getvalue().splitlines()]
+
         try:
             code, events = call("demo")
             self.assertEqual(code, 0)
@@ -230,14 +269,24 @@ class PipelineTests(unittest.TestCase):
     def test_full_transport_policy_robots_archive_parse_chain(self):
         # 真实准入/robots/DNS判断和编排/SQLite贯通，仅最底层HTTP响应由虚构样本替代。
         now = datetime.now(timezone.utc)
-        policy = SourcePolicy.from_dict({"schema_version": 1, "approved": True,
-            "purpose": "synthetic integration test", "reviewed_at": (now - timedelta(hours=1)).isoformat(),
-            "expires_at": (now + timedelta(hours=1)).isoformat(), "evidence": ["synthetic-only"],
-            "attachments_allowed": True, "allowed": [
-                {"host": "search.ccgp.gov.cn", "path_prefix": "/bxsearch", "kinds": ["listing"]},
-                {"host": "www.ccgp.gov.cn", "path_prefix": "/cggg/", "kinds": ["notice", "attachment"]}]})
+        policy = SourcePolicy.from_dict(
+            {
+                "schema_version": 1,
+                "approved": True,
+                "purpose": "synthetic integration test",
+                "reviewed_at": (now - timedelta(hours=1)).isoformat(),
+                "expires_at": (now + timedelta(hours=1)).isoformat(),
+                "evidence": ["synthetic-only"],
+                "attachments_allowed": True,
+                "allowed": [
+                    {"host": "search.ccgp.gov.cn", "path_prefix": "/bxsearch", "kinds": ["listing"]},
+                    {"host": "www.ccgp.gov.cn", "path_prefix": "/cggg/", "kinds": ["notice", "attachment"]},
+                ],
+            }
+        )
         fixture = DemoTransport()
         calls = []
+
         def exchange(url, ip, timeout, limit):
             calls.append(url)
             if url.endswith("/robots.txt"):
@@ -245,6 +294,7 @@ class PipelineTests(unittest.TestCase):
             kind = "listing" if "/bxsearch?" in url else ("attachment" if url.endswith(".pdf") else "notice")
             result = fixture.fetch(url, max_bytes=limit, kind=kind)
             return result.http_status, result.headers, result.body
+
         transport = Transport(policy, exchange=exchange, resolver=lambda host, port: ["8.8.8.8"], min_interval=0)
         with patch("socket.socket", side_effect=AssertionError("集成模拟不得联网")):
             report = execute(self.store, self.register(), transport)
@@ -268,7 +318,10 @@ class PipelineTests(unittest.TestCase):
 
     def test_cli_database_failure_is_an_error_not_an_empty_success(self):
         output = io.StringIO()
-        with redirect_stdout(output), patch("services.ingestion.__main__.Store", side_effect=sqlite3.DatabaseError("fixture")):
+        with (
+            redirect_stdout(output),
+            patch("services.ingestion.__main__.Store", side_effect=sqlite3.DatabaseError("fixture")),
+        ):
             code = main(["--store", str(self.root), "verify"])
         self.assertEqual(code, 4)
         self.assertEqual(json.loads(output.getvalue()), {"event": "error", "code": "storage_database_error"})
@@ -279,16 +332,25 @@ class PipelineTests(unittest.TestCase):
             with self.subTest(phase=phase):
                 run_id = self.register(request_spec(notice_urls=[NOTICE_URL]), key=phase)
                 now = datetime.now(timezone.utc)
-                policy = SourcePolicy.from_dict({"schema_version": 1, "approved": True,
-                    "purpose": "synthetic cancel test", "reviewed_at": (now - timedelta(hours=1)).isoformat(),
-                    "expires_at": (now + timedelta(hours=1)).isoformat(), "evidence": ["synthetic-only"],
-                    "attachments_allowed": False, "allowed": [
-                        {"host": "www.ccgp.gov.cn", "path_prefix": "/cggg/", "kinds": ["notice"]}]})
+                policy = SourcePolicy.from_dict(
+                    {
+                        "schema_version": 1,
+                        "approved": True,
+                        "purpose": "synthetic cancel test",
+                        "reviewed_at": (now - timedelta(hours=1)).isoformat(),
+                        "expires_at": (now + timedelta(hours=1)).isoformat(),
+                        "evidence": ["synthetic-only"],
+                        "attachments_allowed": False,
+                        "allowed": [{"host": "www.ccgp.gov.cn", "path_prefix": "/cggg/", "kinds": ["notice"]}],
+                    }
+                )
                 calls = []
+
                 def resolver(host, port):
                     if phase == "dns":
                         self.store.cancel(run_id)
                     return ["8.8.8.8"]
+
                 def exchange(url, ip, timeout, limit):
                     calls.append(url)
                     if url.endswith("/robots.txt"):
@@ -299,7 +361,10 @@ class PipelineTests(unittest.TestCase):
                                 self.store.db.execute("UPDATE runs SET lease_until=0 WHERE id=?", (run_id,))
                         return 200, {}, b"User-agent: *\nAllow: /\n"
                     self.store.cancel(run_id)
-                    return (503, {"retry-after": "0"}, b"") if phase == "retry" else (302, {"location": NOTICE_URL}, b"")
+                    return (
+                        (503, {"retry-after": "0"}, b"") if phase == "retry" else (302, {"location": NOTICE_URL}, b"")
+                    )
+
                 transport = Transport(policy, exchange=exchange, resolver=resolver, min_interval=0)
                 with patch("socket.socket", side_effect=AssertionError("取消集成测试禁止联网")):
                     if phase == "lease_expiry":
