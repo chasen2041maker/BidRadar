@@ -1,4 +1,8 @@
-"""tracking内部HTTP；服务身份白名单与当前公司权限分别检查。"""
+"""跟踪服务（tracking）的内部 HTTP 接口。
+
+两层检查分开做：先看调用方是哪个服务（大部分接口只给 workspace，
+委托检查接口只给 research），再由 TrackingService 检查这个人在这家公司的当前权限。
+"""
 from services.common.local_http import LocalHTTPError, create_server as local_server
 
 from .service import TrackingService
@@ -6,6 +10,7 @@ from .store import TrackingError, TrackingStore
 
 
 def create_server(root, access, catalog, research, *, tokens, port=0, host="127.0.0.1"):
+    """创建跟踪服务的 HTTP 服务器（未启动）。"""
     if not isinstance(tokens, dict) or set(tokens) != {"workspace", "research"}:
         raise ValueError("tracking_service_identities_required")
 
@@ -37,7 +42,7 @@ def create_server(root, access, catalog, research, *, tokens, port=0, host="127.
             raise LocalHTTPError("invalid_request", 400)
         store = None
         try:
-            # 每请求连接独立，避免线程复用SQLite或把上一次授权带到下一个主体。
+            # 每个请求单独开一个数据库连接，不在线程之间共用，也不会把上一个请求的状态带过来。
             store = TrackingStore(root)
             service = TrackingService(store, access, catalog, research)
             arguments = {key: value for key, value in body.items() if key != "schema_version"}

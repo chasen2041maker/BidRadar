@@ -1,7 +1,18 @@
-"""R2业务边界：当前授权 → 固定输入 → 本库事务 → 可恢复跨服务命令。
+"""跟踪服务的业务规则：跟进决定、关注、发现变化、提醒、自动复核。
 
-access/catalog/research为注入的有界服务客户端。远程授权与本库提交没有分布式
-事务；每个后续动作重新核查，不能声称能撤回已经发出的外部调用。
+三件事要分清：
+    - 决定（decision）：用户对一个公告的人工判断——待评估、跟进、放弃。
+    - 关注（watch）：要不要盯着这个公告的变化。关注不会改变决定。
+    - 自动复核委托（auto_reassess）：发现变化后，能不能自动花钱再做一次研究。
+      默认关闭，最长 7 天，只在发起人权限没变时有效。
+
+发现变化的流程（consume_event）：
+    读到一条新事件（公告新版本或档案确认）→ 对每个相关的关注比较前后版本
+    → 有实质变化就记一条 change、发一条提醒 → 如果有有效委托，排一个复核命令。
+    复核命令由 dispatch_one 发给 research 服务，结果回来后再发一条"复核完成"提醒。
+
+跨服务调用没有分布式事务：每一步之前都重新检查权限和委托，
+但已经发给其他服务的请求收不回来。
 """
 from __future__ import annotations
 
@@ -12,18 +23,22 @@ import re
 from .diff import RULE_VERSION, SCOPES, canonical, compare_bundles, fingerprint, input_fingerprint
 from .store import TrackingError, identifier, integer, new_id, now, text, utc
 
+# 复核命令的终态：到了这些状态就不再派送。
 TERMINAL = frozenset(("succeeded", "partial", "failed", "cancelled", "rejected", "waiting_input"))
+# research 服务的任务状态。
 RUN_STATES = frozenset(("queued", "running", "waiting_input", "retry_wait", "succeeded", "partial", "failed", "cancelled"))
+# 委托里必须包含的字段：它把一次自动复核绑定到具体的关注版本、变化和输入上。
 DELEGATION_FIELDS = {"watch_id", "watch_version", "rule_version", "change_id", "change_fingerprint", "command_key", "input_fingerprint", "membership_version"}
 
 
 def _call(function, *args, **kwargs):
+    """调用其他服务，把各种异常统一转成 TrackingError。"""
     try:
         return function(*args, **kwargs)
     except TrackingError:
         raise
     except Exception as error:
-        # 跨服务异常只能给最小分类；不反射供应商消息、URL、请求或私有正文。
+        # 只保留错误类别，不把对方的错误信息、URL 或请求内容带出来。
         status = getattr(error, "status", 503)
         if status in (403, 404):
             raise TrackingError("not_found" if status == 404 else "forbidden", status) from None
@@ -33,6 +48,7 @@ def _call(function, *args, **kwargs):
 
 
 def _bundle(value, notice_id):
+    """检查 catalog 返回的 bundle 结构是否正确，正确就原样返回。"""
     try:
         if (not isinstance(value, dict) or value["notice_id"] != notice_id or type(value["snapshot"]) is not int
                 or value["snapshot"] < 0 or not isinstance(value["observations"], list)
@@ -54,6 +70,7 @@ def _bundle(value, notice_id):
 
 
 def _expiry(value):
+    """计算自动复核委托的到期时间：默认 7 天后，用户指定的时间也不能超过 7 天。"""
     if value is None:
         return utc(now() + 7 * 86400)
     try:
@@ -67,11 +84,14 @@ def _expiry(value):
 
 
 class TrackingService:
+    """跟踪服务的业务入口。access、catalog、research 是其他三个服务的客户端。"""
+
     def __init__(self, store, access, catalog, research):
         self.store, self.access, self.catalog, self.research = store, access, catalog, research
         self.db = store.db
 
     def _authorize(self, actor_id, workspace_id, action="read"):
+        """查询当前权限。只读成员不能做"跟踪"和"分析"类操作。"""
         text(actor_id); text(workspace_id)
         value = _call(self.access.authorize, actor_id, workspace_id, action)
         if (not isinstance(value, dict) or value.get("role") not in ("admin", "member", "viewer")
@@ -83,6 +103,7 @@ class TrackingService:
         return value
 
     def decision(self, actor_id, workspace_id, notice_id):
+        """查看对一个公告的当前决定和历史。"""
         self._authorize(actor_id, workspace_id); identifier(notice_id)
         with self.store.tx(write=False):
             rows = self.db.execute("SELECT payload FROM decision_history WHERE workspace_id=? AND notice_id=? ORDER BY version DESC LIMIT 201", (workspace_id, notice_id)).fetchall()
@@ -93,6 +114,7 @@ class TrackingService:
         return {"schema_version": 1, "current": history[0] if history else None, "history": history}
 
     def set_decision(self, actor_id, workspace_id, notice_id, state, reason, expected_version, key):
+        """记录一个新决定。expected_version 用于乐观锁：两个人同时改，后提交的会收到冲突。"""
         self._authorize(actor_id, workspace_id, "track")
         identifier(notice_id); integer(expected_version); text(reason, 4000, empty=True)
         if state not in ("needs_review", "follow_up", "dismissed"):
@@ -121,6 +143,7 @@ class TrackingService:
             return self.store.remember(workspace_id, "decision", key, digest, value)
 
     def watch(self, actor_id, workspace_id, notice_id):
+        """查看对一个公告的关注设置。"""
         self._authorize(actor_id, workspace_id); identifier(notice_id)
         row = self.db.execute("SELECT * FROM watches WHERE workspace_id=? AND notice_id=?", (workspace_id, notice_id)).fetchone()
         return {"schema_version": 1, "watch": self._watch_value(row) if row else None}
@@ -131,6 +154,11 @@ class TrackingService:
         return {**value, "catalog_seq": row["catalog_seq"], "profile_revision": row["profile_revision"]}
 
     def set_watch(self, actor_id, workspace_id, notice_id, active, expected_version, key, *, auto_reassess=False, expires_at=None, scope=None):
+        """开启、修改或停止关注。
+
+        开启自动复核需要"分析"权限，并且公司已有正式档案。
+        任何修改都会让尚未完成的旧复核命令失效：规则变了，旧授权就不再适用。
+        """
         auth = self._authorize(actor_id, workspace_id, "track")
         identifier(notice_id); integer(expected_version)
         if type(active) is not bool or type(auto_reassess) is not bool or (auto_reassess and not active):
@@ -145,7 +173,7 @@ class TrackingService:
             _, cached = self.store.cached(workspace_id, "watch", key, request)
         if cached is not None:
             return cached
-        # 停止操作不依赖目录在线；新建/重新启用才从明确baseline开始。
+        # 只有新建或重新启用时才去目录取当前版本作为比较基线；停止关注不需要目录在线。
         old = self.db.execute("SELECT * FROM watches WHERE workspace_id=? AND notice_id=?", (workspace_id, notice_id)).fetchone()
         bundle = _bundle(_call(self.catalog.bundle, notice_id), notice_id) if old is None or active and not old["active"] else json.loads(old["bundle"])
         auth = self._authorize(actor_id, workspace_id, "analyze" if auto_reassess else "track")
@@ -165,7 +193,7 @@ class TrackingService:
                      "actor_id": actor_id, "membership_version": auth["membership_version"], "expires_at": expiry,
                      "rule_version": RULE_VERSION, "scope": sorted(scope), "recorded_at": utc(),
                      "warnings": ["unstable_content_snapshot_identity"] if bundle["current"].get("identity_kind") == "content_snapshot" else []}
-            # 已存在且未重新启用时保留消费基线，配置保存不能跳过尚未处理的变化。
+            # 只是修改设置时，保留原来的比较基线，免得跳过还没处理的变化。
             base = current if current and current["active"] else None
             catalog_seq = base["catalog_seq"] if base else bundle["snapshot"]
             profile_revision = base["profile_revision"] if base else auth["current_profile_revision"]
@@ -175,7 +203,7 @@ class TrackingService:
                             "version=excluded.version,active=excluded.active,payload=excluded.payload,bundle=excluded.bundle,catalog_seq=excluded.catalog_seq,profile_revision=excluded.profile_revision",
                             (watch_id, workspace_id, notice_id, value["version"], int(active), canonical(value), canonical(bundle), catalog_seq, profile_revision))
             self.db.execute("INSERT INTO watch_history VALUES(?,?,?)", (watch_id, value["version"], canonical(value)))
-            # 修改规则/关闭会使全部旧委托失效；保留run引用供后续取消对账。
+            # 让旧的复核命令失效。保留它们关联的研究任务 ID，之后用来去 research 那边对账取消。
             rows = self.db.execute("SELECT id,run_id FROM reassessments WHERE watch_id=? AND state NOT IN ('succeeded','partial','failed','cancelled','rejected','waiting_input')", (watch_id,)).fetchall()
             for row in rows:
                 self.db.execute("UPDATE reassessments SET state='cancelled',reason='watch_changed',version=version+1,lease_epoch=lease_epoch+1,lease_until=0,next_attempt=0 WHERE id=?", (row["id"],))
@@ -183,6 +211,7 @@ class TrackingService:
             return self.store.remember(workspace_id, "watch", key, digest, {**value, "catalog_seq": catalog_seq, "profile_revision": profile_revision})
 
     def _page(self, actor_id, workspace_id, table, after=0, limit=20):
+        """按序号分页读取变化或提醒。提醒会附上当前用户的已读时间。"""
         self._authorize(actor_id, workspace_id); integer(after); integer(limit, 1, 100)
         with self.store.tx(write=False):
             rows = self.db.execute(f"SELECT seq,payload FROM {table} WHERE workspace_id=? AND seq>? ORDER BY seq LIMIT ?", (workspace_id, after, limit)).fetchall()
@@ -196,12 +225,15 @@ class TrackingService:
         return {"schema_version": 1, "items": values, "next_after": rows[-1]["seq"] if rows else after, "high_watermark": high}
 
     def changes(self, actor_id, workspace_id, after=0, limit=20):
+        """本公司检测到的变化列表。"""
         return self._page(actor_id, workspace_id, "changes", after, limit)
 
     def notifications(self, actor_id, workspace_id, after=0, limit=20):
+        """本公司的站内提醒列表。"""
         return self._page(actor_id, workspace_id, "notifications", after, limit)
 
     def mark_read(self, actor_id, workspace_id, notification_id):
+        """把一条提醒标为当前用户已读。已读状态按人记录，互不影响。"""
         self._authorize(actor_id, workspace_id); text(notification_id)
         with self.store.tx():
             if not self.db.execute("SELECT 1 FROM notifications WHERE workspace_id=? AND id=?", (workspace_id, notification_id)).fetchone():
@@ -210,6 +242,7 @@ class TrackingService:
             return {"schema_version": 1, "id": notification_id, "read_at": self.db.execute("SELECT read_at FROM notification_reads WHERE workspace_id=? AND notification_id=? AND user_id=?", (workspace_id, notification_id, actor_id)).fetchone()[0]}
 
     def _event(self, owner, event):
+        """检查事件格式。catalog 的事件是"公告有新观察"，workspace 的事件是"档案确认"或"权限变化"。"""
         common = {"seq", "event_id"}
         fields = common | ({"notice_id", "observation_id", "observed_at"} if owner == "catalog" else
                             {"event_type", "workspace_id", "actor_id", "target_user_id", "profile_revision", "membership_version", "occurred_at"})
@@ -228,10 +261,17 @@ class TrackingService:
                 integer(event["membership_version"], 1); text(event["target_user_id"])
 
     def consume_event(self, owner, event, *, replay=False):
-        """先按每个watch补齐固定snapshot，再同事务接受事件/游标/变化/提醒/复核。
+        """处理一条事件：找出受影响的关注，记录变化、发提醒、按需排复核命令。
 
-        Inbox已有事件仍可供新watch追赶；watch自己的catalog_seq防止重复或回退。
-        全局cursor只连续前进，不能用MAX已见事件掩盖缺口。
+        分两步：
+            1. 事务外：对每个活跃的关注，到 catalog 取这个事件对应快照的版本，和关注的基线比较。
+            2. 事务内：确认期间没人改过这些关注，然后一次性写入变化、提醒、复核命令、事件收件箱和游标。
+
+        几条保证：
+            - 事件必须按序号连续处理，出现跳号就报 event_gap，不会悄悄漏掉。
+            - 同一个事件重复送来，内容必须完全一样，并且不会产生重复的变化或提醒。
+            - 每个关注记着自己处理到的序号，新加的关注也能补上之前的事件，不会重复也不会倒退。
+            - replay=True 用于重建历史：照常记录变化，但不发提醒、不排复核。
         """
         if owner not in ("catalog", "workspace") or type(replay) is not bool:
             raise TrackingError("invalid_event_owner")
@@ -285,7 +325,7 @@ class TrackingService:
                 raise TrackingError("event_gap", 409)
             for old, bundle, diff, revision, auth in plans:
                 row = self.store.watch_row(old["workspace_id"], old["id"])
-                # 远程读取期间配置或另一个消费者推进则整体重试，不带过期基线提交。
+                # 第 1 步读 catalog 期间，关注可能被改了或被别的进程处理过了。遇到这种情况整体重来，不用过期的基线提交。
                 if (row["version"], row["catalog_seq"], row["profile_revision"]) != (old["version"], old["catalog_seq"], old["profile_revision"]):
                     raise TrackingError("watch_changed_during_consume", 409)
                 watch = json.loads(row["payload"])
@@ -318,13 +358,15 @@ class TrackingService:
         return {"schema_version": 1, "owner": owner, "after": self.store.cursor(owner)}
 
     def _invalidate_commands(self, watch_id, reason):
+        """取消这个关注下所有未完成的复核命令。"""
         rows = self.db.execute("SELECT id,run_id FROM reassessments WHERE watch_id=? AND state NOT IN ('succeeded','partial','failed','cancelled','rejected','waiting_input')", (watch_id,)).fetchall()
         for row in rows:
             self.db.execute("UPDATE reassessments SET state='cancelled',reason=?,version=version+1,lease_epoch=lease_epoch+1,lease_until=0,next_attempt=0 WHERE id=?", (reason, row["id"]))
             self.store.reassessment_event(row["id"], "cancelled", reason, row["run_id"])
 
     def _queue_reassessment(self, watch, change, bundle, profile_revision):
-        # 变化历史逐条保留，但新的自动复核接替尚未完成的旧输入，避免旧结果冒充当前。
+        """为一次变化排一个自动复核命令，并附上委托（说明这次复核被授权做什么）。"""
+        # 变化记录全部保留，但旧的未完成复核会被新的取代，免得旧输入的结果被当成最新。
         self._invalidate_commands(watch["id"], "input_superseded")
         command_id = new_id()
         command_key = "tracking:" + command_id
@@ -341,6 +383,7 @@ class TrackingService:
         self.store.reassessment_event(command_id, "pending")
 
     def poll(self, owner, *, limit=20, replay=False):
+        """从 catalog 或 workspace 拉一页新事件，检查序号连续后逐条处理。"""
         integer(limit, 1, 100)
         if owner not in ("catalog", "workspace"):
             raise TrackingError("invalid_event_owner")
@@ -368,6 +411,11 @@ class TrackingService:
         return {"schema_version": 1, "owner": owner, "processed": len(items), "next_after": expected, "high_watermark": page["high_watermark"]}
 
     def check_delegation(self, actor_id, workspace_id, delegation):
+        """检查一个自动复核委托现在是否仍然有效。research 服务在每个动作前都会来问。
+
+        有效的条件：关注仍开启且版本没变、自动复核仍打开且没过期、
+        发起人权限和档案版本没变、命令还没结束、输入指纹和委托里记的一致。
+        """
         auth = self._authorize(actor_id, workspace_id, "analyze")
         if not isinstance(delegation, dict) or set(delegation) != DELEGATION_FIELDS:
             raise TrackingError("invalid_delegation")
@@ -387,7 +435,7 @@ class TrackingService:
         ids = [item["observation_id"] for item in bundle["observations"]]
         if input_fingerprint(request["notice_id"], request["profile_revision"], request["catalog_snapshot"], ids) != delegation["input_fingerprint"]:
             raise TrackingError("delegation_input_mismatch", 409)
-        # 目录读取期间可能有人停watch或撤权；授权不可缓存到后续模型动作。
+        # 读目录期间可能有人停了关注或被撤了权限，所以读完再查一遍。
         latest_auth = self._authorize(actor_id, workspace_id, "analyze")
         with self.store.tx(write=False):
             latest = self.store.watch_row(workspace_id, watch["id"])
@@ -401,6 +449,7 @@ class TrackingService:
                 "catalog_snapshot": request["catalog_snapshot"], "observation_ids": ids}
 
     def reassessments(self, actor_id, workspace_id):
+        """本公司最近的复核命令列表（最多 100 条）。"""
         self._authorize(actor_id, workspace_id)
         rows = self.db.execute("SELECT * FROM reassessments WHERE workspace_id=? ORDER BY rowid DESC LIMIT 101", (workspace_id,)).fetchall()
         if len(rows) > 100:
@@ -412,6 +461,7 @@ class TrackingService:
         return {key: row[key] for key in ("id", "workspace_id", "watch_id", "change_id", "command_key", "state", "run_id", "version", "reason", "attempts")}
 
     def claim(self, worker_id, *, lease_seconds=30):
+        """领取一个待派送的复核命令，并拿到新的租约编号（lease_epoch）。"""
         text(worker_id); integer(lease_seconds, 1, 120)
         with self.store.tx():
             row = self.db.execute("SELECT * FROM reassessments WHERE state IN ('pending','accepted') AND lease_until<=? AND next_attempt<=? ORDER BY rowid LIMIT 1", (now(), now())).fetchone()
@@ -422,6 +472,7 @@ class TrackingService:
             return {"id": row["id"], "lease_epoch": epoch, "request": json.loads(row["request"]), "state": row["state"], "run_id": row["run_id"]}
 
     def _leased(self, claim):
+        """确认租约仍有效、命令没被取消或改动，否则报 lease_lost。"""
         row = self.db.execute("SELECT * FROM reassessments WHERE id=?", (claim["id"],)).fetchone()
         if (row is None or row["lease_epoch"] != claim["lease_epoch"] or row["lease_until"] <= now()
                 or row["state"] not in ("pending", "accepted") or json.loads(row["request"]) != claim["request"]):
@@ -429,14 +480,15 @@ class TrackingService:
         return row
 
     def finish(self, claim, remote):
+        """记录 research 返回的任务状态。研究完成时发一条"复核完成"提醒。"""
         if (not isinstance(remote, dict) or remote.get("state") not in RUN_STATES or not isinstance(remote.get("id"), str)):
             raise TrackingError("invalid_research_response", 503)
         reason = remote.get("reason")
-        # owner只返回机器原因码；保留计费未知等停止依据，不转存上游任意错误正文。
+        # 只接受机器可读的原因码（如 billing_unknown），不保存对方的任意文本。
         if reason is not None and (not isinstance(reason, str) or re.fullmatch(r"[a-z][a-z0-9_]{0,127}", reason) is None):
             raise TrackingError("invalid_research_response", 503)
         request = claim["request"]
-        # 接受/发布前再检查当前委托；远程结果到达不能复活取消或已失权流程。
+        # 记录结果前再检查一次委托。已经取消或失去权限的复核，不能因为结果回来了就复活。
         self.check_delegation(request["actor_id"], request["workspace_id"], request["delegation"])
         with self.store.tx():
             row = self._leased(claim)
@@ -444,7 +496,7 @@ class TrackingService:
                     or remote.get("workspace_id", request["workspace_id"]) != request["workspace_id"]):
                 raise TrackingError("research_result_mismatch", 409)
             state = remote["state"] if remote["state"] in TERMINAL else "accepted"
-            # waiting_input在research中已经终止自动执行；不能继续轮询，更不能换键收费重试。
+            # waiting_input 在 research 那边已经停止自动执行，这里也当终态，不再轮询，更不会换个键重新发起。
             self.db.execute("UPDATE reassessments SET state=?,run_id=?,version=version+1,lease_until=0,next_attempt=?,result=?,reason=? WHERE id=?",
                             (state, remote["id"], 0 if state in TERMINAL else now() + 5,
                              canonical({"id": remote["id"], "state": remote["state"], "reason": reason}), reason, row["id"]))
@@ -456,6 +508,11 @@ class TrackingService:
             return self._run_value(self.db.execute("SELECT * FROM reassessments WHERE id=?", (row["id"],)).fetchone())
 
     def dispatch_one(self, worker_id="tracking-worker"):
+        """把一个复核命令派送给 research 服务，并记录结果。
+
+        出错时：权限或冲突类错误（403/404/409/429）直接拒绝；
+        其他错误稍后重试，连续 3 次失败就转为 deferred，等人手动重试。
+        """
         claim = self.claim(worker_id)
         if claim is None:
             return None
@@ -463,7 +520,8 @@ class TrackingService:
         try:
             self._leased(claim)
             self.check_delegation(request["actor_id"], request["workspace_id"], request["delegation"])
-            # 每次都先查询稳定命令，包括上次create响应丢失的情况；仅确认404才首次发送。
+            # 先按命令键去 research 查有没有这个任务（上次创建的响应可能丢了），
+            # 确认不存在（404）才真正创建，避免重复建任务、重复花钱。
             try:
                 remote = _call(self.research.command, request["workspace_id"], request["actor_id"], request["key"])
             except TrackingError as exc:
@@ -484,6 +542,7 @@ class TrackingService:
                 return self._run_value(self.db.execute("SELECT * FROM reassessments WHERE id=?", (row["id"],)).fetchone())
 
     def cancel_reassessment(self, actor_id, workspace_id, reassessment_id, expected_version, key):
+        """用户取消一个复核命令。research 那边的任务由 reconcile_cancelled 稍后去取消。"""
         self._authorize(actor_id, workspace_id, "track"); integer(expected_version, 1); text(reassessment_id)
         with self.store.tx():
             digest, cached = self.store.cached(workspace_id, "cancel", key, [actor_id, reassessment_id, expected_version])
@@ -499,7 +558,10 @@ class TrackingService:
             return self.store.remember(workspace_id, "cancel", key, digest, self._run_value(self.db.execute("SELECT * FROM reassessments WHERE id=?", (row["id"],)).fetchone()))
 
     def retry_reassessment(self, actor_id, workspace_id, reassessment_id, expected_version, key):
-        """依赖连续失败后需人明确重试；保留原命令key，先对账而不是重建收费任务。"""
+        """用户手动重试一个 deferred（多次失败后暂停）的复核命令。
+
+        沿用原来的命令键，所以派送时会先查 research 有没有这个任务，不会重复创建。
+        """
         self._authorize(actor_id, workspace_id, "track"); integer(expected_version, 1); text(reassessment_id)
         row = self.db.execute("SELECT * FROM reassessments WHERE workspace_id=? AND id=?", (workspace_id, reassessment_id)).fetchone()
         if row is None:
@@ -517,7 +579,10 @@ class TrackingService:
             return self.store.remember(workspace_id, "retry", key, digest, self._run_value(self.db.execute("SELECT * FROM reassessments WHERE id=?", (reassessment_id,)).fetchone()))
 
     def reconcile_cancelled(self, limit=20):
-        """取消已持久化后再尽力停止远端；晚到成功只记历史且绝不发布完成提醒。"""
+        """把已取消的复核命令同步到 research：对方任务还在跑就取消它。
+
+        取消在本地先生效。对方任务如果已经跑完了，结果只记进历史，不会发"复核完成"提醒。
+        """
         integer(limit, 1, 100)
         rows = self.db.execute("SELECT * FROM reassessments WHERE state='cancelled' AND reason!='cancel_reconciled' AND next_attempt<=? ORDER BY next_attempt,rowid LIMIT ?", (now(), limit)).fetchall()
         count = 0
@@ -532,8 +597,8 @@ class TrackingService:
             except TrackingError as exc:
                 if exc.status not in (403, 404):
                     continue
-                # 404也可能是取消与尚在途的create交错，不能当作“永远未接受”。
-                # 保留取消终态并稍后用原key继续对账；撤权后也不借服务身份读报告。
+                # 404 不一定代表对方永远不会有这个任务：创建请求可能还在路上。
+                # 所以保持取消状态，过一分钟再用原来的键查一次。
                 with self.store.tx():
                     self.db.execute("UPDATE reassessments SET next_attempt=? WHERE id=? AND state='cancelled'", (now() + 60, row["id"]))
                 continue

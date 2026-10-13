@@ -1,7 +1,18 @@
-"""tracking独占的本地SQLite；只保存自己的事务，不连接其他服务业务库。
+"""跟踪服务的数据库。只存本服务的数据，不连接其他服务的数据库。
 
-Store是服务内部持久层，公共动作由TrackingService先验证当前授权。开发恢复验证
-不等于PostgreSQL/RLS或生产备份验收。网络/模型调用绝不能在tx写锁里执行。
+权限检查由 TrackingService 负责，这里只管读写。
+写事务里不能做网络调用，否则会长时间占着写锁。
+现在用 SQLite 做本地开发，正式环境计划换成 PostgreSQL。
+
+表的含义：
+    cursors / inbox          已处理到哪个事件、处理过哪些事件（防重复、防跳号）
+    commands                 幂等键 → 首次处理的结果
+    decisions(_history)      跟进决定及其历史
+    watches / watch_history  关注设置及其历史
+    changes                  检测到的变化
+    reassessments(_history)  自动复核命令及其状态历史
+    notifications(_reads)    站内提醒，以及每个人的已读记录
+历史类的表只能插入，不能修改或删除（用触发器保证）。
 """
 from __future__ import annotations
 
@@ -18,12 +29,15 @@ from .diff import canonical, fingerprint
 
 
 class TrackingError(Exception):
+    """跟踪服务的业务错误。code 是错误码，status 是对应的 HTTP 状态码。"""
+
     def __init__(self, code, status=400):
         self.code, self.status = code, status
         super().__init__(code)
 
 
 def text(value, limit=128, *, empty=False):
+    """检查是合法的字符串：不超长、不含空字符；empty=False 时不能全是空白。"""
     if not isinstance(value, str) or len(value) > limit or (not empty and not value.strip()) or "\x00" in value:
         raise TrackingError("invalid_input")
     try:
@@ -34,26 +48,31 @@ def text(value, limit=128, *, empty=False):
 
 
 def integer(value, minimum=0, maximum=2**63-1):
+    """检查是范围内的整数（bool 不算）。"""
     if type(value) is not int or not minimum <= value <= maximum:
         raise TrackingError("invalid_version")
     return value
 
 
 def identifier(value):
+    """检查是 64 位十六进制的公告 ID。"""
     if not isinstance(value, str) or not re.fullmatch("[0-9a-f]{64}", value):
         raise TrackingError("invalid_notice_id")
     return value
 
 
 def now():
+    """当前时间，整数秒。"""
     return int(time.time())
 
 
 def utc(value=None):
+    """把时间戳转成 UTC 的 ISO 8601 字符串，例如 2026-10-01T03:56:00Z。"""
     return datetime.fromtimestamp(now() if value is None else value, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def new_id():
+    """随机生成一个 32 位十六进制 ID。"""
     return secrets.token_hex(16)
 
 
@@ -94,6 +113,8 @@ SCHEMA = (
 
 
 class TrackingStore:
+    """跟踪服务的数据存储。root 是数据目录，里面放 tracking.sqlite3。"""
+
     def __init__(self, root):
         root = Path(root).absolute()
         self.db = None
@@ -136,6 +157,7 @@ class TrackingStore:
 
     @contextmanager
     def tx(self, *, write=True):
+        """开启事务。写事务用 BEGIN IMMEDIATE 一开始就拿写锁。数据库错误统一转成 storage_unavailable。"""
         if self.db is None:
             raise TrackingError("store_closed", 503)
         try:
@@ -150,6 +172,7 @@ class TrackingStore:
             raise
 
     def cached(self, workspace_id, operation, key, request):
+        """查幂等键。返回 (请求指纹, 之前的结果或 None)。同一个键但请求不同，报 idempotency_conflict。"""
         text(key)
         digest = fingerprint(request)
         row = self.db.execute("SELECT * FROM commands WHERE workspace_id=? AND operation=? AND key=?", (workspace_id, operation, key)).fetchone()
@@ -158,20 +181,24 @@ class TrackingStore:
         return digest, json.loads(row["result"]) if row else None
 
     def remember(self, workspace_id, operation, key, digest, result):
+        """记下这个幂等键对应的结果，之后同样的请求直接返回它。"""
         self.db.execute("INSERT INTO commands VALUES(?,?,?,?,?)", (workspace_id, operation, key, digest, canonical(result)))
         return result
 
     def cursor(self, owner):
+        """某个事件来源（catalog 或 workspace）已经连续处理到的序号。"""
         row = self.db.execute("SELECT seq FROM cursors WHERE owner=?", (owner,)).fetchone()
         return row[0] if row else 0
 
     def watch_row(self, workspace_id, watch_id):
+        """读取一条关注记录，不存在就报 not_found。"""
         row = self.db.execute("SELECT * FROM watches WHERE workspace_id=? AND id=?", (workspace_id, watch_id)).fetchone()
         if row is None:
             raise TrackingError("not_found", 404)
         return row
 
     def notify(self, watch, change, kind, *, replay=False):
+        """发一条站内提醒。同一个变化、同一种提醒只会有一条；重建历史（replay）时不发。"""
         if replay:
             return
         value = {"schema_version": 1, "id": new_id(), "workspace_id": watch["workspace_id"], "watch_id": watch["id"],
@@ -181,5 +208,6 @@ class TrackingStore:
                         (value["id"], watch["workspace_id"], watch["id"], watch["rule_version"], change["fingerprint"], kind, canonical(value)))
 
     def reassessment_event(self, reassessment_id, state, reason=None, run_id=None):
+        """给复核命令追加一条状态历史。"""
         self.db.execute("INSERT INTO reassessment_history(reassessment_id,payload) VALUES(?,?)",
                         (reassessment_id, canonical({"state": state, "reason": reason, "run_id": run_id, "recorded_at": utc()})))
