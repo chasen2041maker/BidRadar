@@ -1,7 +1,12 @@
-"""公开采购第一层的一次完整运行：采集CLI→证据JSON→规范JSON→目录CLI。
+"""对真实公开网站跑一次完整的数据链：采集 → 导出证据包 → 规范化 → 导入目录。
 
-原文只留本地目录；终端输出计数/状态/证据位置。脚本不直读任何服务的数据库，
-不调模型，不定时循环。相同key只取回同一运行，新的时间窗口需新的key。
+用法示例：
+    python scripts/run_public_chain.py --source ccgp --category zygg --key 2026-10-01-a \
+        --policy 准入文件.json --allow-network --pages 1 --max-notices 5
+需要有效的来源准入文件，并显式加上 --allow-network 才会联网。
+
+原始网页只保存在本地数据目录，终端只输出数量、状态和证据位置。不调模型，也不会定时重复运行。
+同一个 --key 重复执行会取回同一次运行的结果；想抓新的时间段，换一个新的 key。
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ from uuid import uuid4
 
 
 def main(argv=None):
+    """依次执行采集、导出、规范化、导入，并打印摘要。"""
     parser = argparse.ArgumentParser(description="公开采购有限获取到目录；原始日志仅保存在本地")
     parser.add_argument("--root", type=Path, default=Path(".bidradar-data/public-chain"))
     parser.add_argument("--source", choices=("ccgp", "hainan"), required=True)

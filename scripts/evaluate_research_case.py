@@ -1,8 +1,14 @@
-"""真实本地HTTP验收单例；显式--execute才创建可能收费的研究任务。
+"""对一条公告跑一次真实的研究评测（需要先启动 run_research_workbench.py --enable-model）。
 
-不直接调用供应商。公司必须是运行器的虚构公司，资料来自已获准导入目录。
-报告/冻结输入保留在忽略目录；终端只输出编号、状态、费用和机器指标。
-同case-key重跑复用原命令，不能用刷新作为新收费授权。
+用法：
+    python scripts/evaluate_research_case.py --notice-id <公告ID> --case-key <用例名>             # 只显示计划
+    python scripts/evaluate_research_case.py --notice-id <公告ID> --case-key <用例名> --execute   # 真的执行（会花钱）
+    加 --company 1 用第二家虚构公司；加 --parent-run-id 和 --question 测试追问。
+
+通过正在运行的工作台发起任务，不直接调用模型接口。
+完整的冻结输入和报告保存在 .bidradar-data/r12-workbench/evaluations/，终端只输出编号、状态、费用和指标。
+同一个 case-key 重复运行会复用原来的任务，不会再花一次钱；想重新测，换一个 case-key。
+命令执行成功只说明流程跑通了，报告质量要另外看。
 """
 import argparse
 from contextlib import closing
@@ -26,6 +32,7 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 def main(argv=None):
+    """按参数登录虚构公司、发起研究任务、等待结果并保存。"""
     parser = argparse.ArgumentParser(description="在已运行工作台中执行获准真实模型验收")
     parser.add_argument("--root", type=Path, default=Path(".bidradar-data/r12-workbench"))
     parser.add_argument("--notice-id", required=True)

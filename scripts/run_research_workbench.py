@@ -1,7 +1,17 @@
-"""R1/R2 本地四服务运行器；只预置虚构企业，真实模型须显式开启。
+"""一条命令启动完整的本地环境：workspace、catalog、research、tracking 四个服务。
 
-所有进程仍通过HTTP按所属领域访问数据。实际模型预算固定在仓库外本轮授权账本，
-更换--root仅换业务环境，不重置预算；命令行、日志和runtime.json不含密钥值。
+用法：
+    python scripts/run_research_workbench.py                  # 启动，不调真实模型
+    python scripts/run_research_workbench.py --enable-model   # 启动，并允许调用 DeepSeek（会花钱）
+    python scripts/run_research_workbench.py --bundle x.json  # 启动前导入一个规范化公告包
+然后浏览器打开 http://127.0.0.1:8965/ 。测试账号在 .bidradar-data/r12-workbench/demo-accounts.json。
+
+说明：
+    - 首次运行会创建两家虚构公司和它们的初始档案。
+    - 四个服务各自一个进程，彼此只通过 HTTP 通信。
+    - 模型费用账本固定在 ~/.bidradar/budgets/ 下，换 --root 只换业务数据，不会重置预算。
+    - DeepSeek 密钥从 ~/.bidradar/credentials/deepseek-api-key.txt 读取，不会出现在命令行、日志或配置文件里。
+    - Ctrl+C 停止；数据保留，下次启动接着用。
 """
 from __future__ import annotations
 
@@ -27,7 +37,7 @@ KEY_PATH = Path.home() / ".bidradar/credentials/deepseek-api-key.txt"
 
 
 def seed_profiles(root):
-    """仅首次预置虚构声明；已有人修改的正式版本绝不覆盖。声明仍不等于证明。"""
+    """首次运行时给两家虚构公司写入初始档案。已经有正式档案的公司不会被覆盖。"""
     from services.workspace.store import WorkspaceStore
     account_data = json.loads((root / "demo-accounts.json").read_text(encoding="utf-8"))
     examples = [(0, 0, {"company_name": "山岚软件（虚构）", "city": "天津",
@@ -50,6 +60,7 @@ def seed_profiles(root):
 
 
 def serve(name, config_path):
+    """在子进程里运行单个服务（由 --serve 参数触发）。"""
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     root, ports, tokens = Path(config["root"]), config["ports"], config["tokens"]
     url = lambda service: f"http://127.0.0.1:{ports[service]}"
@@ -110,6 +121,7 @@ def serve(name, config_path):
 
 
 def main(argv=None):
+    """准备数据目录、启动四个服务进程，并等待 Ctrl+C。"""
     parser = argparse.ArgumentParser(description="R1/R2本地虚构企业工作台，模型20元固定授权账本")
     parser.add_argument("--root", type=Path, default=Path(".bidradar-data/r12-workbench"))
     parser.add_argument("--bundle", type=Path, action="append", default=[])

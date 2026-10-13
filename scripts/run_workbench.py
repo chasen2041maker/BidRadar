@@ -1,7 +1,10 @@
-"""启动 R1-A 两个独立本地服务；预置虚构公司，不下载数据、不调用模型。
+"""启动旧版的两服务工作台（只有 workspace 和 catalog，没有研究和跟踪）。
 
-第一次运行生成测试账号与随机密码，仅保存到忽略目录。公开规范包通过 catalog CLI
-导入；这个启动器不会把 catalog ORM 交给 workspace。Ctrl+C 关闭本次子进程。
+用法：python scripts/run_workbench.py [--bundle 规范化公告包.json]
+然后浏览器打开 http://127.0.0.1:8765/ 。
+
+第一次运行会创建虚构公司和测试账号，随机密码保存在 .bidradar-data/r1-workbench/ 里（不提交到 git）。
+不下载数据、不调模型。Ctrl+C 停止。新的完整环境请用 run_research_workbench.py。
 """
 from __future__ import annotations
 
@@ -22,13 +25,14 @@ from services.workspace.catalog_client import CatalogClient, CatalogError
 
 
 def _write(path, value):
+    """把 JSON 写入文件。非 Windows 系统上把权限设成只有本人可读写（文件里有测试账号的密码）。"""
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
     if os.name != "nt":
         path.chmod(0o600)
 
 
 def prepare(root, bundles):
-    """只初始化带本任务标记的独立目录；已有密码和用户历史绝不覆盖。"""
+    """初始化数据目录：建库、创建虚构公司和账号、导入公告包。已有的账号和密码不会被覆盖。"""
     root.mkdir(parents=True, exist_ok=True)
     marker = root / "demo-accounts.json"
     if not marker.exists():
@@ -80,6 +84,7 @@ def prepare(root, bundles):
 
 
 def main(argv=None):
+    """准备数据目录并启动两个服务进程，等待 Ctrl+C。"""
     parser = argparse.ArgumentParser(description="中文本地工作台；仅虚构企业，公开资料须事先获准")
     parser.add_argument("--root", type=Path, default=Path(".bidradar-data/r1-workbench"))
     parser.add_argument("--bundle", type=Path, action="append", default=[], help="已获准的规范JSON包，可重复传入")

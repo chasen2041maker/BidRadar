@@ -1,7 +1,8 @@
-"""一条命令验收三个CLI的文件契约；全程虚构数据和本地进程，不访问采购网站。
+"""离线演示整条数据链：采集（虚构数据）→ 导出证据包 → 规范化 → 导入目录 → 查询。
 
-脚本只编排公开CLI，不导入任一服务的Store，不把三个数据域拼成共享业务库。
-原始输出写入忽略目录，终端只显示可核对的摘要；可重复运行验证幂等。
+用法：python scripts/run_data_demo.py
+全程使用虚构数据，不访问任何网站。只通过各服务的命令行工具串起来，不直接读写任何服务的数据库。
+输出文件放在 .bidradar-data/demo-chain/，终端只显示摘要。重复运行可以验证幂等（不会重复导入）。
 """
 import argparse
 import json
@@ -12,6 +13,7 @@ import sys
 
 
 def main(argv=None):
+    """依次运行各个命令行工具，并打印摘要。"""
     parser = argparse.ArgumentParser(description="数据阶段离线整链演示（非真实采购数据）")
     parser.add_argument("--root", type=Path, default=Path(".bidradar-data/demo-chain"))
     args = parser.parse_args(argv)
