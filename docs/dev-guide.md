@@ -1,8 +1,10 @@
 # 开发指南
 
+仓库里现在有两套代码：旧代码在 `services/`，v2 新代码在 `bidradar/`。下面几节讲旧代码；新代码见 [v2 新代码](#v2-新代码bidradar)。旧代码到 v2 阶段 6 删除。
+
 ## 环境
 
-- Python 3.10 或更高版本。运行和测试只用标准库，不需要 `pip install`。
+- Python 3.10 或更高版本。旧代码运行和测试只用标准库，不需要 `pip install`。
 - Node.js（可选）：只用来检查前端语法 `node --check services/workspace/web/app.js`。
 - 格式化工具（可选）：`ruff`（Python）和 `prettier`（前端），只在改代码后格式化时用到。
 
@@ -101,7 +103,7 @@ npx prettier@3 --write services/workspace/web/
 - `store.py`：数据库读写
 - `worker.py`：后台任务（research、tracking）
 
-v2 会改成统一的四层结构，见 [v2 改造蓝图](v2-blueprint.md) 第 3 节。在那之前：
+v2 改成了统一的分层结构，见下面的 [v2 新代码](#v2-新代码bidradar)。旧代码继续遵守这几条：
 
 - 一个服务不能读另一个服务的数据库，要数据就调对方的接口。
 - 浏览器传来的身份、公司、角色都不能直接信，必须从会话和数据库重新取。
@@ -129,6 +131,85 @@ v2 会改成统一的四层结构，见 [v2 改造蓝图](v2-blueprint.md) 第 3
 - 进度和下一步 → `docs/roadmap.md`
 - 一个重要的设计决定 → `docs/decisions/` 下新建一页（背景、决定、代价）
 - 一次任务的过程细节 → 写在 PR 描述里，不另建文档
+
+## v2 新代码（bidradar/）
+
+### 环境
+
+- Python 3.12 和 [uv](https://docs.astral.sh/uv/)。uv 负责装 Python 依赖、锁版本、运行命令。
+- Docker，用来跑 PostgreSQL 16。
+- `uv sync` 把依赖装进仓库里的 `.venv/`。依赖写在 `pyproject.toml`，确切版本锁在 `uv.lock`。改依赖用 `uv add` 或 `uv remove`，两个文件一起提交。
+
+### 运行
+
+```bash
+docker compose up -d --wait db                     # 启动 PostgreSQL，等它就绪
+uv run alembic upgrade head                        # 把数据库迁移到最新版本
+uv run uvicorn bidradar.app.main:app --reload      # 启动 API
+curl http://127.0.0.1:8000/health                  # {"status":"ok","database":"ok"}
+```
+
+接口文档在 http://127.0.0.1:8000/docs ，由 FastAPI 自动生成。
+
+- 配置项在 `bidradar/app/settings.py`。每一项都能用 `BIDRADAR_` 开头的环境变量或 `.env` 文件覆盖，模板见 `.env.example`。
+- 默认值对应 `docker-compose.yml` 里的本地数据库，不写 `.env` 也能跑。
+- 数据库第一次启动时会建两个库：`bidradar` 给开发用，`bidradar_test` 给 pytest 用。
+- 不用 Docker 也可以：自己装 PostgreSQL 16，建好这两个库，再用 `BIDRADAR_DATABASE_URL` 和 `BIDRADAR_TEST_DATABASE_URL` 指过去。
+
+### 测试和检查
+
+```bash
+uv run pytest                                      # 新代码的测试，连 bidradar_test 库
+uv run lint-imports                                # 检查分层规则
+uv run alembic check                               # 检查表定义和迁移是否一致
+uv run ruff format bidradar migrations tests_v2    # 格式化
+```
+
+新代码的测试放在 `tests_v2/`，用 pytest。旧测试留在 `tests/`，用 unittest。阶段 6 删掉旧代码后，`tests_v2/` 改名为 `tests/`。
+
+测试分三层，公共夹具在 `tests_v2/conftest.py`：
+
+| 层 | 测什么 | 怎么写 |
+| --- | --- | --- |
+| 纯逻辑 | `models.py`、`agent/` 的各步骤 | 直接调函数，不连数据库；大模型用假实现代替 |
+| 服务 | `service.py` 加 `repo.py`，连真实 PostgreSQL | 用 `db_session` 夹具。每个测试跑在一个事务里，结束后回滚 |
+| 接口 | 从 HTTP 请求到数据库的完整路径 | 用 `client` 夹具。请求直接在进程里交给 FastAPI，会话同样会回滚 |
+
+### 每一层放什么，为什么这样分
+
+| 层 | 位置 | 放什么 | 为什么单独一层 |
+| --- | --- | --- | --- |
+| app | `bidradar/app/` | `main.py` 组装应用、挂路由；`deps.py` 给路由注入数据库会话，阶段 1 加上当前用户；`settings.py` 读配置；`metadata.py` 列出全部表定义 | 只有这一层知道一共有哪些模块。换配置、加模块都只改这里 |
+| api | `modules/*/api.py` | 路由：解析请求，调用 service，把结果转成响应 | 状态码、Cookie 这些 HTTP 细节不会混进业务规则 |
+| schemas | `modules/*/schemas.py` | 接口的请求和响应结构（Pydantic） | 接口长什么样和表长什么样分开定义，改表不会悄悄改掉接口 |
+| service | `modules/*/service.py` | 业务用例：一个函数一个业务动作，由它提交事务 | API 和 Worker 都调用它。它也是别的模块唯一能调用的入口，以后拆服务时换成同名接口的 HTTP 客户端就行 |
+| repo | `modules/*/repo.py` | 数据库读写 | 业务规则里看不到 SQL，SQL 里看不到业务规则 |
+| tables | `modules/*/tables.py` | SQLAlchemy 表定义，绑定在本模块自己的 schema 上 | 每个模块只写自己的 schema，拆服务时把 schema 整个搬走 |
+| models | `modules/*/models.py` | 领域对象和业务规则，纯 Python | 规则最集中的地方，不连数据库就能单测 |
+| agent | `bidradar/agent/` | 研究流水线和追问 Agent，纯逻辑 | 需要的东西都从参数传进来，所以能单独评测，以后也能单独拆走 |
+| infra | `bidradar/infra/` | 数据库连接，以后还有任务队列、outbox、日志、时钟 | 最底层，谁都能用，它不认识业务 |
+
+一个请求怎么走，看 `bidradar/app/health.py`：路由（app）→ 依赖注入会话（`deps.py`）→ 执行 SQL（`infra/db.py`）→ 数据库。阶段 1 起，业务请求会多经过 api → service → repo 这几层。
+
+### 依赖规则
+
+这些规则写成了 import-linter 契约，放在 `pyproject.toml` 里，CI 每次都检查。违反时 `uv run lint-imports` 会指出是哪一行 import 越界了。
+
+1. 模块内只能从上往下 import：api → schemas → service → repo → tables → models。
+2. api 只调用 service，不直接 import repo 和 tables。
+3. 跨模块只能 import 对方的 service，不能碰对方的其他文件。
+4. `models.py` 不 import FastAPI、SQLAlchemy 这类 Web 和数据库库。
+5. `agent/` 不 import app、modules、infra，也不 import Web 和数据库库。
+6. `infra/` 不 import app、modules、agent。
+
+### 数据库迁移
+
+- 改了 `tables.py` 之后生成迁移：`uv run alembic revision --autogenerate --rev-id 0002 -m "create identity tables"`。编号接着上一个往下排。
+- 生成的迁移一定要读一遍再提交。比如改列名，自动生成的是"删一列、加一列"，会丢数据，要手动改成重命名。
+- 迁移合并到 main 以后就不再修改。要改，就再写一个新迁移。
+- 迁移里不 import 应用代码，表名和 schema 名直接写在迁移里。应用代码会继续改，迁移必须保持原样。
+- 模块之间不建外键。跨模块的 ID（比如 `workspace_id`）只存值，由 service 保证它有效。这样每个 schema 都能整体搬走。
+- 新增模块时，在 `bidradar/app/metadata.py` 加一行，再写一个建 schema 的迁移。漏了哪一步，pytest 都会失败。
 
 ## 提交和合并
 
