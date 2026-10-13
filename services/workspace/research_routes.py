@@ -1,6 +1,7 @@
 """浏览器到所属服务的窄网关：身份从会话派生，正文不能指定公司或actor。"""
 import re
-from urllib.parse import parse_qsl
+
+from services.common.query import parse_query_pairs
 
 from .store import WorkspaceError
 
@@ -12,7 +13,7 @@ def fields(value, expected):
 
 def page(query, *, research=False):
     try:
-        pairs = parse_qsl(query, strict_parsing=True, keep_blank_values=True, max_num_fields=2)
+        pairs = parse_query_pairs(query, strict_parsing=True, keep_blank_values=True, max_num_fields=2)
         values = dict(pairs)
         allowed = {"before", "limit"} if research else {"after", "limit"}
         if len(values) != len(pairs) or set(values) - allowed:

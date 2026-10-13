@@ -16,7 +16,9 @@ import json
 from pathlib import Path
 import re
 import sqlite3
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
+
+from services.common.query import parse_query_pairs
 
 from .store import Catalog, KINDS
 
@@ -112,7 +114,7 @@ class _Handler(BaseHTTPRequestHandler):
         if len(query) > 7000 or re.search(r"%(?![0-9a-fA-F]{2})", query):
             raise _RequestError("invalid_query")
         try:
-            pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True,
+            pairs = parse_query_pairs(query, keep_blank_values=True, strict_parsing=True,
                               encoding="utf-8", errors="strict", max_num_fields=5)
         except (ValueError, UnicodeError):
             raise _RequestError("invalid_query") from None
@@ -170,7 +172,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _numbers(self, query, allowed):
         """增量与历史读接口只接受明确的十进制整数，不借重复键更换快照。"""
         try:
-            pairs = parse_qsl(query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
+            pairs = parse_query_pairs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=2)
             values = dict(pairs)
             if len(values) != len(pairs) or set(values) - allowed:
                 raise ValueError()
