@@ -103,10 +103,43 @@ function el(tag, text, cls) {
 function badge(text, type = "") {
   return el("span", text, "badge " + type);
 }
+// 代码里用到的几个图标，和 index.html 里的同一套画法（24×24 画布、描边、颜色跟随文字）。
+const iconPaths = {
+  plus: "M12 5.5v13M5.5 12h13",
+  check: "m5.5 12.5 4.2 4.2L18.5 8",
+  file: "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Zm0 0v5h5M9 13h6M9 17h4",
+  inbox:
+    "M3.5 13.5 5.8 5.4A2 2 0 0 1 7.7 4h8.6a2 2 0 0 1 1.9 1.4l2.3 8.1V18a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2Zm0 0h4.8l1.4 2.5h4.6l1.4-2.5h4.8",
+};
+function icon(name) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("class", "i");
+  svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  shape.setAttribute("d", iconPaths[name]);
+  svg.append(shape);
+  return svg;
+}
+// 头像只取名字的第一个字。Array.from 按字符而不是按 UTF-16 单元切，生僻字和表情不会被切成半个。
+function initial(name) {
+  return Array.from(String(name || "").trim())[0] || "?";
+}
+// 研究和复核状态的配色：成功用绿色，失败用红色，需要人处理的用橙色，其余灰色。
+function runTone(status) {
+  if (status === "succeeded") return "";
+  if (["failed", "rejected"].includes(status)) return "danger";
+  if (["partial", "waiting_input", "deferred"].includes(status)) return "warning";
+  return "neutral";
+}
+let noticeTimer = null;
 function notice(message, failure = false) {
   $("notice").textContent = message;
   $("notice").className = "notice" + (failure ? " failure" : "");
   $("notice").hidden = false;
+  // 提示浮在页面右上角，几秒后自动收起；出错的提示多停一会儿，方便看清。点一下也能提前关掉。
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => ($("notice").hidden = true), failure ? 12000 : 6000);
 }
 function clearPrivateView() {
   stopRunPolling();
@@ -267,10 +300,26 @@ async function command(resource, data) {
   sessionStorage.removeItem(storageKey);
   return result;
 }
-function empty(container, title, text) {
+function empty(container, title, text, iconName = "inbox") {
   const box = el("div", null, "empty");
-  box.append(el("strong", title), el("p", text));
+  box.append(icon(iconName), el("strong", title), el("p", text));
   container.append(box);
+}
+// 读取目录时先放几行占位，结果出来时列表高度不会突然跳动。
+function skeletonRows(count) {
+  return Array.from({ length: count }, () => {
+    const row = el("div", null, "row skeleton"),
+      lines = el("div");
+    lines.append(el("div", null, "bar w-60"), el("div", null, "bar w-35"));
+    row.append(lines, el("div", null, "bar w-btn"));
+    return row;
+  });
+}
+// "预算 123,400.00 元"这类字段：标签用普通文字，数值用等宽数字，方便上下行对齐比较。
+function labelled(label, value) {
+  const span = el("span", label + " ");
+  span.append(el("span", value, "num"));
+  return span;
 }
 function dateText(value) {
   if (!value) return "尚未确认";
@@ -312,6 +361,7 @@ async function loadSession() {
   $("login-screen").hidden = true;
   $("workspace-screen").hidden = false;
   $("account-name").textContent = state.session.user.display_name;
+  $("account-avatar").textContent = initial(state.session.user.display_name);
   const select = $("workspace-select");
   select.replaceChildren();
   for (const workspace of state.session.workspaces) {
@@ -354,11 +404,20 @@ async function showView(view) {
     discover: "商机目录",
     profile: "企业档案",
     selections: "已保存选择",
-    members: "公司成员",
-    research: "AI 研究与追问",
-    tracking: "决定与持续跟踪",
+    members: "成员",
+    research: "AI 研究",
+    tracking: "决定与跟踪",
+  };
+  const subtitles = {
+    discover: "浏览和筛选不会调用模型。",
+    profile: "企业对自身能力与限制的声明，管理员确认后生成正式版本。",
+    selections: "保存时固定当时的公告和档案版本，确认后才能发起研究。",
+    members: "公司成员、角色与访问权限。",
+    research: "AI 只在固定资料里检索证据，每条结论都附原文。",
+    tracking: "人工决定、关注设置，以及资料变化后的提醒与复核。",
   };
   $("page-title").textContent = titles[view];
+  $("header-context").textContent = subtitles[view];
   for (const name of Object.keys(titles)) $(name + "-view").hidden = name !== view;
   for (const button of document.querySelectorAll("[data-view]"))
     button.classList.toggle("active", button.dataset.view === view);
@@ -384,7 +443,7 @@ async function search(next) {
   const params = new URLSearchParams(state.query);
   if (next && state.cursor) params.set("cursor", state.cursor);
   const list = $("notice-list");
-  list.replaceChildren(el("p", "正在读取目录…", "muted"));
+  list.replaceChildren(...skeletonRows(3));
   try {
     const result = await api(path("notices") + "?" + params);
     if (searchVersion !== state.searchVersion) return;
@@ -393,48 +452,61 @@ async function search(next) {
     $("next-page").hidden = !state.cursor;
     $("total-count").textContent = result.total;
     $("data-label").textContent = result.simulation ? "虚构演示样本" : "已归档公开公告";
-    $("as-of").textContent = "状态核对时间：" + localTime(result.as_of);
+    $("as-of").textContent = "核对于 " + localTime(result.as_of);
     $("source-status").textContent = result.recent_runs.length
-      ? "最近导入情况：" +
+      ? "最近导入：" +
         result.recent_runs
           .slice(0, 3)
           .map(
             (r) =>
-              `${r.source_id === "cn_ccgp" ? "中国政府采购网" : r.source_id === "cn_hainan" ? "海南公共资源交易" : r.source_id} · ${r.observations} 条公告${r.failures ? " · 有获取缺口" : ""}`,
+              `${r.source_id === "cn_ccgp" ? "中国政府采购网" : r.source_id === "cn_hainan" ? "海南公共资源交易" : r.source_id} ${r.observations} 条${r.failures ? "（有获取缺口）" : ""}`,
           )
           .join("；") +
-        "。这是本地归档范围，不表示实时或全国覆盖。"
-      : "当前范围尚无来源导入记录。";
-    if (!result.items.length) empty(list, "当前筛选下没有记录", "可以调整关键词或公告类型；这不表示全网没有商机。");
+        "。只覆盖本地已归档的公告，不代表实时或全国范围。"
+      : "当前范围还没有导入记录。";
+    if (!result.items.length)
+      empty(list, "没有符合条件的公告", "换个关键词或公告类型试试。结果只覆盖本地已归档的公告。", "file");
     for (const item of result.items) {
-      const card = el("article", null, "opportunity"),
+      const row = el("article", null, "row"),
         body = el("div"),
-        tags = el("div", null, "tags");
-      tags.append(
-        badge(kindNames[item.notice_type]),
+        meta = el("div", null, "row-meta");
+      // 标题本身就能打开详情：列表里最常做的事就是看证据，不必每次都去找按钮。
+      const title = el("button", item.title || "未取得标题", "row-title");
+      title.type = "button";
+      title.addEventListener("click", () => run(null, () => showDetail(item.notice_id)));
+      meta.append(
+        el("span", kindNames[item.notice_type] || "类型待核实"),
+        labelled("预算", factText(item.facts.budget)),
+        labelled("截止", factText(item.facts.response_deadline)),
         badge(item.simulation ? "虚构样例" : "真实公开公告", item.simulation ? "warning" : "neutral"),
         badge(statusNames[item.currentness.status] || "状态待核实", "neutral"),
       );
-      body.append(tags, el("h3", item.title || "未取得标题"));
-      const meta = el("div", null, "card-meta");
-      meta.append(
-        el("span", "预算：" + factText(item.facts.budget)),
-        el("span", "响应截止：" + factText(item.facts.response_deadline)),
-      );
-      body.append(meta);
-      const actions = el("div", null, "card-actions");
+      body.append(title, meta);
+      const actions = el("div", null, "row-actions");
       actions.append(actionButton("查看证据", () => showDetail(item.notice_id)));
-      const choose = actionButton(state.cart.has(item.notice_id) ? "移出选择" : "加入选择", async () => {
-        if (state.cart.has(item.notice_id)) state.cart.delete(item.notice_id);
-        else if (state.cart.size >= 20) throw new Error("一次最多选择 20 个项目。");
-        else state.cart.set(item.notice_id, { notice_id: item.notice_id, observation_id: item.observation_id });
-        choose.textContent = state.cart.has(item.notice_id) ? "移出选择" : "加入选择";
-        updateCart();
-      });
+      const choose = el("button");
+      choose.type = "button";
+      // 按钮和整行一起反映"是否已加入"，再点一次就是移出。
+      const paint = () => {
+        const picked = state.cart.has(item.notice_id);
+        choose.replaceChildren(icon(picked ? "check" : "plus"), picked ? "已加入" : "加入选择");
+        choose.setAttribute("aria-pressed", String(picked));
+        choose.title = picked ? "再点一次移出选择" : "";
+        row.classList.toggle("is-selected", picked);
+      };
+      choose.addEventListener("click", () =>
+        run(choose, async () => {
+          if (state.cart.has(item.notice_id)) state.cart.delete(item.notice_id);
+          else if (state.cart.size >= 20) throw new Error("一次最多选择 20 个项目。");
+          else state.cart.set(item.notice_id, { notice_id: item.notice_id, observation_id: item.observation_id });
+          paint();
+        }),
+      );
+      paint();
       choose.disabled = !canWrite();
       actions.append(choose);
-      card.append(body, actions);
-      list.append(card);
+      row.append(body, actions);
+      list.append(row);
     }
   } catch (error) {
     if (error.discarded || searchVersion !== state.searchVersion) return;
@@ -446,8 +518,10 @@ async function search(next) {
   }
 }
 function updateCart() {
-  $("cart-label").textContent = state.cart.size ? `待保存 ${state.cart.size} 个项目` : "尚未选择项目";
+  $("cart-label").textContent = state.cart.size ? `已选 ${state.cart.size} 个项目` : "尚未选择项目";
   $("prepare-selection").disabled = !canWrite() || !state.cart.size;
+  // 选了项目才浮出底部操作条，没选时不占位置。
+  $("cart-bar").classList.toggle("is-visible", state.cart.size > 0);
 }
 function evidenceBlock(title, evidence) {
   const section = el("details");
@@ -640,7 +714,10 @@ async function loadSelections() {
     const record = el("article", null, "record");
     const tags = el("div", null, "tags");
     tags.append(
-      badge(names[selection.state] || selection.state, selection.state === "awaiting_decision" ? "warning" : "neutral"),
+      badge(
+        names[selection.state] || selection.state,
+        selection.state === "awaiting_decision" ? "warning" : selection.state === "selected" ? "" : "neutral",
+      ),
       el("span", `档案第 ${selection.profile_revision} 版 · ${selection.items.length} 个项目`, "muted"),
     );
     record.append(tags);
@@ -700,12 +777,14 @@ async function loadMembers() {
   list.replaceChildren();
   for (const member of result.items) {
     const row = el("div", null, "member-row"),
+      avatar = el("span", initial(member.display_name), "avatar"),
       info = el("div");
+    avatar.setAttribute("aria-hidden", "true");
     info.append(
       el("strong", member.display_name),
       el("p", member.username + (member.active ? " · 可访问" : " · 已撤权"), "muted"),
     );
-    row.append(info);
+    row.append(avatar, info);
     if (state.workspace.role === "admin") {
       const select = el("select");
       select.setAttribute("aria-label", member.display_name + "的角色");
@@ -810,7 +889,12 @@ function yuan(value) {
   )
     return "未知";
   const amount = BigInt(value);
-  return "¥ " + (amount / 1000000n).toString() + "." + (amount % 1000000n).toString().padStart(6, "0");
+  // 账本单位是百万分之一元。显示时去掉末尾多余的 0（至少保留两位小数）：只是写短，不四舍五入，金额不变。
+  const fraction = (amount % 1000000n)
+    .toString()
+    .padStart(6, "0")
+    .replace(/0{1,4}$/, "");
+  return "¥" + (amount / 1000000n).toString() + "." + fraction;
 }
 function stopRunPolling() {
   if (state.pollTimer !== null) clearTimeout(state.pollTimer);
@@ -864,10 +948,7 @@ function latestRunStatus(run) {
   return state.runStatuses.get(run.id).state;
 }
 function runStatusBadge(status) {
-  return badge(
-    runStates[status] || status,
-    "run-state " + (["failed", "partial", "waiting_input"].includes(status) ? "warning" : "neutral"),
-  );
+  return badge(runStates[status] || status, "run-state " + runTone(status));
 }
 function syncRunListStatus(run) {
   const status = latestRunStatus(run);
@@ -894,6 +975,7 @@ async function loadRunList(more = false) {
   for (const item of result.items || []) {
     const card = el("article", null, "run-card");
     card.dataset.runId = item.id;
+    card.classList.toggle("is-active", item.id === state.runId);
     card.append(
       modeBadge(item.mode),
       sampleBadge(item.simulation),
@@ -932,6 +1014,9 @@ async function viewRun(id, remaining = 20) {
   if (version !== state.runVersion || state.view !== "research") return;
   renderRun(run, remaining);
   syncRunListStatus(run);
+  // 左侧列表高亮正在查看的任务。
+  for (const card of $("research-list").querySelectorAll("[data-run-id]"))
+    card.classList.toggle("is-active", card.dataset.runId === run.id);
   // 轮询任务状态：最多 20 次，每次间隔 3 秒。只查询已有任务，不会重新创建。
   if (["queued", "running", "retry_wait"].includes(run.state) && remaining > 0) {
     state.pollTimer = setTimeout(async () => {
@@ -982,11 +1067,10 @@ function renderReport(run, container) {
   );
   for (const finding of Array.isArray(report.findings) ? report.findings : []) {
     const card = el("article", null, "finding");
+    // 满足用绿色，不满足用红色，未知和冲突用橙色（需要人去核查）。
+    const tones = { met: "", unmet: "danger", unknown: "warning", conflicting: "warning" };
     card.append(
-      badge(
-        findingStates[finding.status] || "状态待核对",
-        ["unknown", "conflicting", "unmet"].includes(finding.status) ? "warning" : "neutral",
-      ),
+      badge(findingStates[finding.status] || "状态待核对", tones[finding.status] ?? "neutral"),
       el("h3", finding.requirement || finding.category || "待核查条件"),
     );
     card.append(el("p", valueText(finding.reason), "long-text"));
@@ -1022,10 +1106,7 @@ function renderRun(run, remaining) {
   tags.append(
     modeBadge(run.mode),
     sampleBadge(run.simulation),
-    badge(
-      runStates[run.state] || run.state,
-      ["failed", "partial", "waiting_input"].includes(run.state) ? "warning" : "neutral",
-    ),
+    badge(runStates[run.state] || run.state, runTone(run.state)),
   );
   container.append(
     tags,
@@ -1397,7 +1478,10 @@ async function loadReassessments(version = state.trackingVersion) {
     empty(container, "暂无自动复核任务", "开启关注不等于授权调用模型；需要单独明确授权自动复核。");
   for (const item of result.items || []) {
     const row = el("article", null, "record");
-    row.append(badge(runStates[item.state] || item.state, "neutral"), el("p", "复核编号 " + item.id, "identifier"));
+    row.append(
+      badge(runStates[item.state] || item.state, runTone(item.state)),
+      el("p", "复核编号 " + item.id, "identifier"),
+    );
     if (item.reason) row.append(el("p", "原因：" + (errors[item.reason] || item.reason), "muted"));
     if (item.state === "waiting_input") row.append(el("p", waitingInputMessage(item), "note"));
     if (item.run_id)
@@ -1473,6 +1557,7 @@ $("search-form").addEventListener("submit", (event) => {
 });
 $("next-page").addEventListener("click", () => run($("next-page"), () => search(true)));
 $("close-detail").addEventListener("click", () => $("detail-dialog").close());
+$("notice").addEventListener("click", () => ($("notice").hidden = true));
 $("prepare-selection").addEventListener("click", () =>
   run($("prepare-selection"), async () => {
     if (!state.profile?.current) throw new Error("请先到企业档案提交建议，并由管理员确认正式版本。");
@@ -1500,6 +1585,14 @@ $("more-notifications").addEventListener("click", () => run($("more-notification
 $("more-changes").addEventListener("click", () => run($("more-changes"), () => loadChanges(true)));
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopRunPolling();
+});
+// 在商机目录按 / 直接定位到搜索框。正在输入框里打字、或者开着详情对话框时不拦截。
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
+  if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) return;
+  if ($("workspace-screen").hidden || $("discover-view").hidden || $("detail-dialog").open) return;
+  event.preventDefault();
+  $("keyword").focus();
 });
 loadSession().catch((error) => {
   if (!["unauthenticated", "authentication_required"].includes(error.code) && !error.discarded)
