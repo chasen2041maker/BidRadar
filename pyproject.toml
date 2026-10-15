@@ -35,6 +35,9 @@ target-version = "py310"
 [tool.pytest.ini_options]
 testpaths = ["tests_v2"]
 pythonpath = ["."]
+# 测试按模块分目录（tests_v2/identity/test_service.py、tests_v2/workspace/test_service.py……），
+# importlib 模式下不同目录里的同名测试文件不会冲突，也不用在每个目录里放 __init__.py。
+addopts = ["--import-mode=importlib"]
 
 # 分层规则，对应蓝图 3.3 节。运行：uv run lint-imports
 # 每条契约违反时，报错里会列出是哪一行 import 越界了。
