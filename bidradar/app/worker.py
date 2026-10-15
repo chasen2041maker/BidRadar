@@ -26,11 +26,12 @@ from datetime import timedelta
 from sqlalchemy.orm import Session, sessionmaker
 
 from bidradar.app.settings import Settings
-from bidradar.infra import jobs
+from bidradar.infra import jobs, outbox
 from bidradar.infra.blobs import BlobStore
 from bidradar.infra.db import make_engine, make_session_factory
 from bidradar.infra.errors import AppError
 from bidradar.modules.documents import service as documents
+from bidradar.modules.tracking import service as tracking
 
 logger = logging.getLogger(__name__)
 
@@ -83,17 +84,30 @@ def tick(session_factory: sessionmaker[Session], handlers: dict[str, Handler], o
         return True
 
 
+def deliver_events(consumer: outbox.OutboxConsumer | None) -> tuple[outbox.OutboxConsumer | None, int]:
+    """投递一批 outbox 事件。消费者还没实现（练习 3）时提示一次，之后不再尝试。"""
+    if consumer is None:
+        return None, 0
+    try:
+        return consumer, consumer.run_once()
+    except NotImplementedError:
+        logger.warning("outbox 消费者还没实现（练习 3）：变化检测、站内提醒和自动复核不会运行。见 docs/exercises.md")
+        return None, 0
+
+
 def run(settings: Settings, *, idle_seconds: float = 1.0, stop: threading.Event | None = None) -> None:
-    """一直跑，直到 stop 被设置（测试用）或进程被 Ctrl+C 停掉。"""
+    """一直跑，直到 stop 被设置（测试用）或进程被 Ctrl+C 停掉。每一轮先投递事件，再执行一个任务。"""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     engine = make_engine(settings.database_url)
     session_factory = make_session_factory(engine)
     handlers = build_handlers(settings)
+    consumer: outbox.OutboxConsumer | None = outbox.OutboxConsumer(session_factory, tracking.EVENT_HANDLERS)
     owner = worker_id()
     logger.info("Worker 启动：%s，任务类型 %s", owner, ", ".join(handlers))
     try:
         while stop is None or not stop.is_set():
-            if not tick(session_factory, handlers, owner):
+            consumer, delivered = deliver_events(consumer)
+            if not tick(session_factory, handlers, owner) and not delivered:
                 time.sleep(idle_seconds)
     except KeyboardInterrupt:
         logger.info("Worker 停止")

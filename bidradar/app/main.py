@@ -22,6 +22,7 @@ from bidradar.infra.errors import AppError
 from bidradar.modules.catalog import api as catalog_api
 from bidradar.modules.documents import api as documents_api
 from bidradar.modules.identity import api as identity_api
+from bidradar.modules.tracking import api as tracking_api
 from bidradar.modules.workspace import api as workspace_api
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(workspace_api.router)
     app.include_router(catalog_api.router)
     app.include_router(documents_api.router)
+    app.include_router(tracking_api.router)
     return app
 
 

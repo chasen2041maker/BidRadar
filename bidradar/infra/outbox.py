@@ -6,10 +6,11 @@
 
 以后拆服务时，只要把投递那一步换成发到 Redis Streams 或 RabbitMQ，发布方的代码不用改。
 
-本文件现在只有发布（publish）。消费者（OutboxConsumer）是阶段 5 留给项目负责人主写的部分，
-要求和提示见 docs/exercises.md。
+发布（publish）已经实现。消费者（OutboxConsumer）只有接口，是阶段 5 留给项目负责人主写的部分，
+要求和提示见 docs/exercises.md 的练习 3。
 """
 
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert
@@ -31,3 +32,39 @@ def publish(session: Session, topic: str, payload: dict[str, Any], *, event_key:
         .values(event_key=event_key, topic=topic, payload=payload, created_at=clock.now(), attempts=0)
         .on_conflict_do_nothing(index_elements=["event_key"])
     )
+
+
+# ---- 消费者（练习 3，项目负责人主写） ----
+
+Handler = Callable[[Session, dict[str, Any]], None]
+
+
+class OutboxConsumer:
+    """把 outbox 里还没投递的事件交给订阅方的处理函数。
+
+    TODO（练习 3）：实现 run_once()。要求、验收测试和提示见 docs/exercises.md 的"练习 3"，
+    验收测试在 tests_v2/infra/test_outbox_consumer.py（现在是跳过的）。
+
+    约定（实现时不要改）：
+    - handlers 是 {topic: 处理函数}。处理函数不提交事务，由消费者决定什么时候提交。
+      各模块的处理函数见 tracking.service.EVENT_HANDLERS。
+    - 没有处理函数的 topic 也要标为已投递，不能卡住后面的事件。
+    - session_factory() 每次返回一个新会话（可以用 with 语句）。
+    """
+
+    def __init__(
+        self,
+        session_factory: Callable[[], Session],
+        handlers: dict[str, Handler],
+        *,
+        name: str = "default",
+        max_attempts: int = 5,
+    ) -> None:
+        self.session_factory = session_factory
+        self.handlers = handlers
+        self.name = name
+        self.max_attempts = max_attempts
+
+    def run_once(self, limit: int = 50) -> int:
+        """投递一批事件，返回这一批处理了几个（成功或失败都算）。没有待投递的事件时返回 0。"""
+        raise NotImplementedError("练习 3：outbox 消费者，见 docs/exercises.md")
