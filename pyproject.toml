@@ -11,8 +11,13 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.0",
     "fastapi>=0.143.0",
+    # PDF 和 Word 解析。都是 MIT 许可；PyMuPDF 是 AGPL，公开仓库不用。
+    "pdfplumber>=0.11.0",
     "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.15.0",
+    "python-docx>=1.1.0",
+    # FastAPI 解析 multipart 表单（上传文件）需要它。
+    "python-multipart>=0.0.20",
     "sqlalchemy>=2.1.4",
     "uvicorn>=0.54.0",
 ]

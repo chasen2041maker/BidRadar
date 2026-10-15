@@ -2,7 +2,7 @@
 
 - idempotency_keys：幂等键。同一个修改请求重复提交，只执行一次，返回第一次的结果。
 - outbox：待投递的事件。业务数据和事件在同一个事务里写入，再由 Worker 投递给订阅方。
-- jobs：后台任务队列（阶段 3 起）。
+- jobs：后台任务队列。建任务和写业务数据在同一个事务里提交，不会出现"数据写了、任务没排上"。
 """
 
 from datetime import datetime
@@ -58,3 +58,29 @@ class OutboxEvent(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class JobRow(Base):
+    """一个后台任务。Worker 用 SELECT ... FOR UPDATE SKIP LOCKED 领取，领到后持有租约。
+
+    状态：queued（排队）→ running（执行中）→ succeeded / failed / cancelled。
+    running 但租约已过期，说明执行它的 Worker 崩了，别的 Worker 可以重新领取。
+    dedupe_key 不为空时唯一：同一件事（比如"解析文档 X"）只会排一个任务。
+    """
+
+    __tablename__ = "jobs"
+    __table_args__ = (Index("ix_jobs_ready", "kind", "run_after", postgresql_where="status IN ('queued', 'running')"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[Any] = mapped_column(JSONB)
+    dedupe_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    status: Mapped[str] = mapped_column(String(16))
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    run_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    lease_owner: Mapped[str | None] = mapped_column(String(64))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
