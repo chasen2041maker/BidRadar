@@ -19,6 +19,7 @@ from bidradar.app import health
 from bidradar.app.settings import Settings
 from bidradar.infra.db import make_engine, make_session_factory
 from bidradar.infra.errors import AppError
+from bidradar.modules.catalog import api as catalog_api
 from bidradar.modules.identity import api as identity_api
 from bidradar.modules.workspace import api as workspace_api
 
@@ -84,6 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(identity_api.router)
     app.include_router(workspace_api.router)
+    app.include_router(catalog_api.router)
     return app
 
 

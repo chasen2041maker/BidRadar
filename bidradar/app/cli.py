@@ -3,6 +3,9 @@
     uv run python -m bidradar api            启动 API（等同于 uvicorn bidradar.app.main:app）
     uv run python -m bidradar worker         启动 Worker（阶段 3 起有后台任务）
     uv run python -m bidradar seed-demo      建两家虚构公司、四个测试账号和初始档案
+    uv run python -m bidradar ingest ...     采集公开公告（命令见 bidradar/modules/ingestion/cli.py）
+    uv run python -m bidradar catalog-import 文件.json
+                                             导入规范化公告包（旧版 processing 导出的 normalized.json 也能直接导入）
 
 seed-demo 只建一次：账号已经存在就跳过，绝不重置已有账号的密码。
 随机密码写进 <data_dir>/demo-accounts.json（默认 .bidradar-data/v2/，不进 git）。
@@ -101,6 +104,18 @@ def seed_demo(settings: Settings) -> dict:
     return result
 
 
+def import_bundle(settings: Settings, path: Path) -> dict:
+    from bidradar.infra.db import make_engine, make_session_factory
+    from bidradar.modules.catalog import service as catalog
+
+    engine = make_engine(settings.database_url)
+    try:
+        with make_session_factory(engine)() as session:
+            return catalog.import_observations(session, json.loads(path.read_text(encoding="utf-8")))
+    finally:
+        engine.dispose()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m bidradar", description="BidRadar v2 命令行")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -112,6 +127,10 @@ def main(argv: list[str] | None = None) -> int:
 
     commands.add_parser("worker", help="启动 Worker 进程")
     commands.add_parser("seed-demo", help="建两家虚构公司、四个测试账号和初始档案")
+    ingest = commands.add_parser("ingest", help="采集公开公告", add_help=False)
+    ingest.add_argument("rest", nargs=argparse.REMAINDER)
+    catalog_import = commands.add_parser("catalog-import", help="导入规范化公告包")
+    catalog_import.add_argument("files", nargs="+", type=Path)
 
     args = parser.parse_args(argv)
     settings = Settings()
@@ -124,6 +143,13 @@ def main(argv: list[str] | None = None) -> int:
         from bidradar.app.worker import run
 
         run(settings)
+    elif args.command == "ingest":
+        from bidradar.modules.ingestion.cli import main as ingest_main
+
+        return ingest_main(args.rest, database_url=settings.database_url, data_dir=settings.data_dir)
+    elif args.command == "catalog-import":
+        for path in args.files:
+            print(json.dumps({"file": str(path), **import_bundle(settings, path)}, ensure_ascii=False))
     elif args.command == "seed-demo":
         result = seed_demo(settings)
         print(f"演示账号在 {settings.data_dir / 'demo-accounts.json'}：")

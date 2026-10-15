@@ -4,6 +4,8 @@
 所有名字都是虚构的（AGENTS.md：测试只用虚构数据）。
 """
 
+from hashlib import sha256
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -57,3 +59,66 @@ def login(client: TestClient, username: str, password: str = PASSWORD) -> None:
     response = client.post("/api/login", json={"username": username, "password": password})
     assert response.status_code == 200, response.text
     client.headers["X-CSRF-Token"] = client.cookies["br_csrf"]
+
+
+# ---- 公告 ----
+
+
+def raw_notice_bundle(
+    *,
+    title: str = "虚构软件采购招标公告",
+    key: str = "https://www.ccgp.gov.cn/cggg/zygg/gkzb/202609/t1.htm",
+    observed: str = "2026-09-30T10:00:00Z",
+    entries: list[tuple[str, str]] | None = None,
+    segments: list[str] | None = None,
+) -> dict:
+    """一份虚构的采集证据包（采集模块导出的格式），只含一条公告。"""
+    if entries is None:
+        entries = [
+            ("项目编号", "DEMO-001"),
+            ("采购单位", "虚构采购方"),
+            ("预算（万元）", "12.34"),
+            ("公告发布时间", "2026-09-29"),
+            ("投标截止时间", "2026-10-10 09:30（北京时间）"),
+        ]
+    return {
+        "schema_version": 1,
+        "kind": "raw_evidence_bundle",
+        "source_id": "cn_ccgp",
+        "simulation": True,
+        "run_id": "demo-run",
+        "run_status": "succeeded",
+        "coverage": "bounded_sample",
+        "failures": [],
+        "documents": [
+            {
+                "capture_id": "capture-" + sha256(key.encode()).hexdigest()[:8],
+                "source_url": key,
+                "final_url": key,
+                "source_record_key": key,
+                "identity_kind": "source_url",
+                "raw_sha256": sha256((title + observed).encode()).hexdigest(),
+                "observed_at": observed,
+                "parser_version": "fixture-v1",
+                "content": {
+                    "status": "ok",
+                    "title": title,
+                    "metadata": [
+                        {"label": k, "text": v, "locator": f"fixture[{i}]"} for i, (k, v) in enumerate(entries)
+                    ],
+                    "segments": [{"text": t, "locator": f"segment[{i}]"} for i, t in enumerate(segments or [])],
+                    "links": [],
+                },
+            }
+        ],
+    }
+
+
+def import_notice(session: Session, **kwargs) -> dict:
+    """导入一条虚构公告，返回它的规范化观察。"""
+    from bidradar.modules.catalog import service as catalog
+    from bidradar.modules.ingestion.normalize import normalize_bundle
+
+    bundle = normalize_bundle(raw_notice_bundle(**kwargs))
+    catalog.import_observations(session, bundle)
+    return bundle["observations"][0]
