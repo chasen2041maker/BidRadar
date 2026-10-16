@@ -94,3 +94,22 @@ def test_bad_cursor_rejected(client: TestClient, db_session: Session) -> None:
     response = client.get(page_url(wid, cursor="not-a-cursor"))
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_cursor"
+
+
+def test_cursor_with_trailing_garbage_is_rejected() -> None:
+    """宽松的 base64 解码会忽略补位后面的字符：游标末尾多一个字母也要被认出来。"""
+    import base64
+    import json
+
+    import pytest
+
+    from bidradar.infra.errors import AppError
+    from bidradar.modules.catalog.service import _decode_cursor
+
+    state = {"snapshot": 1, "imports_snapshot": 1, "offset": 1, "filters": {}, "as_of": "x"}
+    for pad in range(3):  # 让编码结果分别带 0、1、2 个补位"="
+        state["as_of"] = "x" * (pad + 1)
+        cursor = base64.urlsafe_b64encode(json.dumps(state, sort_keys=True).encode()).decode()
+        assert _decode_cursor(cursor) == state
+        with pytest.raises(AppError):
+            _decode_cursor(cursor + "a")

@@ -118,7 +118,11 @@ def _decode_cursor(cursor: str) -> dict[str, Any]:
     try:
         if len(cursor) > 2000:
             raise ValueError()
-        state = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+        raw = base64.urlsafe_b64decode(cursor.encode())
+        # 只认标准编码：宽松解码会忽略补位"="后面多出来的字符，被改过的游标也能解出来。
+        if base64.urlsafe_b64encode(raw).decode() != cursor:
+            raise ValueError()
+        state = json.loads(raw)
         if (
             not isinstance(state, dict)
             or set(state) != {"snapshot", "imports_snapshot", "offset", "filters", "as_of"}
