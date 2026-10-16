@@ -25,12 +25,14 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from bidradar.agent.llm import DeepSeekClient, DisabledLLM, LLMClient, Pricing
 from bidradar.app.settings import Settings
 from bidradar.infra import jobs, outbox
 from bidradar.infra.blobs import BlobStore
 from bidradar.infra.db import make_engine, make_session_factory
 from bidradar.infra.errors import AppError
 from bidradar.modules.documents import service as documents
+from bidradar.modules.research import service as research
 from bidradar.modules.tracking import service as tracking
 
 logger = logging.getLogger(__name__)
@@ -43,11 +45,36 @@ class Handler:
     lease: timedelta
 
 
+def limits_of(settings: Settings) -> research.Limits:
+    return research.Limits(
+        model_enabled=settings.model_enabled,
+        total_cap=settings.budget_total_cap_micro,
+        workspace_cap=settings.budget_workspace_cap_micro,
+        run_cap=settings.budget_run_cap_micro,
+    )
+
+
+def model_client(settings: Settings) -> LLMClient:
+    """开了模型就用 DeepSeek，没开就用一调就报错的 DisabledLLM（研究会走规则基线，不会调到它）。
+
+    密钥只在这里从文件读一次，不进日志、不进配置文件、不出现在命令行。
+    """
+    if not settings.model_enabled:
+        return DisabledLLM()
+    key = settings.deepseek_api_key_file.read_text(encoding="utf-8").strip()
+    return DeepSeekClient(key, model=settings.deepseek_model)
+
+
 def build_handlers(settings: Settings) -> dict[str, Handler]:
     blobs = BlobStore(settings.data_dir / "blobs")
+    llm, limits, pricing = model_client(settings), limits_of(settings), Pricing()
     return {
         documents.JOB_PARSE: Handler(
             run=lambda session, job: documents.handle_parse(session, blobs, job),
+            lease=timedelta(minutes=5),
+        ),
+        research.JOB_RUN: Handler(
+            run=lambda session, job: research.handle_run(session, job, llm, limits, pricing),
             lease=timedelta(minutes=5),
         ),
     }
@@ -101,7 +128,9 @@ def run(settings: Settings, *, idle_seconds: float = 1.0, stop: threading.Event 
     engine = make_engine(settings.database_url)
     session_factory = make_session_factory(engine)
     handlers = build_handlers(settings)
-    consumer: outbox.OutboxConsumer | None = outbox.OutboxConsumer(session_factory, tracking.EVENT_HANDLERS)
+    consumer: outbox.OutboxConsumer | None = outbox.OutboxConsumer(
+        session_factory, tracking.event_handlers(limits_of(settings))
+    )
     owner = worker_id()
     logger.info("Worker 启动：%s，任务类型 %s", owner, ", ".join(handlers))
     try:

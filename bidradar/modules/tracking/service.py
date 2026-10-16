@@ -18,6 +18,7 @@
 
 from collections.abc import Callable
 from datetime import datetime
+from functools import partial
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -26,10 +27,12 @@ from bidradar.infra import clock, idempotency
 from bidradar.infra.errors import AppError, conflict, not_found
 from bidradar.infra.ids import new_id
 from bidradar.modules.catalog import service as catalog
+from bidradar.modules.research import service as research
 from bidradar.modules.tracking import repo
 from bidradar.modules.tracking.diff import RULE_VERSION, compare_bundles, fingerprint
 from bidradar.modules.tracking.models import (
     NOTIFY_CHANGE,
+    NOTIFY_REASSESSMENT,
     Change,
     Decision,
     Notification,
@@ -301,6 +304,7 @@ def _record_change(
     diff: dict[str, Any],
     snapshot: int,
     title: str,
+    limits: research.Limits,
 ) -> None:
     """记一次变化、发一条提醒，委托有效时排一次自动复核。同样的变化重复送来，什么都不会多出来。"""
     now = clock.now()
@@ -336,10 +340,12 @@ def _record_change(
             "created_at": now,
         },
     )
-    _maybe_reassess(session, watch, change_id, diff["scopes"])
+    _maybe_reassess(session, watch, change_id, diff["scopes"], limits)
 
 
-def _maybe_reassess(session: Session, watch: WatchRow, change_id: str, scopes: list[str]) -> None:
+def _maybe_reassess(
+    session: Session, watch: WatchRow, change_id: str, scopes: list[str], limits: research.Limits
+) -> None:
     """委托有效就排一次自动复核；无效只记提醒，不花钱。"""
     if not watch.auto_reassess:
         return
@@ -358,28 +364,43 @@ def _maybe_reassess(session: Session, watch: WatchRow, change_id: str, scopes: l
     # 同一个关注又有更新的变化：旧的、还没结束的复核作废，免得旧输入的结果被当成最新的。
     _cancel_open_reassessments(session, watch.id, "input_superseded")
     now = clock.now()
-    repo.add(
-        session,
-        ReassessmentRow(
-            id=new_id(),
-            workspace_id=watch.workspace_id,
-            watch_id=watch.id,
-            change_id=change_id,
-            version=1,
-            state="pending",
-            created_at=now,
-            updated_at=now,
-        ),
+    row = ReassessmentRow(
+        id=new_id(),
+        workspace_id=watch.workspace_id,
+        watch_id=watch.id,
+        change_id=change_id,
+        version=1,
+        state="pending",
+        created_at=now,
+        updated_at=now,
     )
-    # 阶段 4 接上研究流水线以后，这里会直接建一个研究任务（同一个事务），见 _dispatch_reassessment。
+    repo.add(session, row)
+    # 研究任务和复核记录在同一个事务里建：要么都有，要么都没有。研究那边按委托里的发起人检查权限。
+    try:
+        row.run_id = research.create_reassessment(
+            session,
+            watch.actor_id,
+            watch.workspace_id,
+            watch.notice_id,
+            {"watch_id": watch.id, "change_id": change_id, "reassessment_id": row.id},
+            limits,
+        )
+        row.state = "dispatched"
+    except AppError as error:
+        row.state, row.reason = "rejected", error.code
 
 
 def _cancel_open_reassessments(session: Session, watch_id: str, reason: str) -> None:
+    """取消还没结束的复核，连同它建的研究任务。已经发出去的模型请求收不回来，但之后不会再发新的。"""
     for row in repo.open_reassessments(session, watch_id):
         row.state, row.reason, row.version, row.updated_at = "cancelled", reason, row.version + 1, clock.now()
+        if row.run_id:
+            research.cancel_run_internal(session, row.run_id, "reassessment_" + reason)
 
 
-def handle_notice_version_added(session: Session, payload: dict[str, Any]) -> None:
+def handle_notice_version_added(
+    session: Session, payload: dict[str, Any], limits: research.Limits = research.Limits()
+) -> None:
     """公告有了新版本（payload：notice_id、observation_id、seq）。
 
     对每个基线比这个快照旧的活跃关注，取关注公告在这个快照下的公告包，和基线比较。
@@ -402,10 +423,13 @@ def handle_notice_version_added(session: Session, payload: dict[str, Any]) -> No
                 diff=diff,
                 snapshot=seq,
                 title=bundle["current"]["title"],
+                limits=limits,
             )
 
 
-def handle_profile_confirmed(session: Session, payload: dict[str, Any]) -> None:
+def handle_profile_confirmed(
+    session: Session, payload: dict[str, Any], limits: research.Limits = research.Limits()
+) -> None:
     """公司确认了新版档案（payload：workspace_id、profile_version）。对这家公司的每个关注记一次档案变化。"""
     version = payload["profile_version"]
     for watch in repo.active_watches_in(session, payload["workspace_id"]):
@@ -429,6 +453,7 @@ def handle_profile_confirmed(session: Session, payload: dict[str, Any]) -> None:
             diff=diff,
             snapshot=watch.baseline_snapshot,
             title=watch.baseline["current"]["title"],
+            limits=limits,
         )
 
 
@@ -442,8 +467,39 @@ def handle_access_changed(session: Session, payload: dict[str, Any]) -> None:
             _cancel_open_reassessments(session, watch.id, "access_changed")
 
 
-EVENT_HANDLERS: dict[str, Callable[[Session, dict[str, Any]], None]] = {
-    catalog.TOPIC_VERSION_ADDED: handle_notice_version_added,
-    workspace.TOPIC_PROFILE_CONFIRMED: handle_profile_confirmed,
-    workspace.TOPIC_ACCESS_CHANGED: handle_access_changed,
-}
+def handle_run_finished(session: Session, payload: dict[str, Any]) -> None:
+    """研究任务结束了（payload：run_id、workspace_id、kind、status）。是自动复核的话，记下结果、发一条提醒。"""
+    if payload.get("kind") != "reassessment":
+        return
+    row = repo.get_reassessment_by_run(session, payload["run_id"])
+    if row is None or row.state != "dispatched":
+        return
+    row.state, row.reason, row.version, row.updated_at = "finished", payload["status"], row.version + 1, clock.now()
+    watch = session.get(WatchRow, row.watch_id)
+    repo.add_notification_if_new(
+        session,
+        {
+            "id": new_id(),
+            "workspace_id": row.workspace_id,
+            "kind": NOTIFY_REASSESSMENT,
+            "dedupe_key": f"{NOTIFY_REASSESSMENT}:{row.run_id}",
+            "notice_id": watch.notice_id,
+            "watch_id": watch.id,
+            "change_id": row.change_id,
+            "payload": {"run_id": row.run_id, "status": payload["status"], "title": watch.baseline["current"]["title"]},
+            "created_at": clock.now(),
+        },
+    )
+
+
+def event_handlers(limits: research.Limits) -> dict[str, Callable[[Session, dict[str, Any]], None]]:
+    """outbox 消费者用的 {topic: 处理函数}。limits 决定自动复核用不用模型（没开模型时用规则基线）。"""
+    return {
+        catalog.TOPIC_VERSION_ADDED: partial(handle_notice_version_added, limits=limits),
+        workspace.TOPIC_PROFILE_CONFIRMED: partial(handle_profile_confirmed, limits=limits),
+        workspace.TOPIC_ACCESS_CHANGED: handle_access_changed,
+        research.TOPIC_RUN_FINISHED: handle_run_finished,
+    }
+
+
+EVENT_HANDLERS = event_handlers(research.Limits())

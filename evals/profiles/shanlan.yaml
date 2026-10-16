@@ -1,0 +1,10 @@
+# 虚构公司：小型软件团队，不能长期驻场。和 tests_v2/factories.py 的 PROFILE 一致。
+company_name: 山岚软件（虚构）
+city: 天津
+project_types: 软件开发、知识库、智能体
+capabilities: 4人软件团队，Python、API集成、RAG和Agent应用开发
+delivery_constraints: 可短期出差10天以内，不接受连续60天驻场
+cases: null
+qualifications: null
+staffing: 4名软件工程师
+commercial_constraints: null

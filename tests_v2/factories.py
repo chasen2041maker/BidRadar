@@ -131,13 +131,15 @@ TENDER_PDF = FIXTURES / "tender-fictional.pdf"
 TENDER_DOCX = FIXTURES / "tender-fictional.docx"
 
 
-def upload_and_parse(session: Session, blobs, user: User, wid: str, path=None) -> str:
+def upload_and_parse(session: Session, blobs, user: User, wid: str, path=None, notice_id: str | None = None) -> str:
     """上传一份虚构招标文件，并像 Worker 一样把它解析完。返回文件 ID。"""
     from bidradar.infra import jobs
     from bidradar.modules.documents import service as documents
 
     path = path or TENDER_PDF
-    document = documents.upload(session, blobs, user.id, wid, filename=path.name, data=path.read_bytes())
+    document = documents.upload(
+        session, blobs, user.id, wid, filename=path.name, data=path.read_bytes(), notice_id=notice_id
+    )
     job = jobs.claim(session, [documents.JOB_PARSE], "test-worker")
     if job is not None:
         documents.handle_parse(session, blobs, job)

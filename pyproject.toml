@@ -27,6 +27,8 @@ dev = [
     "httpx2>=2.13.1",
     "import-linter>=2.15",
     "pytest>=9.1.1",
+    # 评测用例（evals/）是 YAML，人手写、手改比 JSON 方便。
+    "pyyaml>=6.0",
     "ruff==0.16.8",
 ]
 

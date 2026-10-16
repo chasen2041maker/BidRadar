@@ -117,6 +117,12 @@ def get_version(session: Session, notice_id: str, observation_id: str) -> Notice
     )
 
 
+def versions_by_ids(session: Session, ids: list[str]) -> list[NoticeVersionRow]:
+    if not ids:
+        return []
+    return list(session.scalars(select(NoticeVersionRow).where(NoticeVersionRow.id.in_(ids))))
+
+
 def versions_after(session: Session, after: int, high: int, limit: int) -> list[NoticeVersionRow]:
     return list(
         session.scalars(

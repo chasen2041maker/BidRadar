@@ -25,3 +25,14 @@ class Settings(BaseSettings):
 
     # 上传的招标文件和原始网页按 SHA-256 存在这里。不进 git。
     data_dir: Path = Path(".bidradar-data/v2")
+
+    # 调真实模型会花钱，默认关闭（AGENTS.md：没有项目负责人明确同意不开启）。
+    # 关闭时研究用"规则基线"模式：只用规则抽取，不调模型，可以离线演示。
+    model_enabled: bool = False
+    # 密钥放在仓库外的文件里，不写进 .env，也不出现在命令行和日志里。
+    deepseek_api_key_file: Path = Path.home() / ".bidradar/credentials/deepseek-api-key.txt"
+    deepseek_model: str = "deepseek-chat"
+    # 三层额度，单位 micro-CNY（百万分之一元）。
+    budget_total_cap_micro: int = 20_000_000
+    budget_workspace_cap_micro: int = 10_000_000
+    budget_run_cap_micro: int = 2_000_000

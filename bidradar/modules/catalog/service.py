@@ -238,6 +238,14 @@ def get_observation(session: Session, notice_id: str, observation_id: str) -> di
     return row.payload
 
 
+def get_observations(session: Session, observation_ids: list[str]) -> list[dict[str, Any]]:
+    """按观察 ID 读取一组固定的观察（研究任务固定下来的公告版本），顺序和传入的一致。缺任何一个都报错。"""
+    rows = {row.id: row.payload for row in repo.versions_by_ids(session, observation_ids)}
+    if len(rows) != len(set(observation_ids)):
+        raise AppError("observation_not_found", 404)
+    return [rows[i] for i in observation_ids]
+
+
 def research_bundle(session: Session, notice_id: str, snapshot: int | None = None) -> dict[str, Any]:
     """研究用的公告包：主公告的当前版本，加上有确切依据关联到它的更正、结果公告。
 

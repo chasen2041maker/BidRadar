@@ -6,8 +6,9 @@ from sqlalchemy.orm import Session
 
 from bidradar.infra.errors import AppError
 from bidradar.infra.tables import OutboxEvent
+from bidradar.modules.research.tables import RunRow
 from bidradar.modules.tracking import service
-from bidradar.modules.tracking.tables import ReassessmentRow
+from bidradar.modules.tracking.tables import NotificationRow, ReassessmentRow
 from bidradar.modules.workspace import service as workspace
 from tests_v2.factories import PROFILE, confirm_profile, import_notice, make_company
 
@@ -228,7 +229,38 @@ def test_change_with_valid_delegation_queues_one_reassessment(db_session: Sessio
     deliver(db_session)
     import_notice(db_session, entries=DEADLINE_LATER, observed="2026-10-01T10:00:00Z")
     deliver(db_session)
-    assert [r.state for r in reassessments(db_session)] == ["pending"]
+    [row] = reassessments(db_session)
+    assert row.state == "dispatched"
+    run = db_session.get(RunRow, row.run_id)
+    # 复核按委托里的发起人建任务；没开模型时用规则基线，不花钱。
+    assert (run.kind, run.actor_id, run.mode, run.status) == ("reassessment", users["member"].id, "baseline", "queued")
+    assert run.delegation["reassessment_id"] == row.id
+
+
+def test_finished_reassessment_records_the_result_and_notifies_once(db_session: Session) -> None:
+    wid, users = make_company(db_session)
+    confirm_profile(db_session, wid, users["admin"])
+    notice = import_notice(db_session)
+    service.set_watch(
+        db_session,
+        users["member"].id,
+        wid,
+        notice["notice_id"],
+        active=True,
+        auto_reassess=True,
+        expected_version=0,
+        key="w",
+    )
+    import_notice(db_session, entries=DEADLINE_LATER, observed="2026-10-01T10:00:00Z")
+    deliver(db_session)
+    [row] = reassessments(db_session)
+    payload = {"run_id": row.run_id, "workspace_id": wid, "kind": "reassessment", "status": "succeeded"}
+    service.handle_run_finished(db_session, payload)
+    service.handle_run_finished(db_session, payload)  # 事件可能投递两次
+    db_session.flush()
+    assert (row.state, row.reason) == ("finished", "succeeded")
+    kinds = [n.kind for n in db_session.scalars(select(NotificationRow).where(NotificationRow.workspace_id == wid))]
+    assert kinds.count(service.NOTIFY_REASSESSMENT) == 1
 
 
 def test_without_delegation_there_is_no_reassessment(db_session: Session) -> None:
@@ -260,7 +292,10 @@ def test_access_change_voids_the_delegation(db_session: Session) -> None:
     deliver(db_session)
     workspace.change_member(db_session, users["admin"].id, wid, users["member"].id, "viewer", True, 1)
     deliver(db_session)
-    assert [(r.state, r.reason) for r in reassessments(db_session)] == [("cancelled", "access_changed")]
+    [cancelled] = reassessments(db_session)
+    assert (cancelled.state, cancelled.reason) == ("cancelled", "access_changed")
+    run = db_session.get(RunRow, cancelled.run_id)
+    assert (run.status, run.reason) == ("cancelled", "reassessment_access_changed")
     import_notice(
         db_session, title="虚构软件采购招标公告（更正后）", entries=DEADLINE_LATER, observed="2026-10-03T10:00:00Z"
     )
@@ -295,4 +330,6 @@ def test_changing_the_watch_cancels_open_reassessments(db_session: Session) -> N
         expected_version=1,
         key="w2",
     )
-    assert [(r.state, r.reason) for r in reassessments(db_session)] == [("cancelled", "watch_changed")]
+    [cancelled] = reassessments(db_session)
+    assert (cancelled.state, cancelled.reason) == ("cancelled", "watch_changed")
+    assert db_session.get(RunRow, cancelled.run_id).status == "cancelled"

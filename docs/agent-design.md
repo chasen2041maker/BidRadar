@@ -418,22 +418,30 @@ class LLMClient(Protocol):
 
 没有评测，就只能靠感觉修提示词。评测的设计目标是：**能定位到是哪一步错了。**
 
-**用例格式**（`evals/cases/<名字>.yaml`）：
+**用例格式**：一份招标文件的标准要求和公司无关，只标一次；每家公司的结论单独一个文件。
 
 ```yaml
-id: gansu-ai-x-shanlan
-documents: [fixtures/gansu-ai-tender.pdf]     # 或公告正文
-profile: profiles/shanlan-v1.yaml
-gold:
-  requirements:                               # 应该抽出来的要求
-    - quote: "合同签订后60日内完成系统开发"
-      dimension: schedule
-      kind: obligation
-  findings:                                   # 每条要求应得的状态
-    - quote: "合同签订后60日内完成系统开发"
-      status: unknown
-      must_not: [unmet]                       # 最不能出现的错误
-holdout: false                                # 保留集只在阶段结束时跑
+# evals/documents/tender-fictional.yaml：应该抽出哪些要求
+id: tender-fictional
+files: [tests_v2/fixtures/tender-fictional.pdf]
+requirements:
+  - {quote: "合同签订后60日内完成系统开发、部署和试运行", kind: obligation, dimension: schedule}
+  - {quote: "预算金额：48万元", kind: fact, dimension: fact, money_role: budget}
+optional: ["项目编号：XG-2026-0815"]            # 抽到了不算对也不算错
+not_requirements: ["我单位承诺：……"]            # 模板、联系方式：绝不能抽成要求
+
+# evals/cases/tender-x-shanlan.yaml：这家公司每条要求应得的结论
+id: tender-x-shanlan
+document: documents/tender-fictional.yaml
+profile: profiles/shanlan.yaml                   # 虚构档案，九个字段
+findings:
+  - quote: "合同签订后60日内完成系统开发、部署和试运行"
+    status: unknown
+    must_not: [unmet]                            # 最不能出现的错误；不写时按标准状态推出默认值
+  - quote: "中标人须安排不少于2名工程师驻场服务，驻场时间不少于30个工作日"
+    status: unknown
+    acceptable: [unmet]                          # 标注者认为两种判断都说得过去
+holdout: false                                   # 保留集只在阶段结束时跑
 ```
 
 **按步骤评测，上游用标准答案**：
@@ -463,7 +471,7 @@ uv run python -m evals.run --step all                # 端到端
 
 **录制和重放**：评测运行时把每次模型调用的请求指纹和响应存下来。下次运行同样的请求直接重放，不花钱。改了提示词，指纹变了，只有变了的那些调用会真的发出去。
 
-**规模**：先把现有 2 条公告 × 2 家虚构公司做成 4 个用例；目标 30 个，覆盖软件开发、运维服务、AI 算力、设备采购；至少 10 个由你亲自标注；三分之一留作保留集。
+**规模**：现在是 1 份虚构招标文件 × 2 家虚构公司 = 2 个用例（由我标注，待你复核）；目标 30 个，覆盖软件开发、运维服务、AI 算力、设备采购；至少 10 个由你亲自标注；三分之一留作保留集。
 
 ---
 
