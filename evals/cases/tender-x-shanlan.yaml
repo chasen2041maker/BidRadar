@@ -1,0 +1,42 @@
+# 虚构招标文件 × 山岚软件。这家公司的档案字段少，大部分要求应该是"未知"。
+# 这个用例专门盯住旧版最典型的错误：拿"不接受连续60天驻场"去判"60日内完成开发"。
+#
+# 每条结论：
+#   status      标准状态
+#   acceptable  也算对的状态（标注者认为两种判断都说得过去时才写）
+#   must_not    判成这些就是严重错误。不写时：标准是 unknown → met、unmet；标准是 met → unmet；标准是 unmet → met
+#   profile_quote  标准是 met / unmet 时，支撑判断的档案原话（核验评测用它造"正确的结论"）
+id: tender-x-shanlan
+labeled_by: claude（待负责人复核）
+document: documents/tender-fictional.yaml
+profile: profiles/shanlan.yaml
+holdout: false
+
+findings:
+  - {quote: "具有独立承担民事责任的能力", status: unknown}
+  - {quote: "参加政府采购活动前三年内，在经营活动中没有重大违法记录", status: unknown}
+  - {quote: "单位负责人为同一人或者存在直接控股、管理关系的不同供应商，不得参加同一合同项下的政府采购活动", status: unknown}
+  - {quote: "本项目不接受联合体投标", status: unknown}
+  - {quote: "平台应支持PDF、Word、Excel等常见格式文档的批量导入和自动解析，单批次导入不少于500份文档", status: unknown}
+  - quote: "平台应提供基于大语言模型的智能问答功能，回答须标注引用的原文出处"
+    status: unknown
+    acceptable: [met]
+    note: 档案写了 RAG 应用开发，能力上有依据；但"标注引用出处"没有直接写，两种判断都说得过去
+  - {quote: "平台应支持私有化部署，所有数据存储在采购人指定的政务云环境内，不得传输至境外", status: unknown}
+  - {quote: "平台应提供知识运营后台，支持按部门设置文档访问权限", status: unknown}
+  - quote: "合同签订后60日内完成系统开发、部署和试运行"
+    status: unknown
+    note: 只能看人员字段（4名工程师），判断不了工期。判成 unmet 多半是拿驻场限制比了工期
+  - quote: "中标人须安排不少于2名工程师驻场服务，驻场时间不少于30个工作日"
+    status: unknown
+    acceptable: [unmet]
+    must_not: [met]
+    note: 30个工作日超过"短期出差10天以内"，但原文没说必须连续，判不满足也说得过去
+  - {quote: "服务地点为虚构市政务服务中心", status: unknown}
+  - {quote: "质保期为验收合格之日起12个月，质保期内提供7×24小时远程技术支持", status: unknown}
+  - {quote: "项目经理须具有信息系统项目管理师（高级）证书，并提供近6个月社保缴纳证明", status: unknown}
+  - {quote: "付款方式：合同签订后支付合同金额的30%，项目终验合格后支付60%，质保期满后支付10%", status: unknown}
+  - {quote: "评分项：价格；分值：30", status: unknown}
+  - {quote: "评分项：技术方案；分值：40", status: unknown}
+  - {quote: "近三年每提供1个知识库或智能问答类项目合同得5分，最多15分", status: unknown}
+  - {quote: "评分项：售后服务；分值：15", status: unknown}

@@ -1,0 +1,60 @@
+# 虚构招标文件的标准答案（和公司无关的部分）：应该抽出哪些要求、各属于哪个维度。
+# 文件本身由 tests/fixtures/make_tender.py 生成，全部内容虚构。
+# quote 必须是原文的原话（tests/evals/test_cases.py 会核对），对齐时允许预测的摘录比它长或短。
+#
+# labeled_by：谁标的。claude 标的用例要由项目负责人复核后改成自己的名字（设计文档第 11 节：至少 10 个由你亲自标注）。
+id: tender-fictional
+labeled_by: claude（待负责人复核）
+files: [tests/fixtures/tender-fictional.pdf]
+
+requirements:
+  # ---- 项目事实：不进入匹配，进报告头部 ----
+  - {quote: "预算金额：48万元", kind: fact, dimension: fact, money_role: budget}
+  - {quote: "最高限价：48万元", kind: fact, dimension: fact, money_role: max_price}
+  - {quote: "提交投标文件截止时间：2026年10月29日09:30（北京时间）", kind: fact, dimension: fact}
+  - {quote: "时间：2026年10月8日至13日，每天上午9:00至11:30，下午14:00至17:00", kind: fact, dimension: fact}
+  - {quote: "招标文件售价：0元", kind: fact, dimension: fact, money_role: file_fee}
+  - {quote: "本项目不收取投标保证金", kind: fact, dimension: fact, money_role: deposit}
+  - {quote: "履约保证金：合同金额的5%", kind: fact, dimension: fact, money_role: performance_bond}
+
+  # ---- 资格 ----
+  - {quote: "具有独立承担民事责任的能力", kind: obligation, dimension: qualification}
+  - {quote: "参加政府采购活动前三年内，在经营活动中没有重大违法记录", kind: obligation, dimension: qualification}
+  - {quote: "单位负责人为同一人或者存在直接控股、管理关系的不同供应商，不得参加同一合同项下的政府采购活动", kind: obligation, dimension: qualification}
+  - {quote: "本项目不接受联合体投标", kind: obligation, dimension: qualification}
+
+  # ---- 技术 ----
+  - {quote: "平台应支持PDF、Word、Excel等常见格式文档的批量导入和自动解析，单批次导入不少于500份文档", kind: obligation, dimension: capability}
+  - {quote: "平台应提供基于大语言模型的智能问答功能，回答须标注引用的原文出处", kind: obligation, dimension: capability}
+  - {quote: "平台应支持私有化部署，所有数据存储在采购人指定的政务云环境内，不得传输至境外", kind: obligation, dimension: capability}
+  - {quote: "平台应提供知识运营后台，支持按部门设置文档访问权限", kind: obligation, dimension: capability}
+
+  # ---- 交付：工期和驻场是两条要求，不能互相比较（旧版犯过的错） ----
+  - {quote: "合同签订后60日内完成系统开发、部署和试运行", kind: obligation, dimension: schedule}
+  - {quote: "中标人须安排不少于2名工程师驻场服务，驻场时间不少于30个工作日", kind: obligation, dimension: onsite}
+  - {quote: "服务地点为虚构市政务服务中心", kind: obligation, dimension: location}
+  - {quote: "质保期为验收合格之日起12个月，质保期内提供7×24小时远程技术支持", kind: obligation, dimension: commercial}
+
+  # ---- 人员、商务 ----
+  - {quote: "项目经理须具有信息系统项目管理师（高级）证书，并提供近6个月社保缴纳证明", kind: obligation, dimension: staffing}
+  - {quote: "付款方式：合同签订后支付合同金额的30%，项目终验合格后支付60%，质保期满后支付10%", kind: obligation, dimension: commercial}
+
+  # ---- 评分项：不是门槛，最多判到 met 或 unknown ----
+  - {quote: "评分项：价格；分值：30", kind: obligation, dimension: scoring}
+  - {quote: "评分项：技术方案；分值：40", kind: obligation, dimension: scoring}
+  - {quote: "近三年每提供1个知识库或智能问答类项目合同得5分，最多15分", kind: obligation, dimension: scoring}
+  - {quote: "评分项：售后服务；分值：15", kind: obligation, dimension: scoring}
+
+# 抽到了不算错、没抽到也不算漏：概况性的描述、编号。
+optional:
+  - "项目编号：XG-2026-0815"
+  - "项目名称：虚构市智能知识库平台建设项目"
+  - "建设面向全市政务人员的智能知识库平台，提供文档检索、智能问答和知识运营功能"
+  - "本项目采用综合评分法，满分100分"
+  - "满足《中华人民共和国政府采购法》第二十二条规定"
+
+# 绝不能当成要求抽出来的：模板里的承诺函、投标函，联系方式。
+not_requirements:
+  - "我单位承诺：参加本次政府采购活动前三年内，在经营活动中没有重大违法记录"
+  - "投标总价为人民币（大写）______元"
+  - "联系人：张工，电话：0000-12345678"

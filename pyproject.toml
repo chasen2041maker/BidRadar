@@ -1,7 +1,4 @@
-# 项目依赖和工具配置。
-#
-# 这里的依赖只给 v2 新代码（bidradar/）用，用 uv 管理：uv sync 安装，uv run 运行。
-# 旧代码（services/、scripts/、tests/）仍然只用 Python 标准库，不需要安装这些依赖，到阶段 6 删除。
+# 项目依赖和工具配置。用 uv 管理：uv sync 安装，uv run 运行。
 
 [project]
 name = "bidradar"
@@ -11,8 +8,13 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.20.0",
     "fastapi>=0.143.0",
+    # PDF 和 Word 解析。都是 MIT 许可；PyMuPDF 是 AGPL，公开仓库不用。
+    "pdfplumber>=0.11.0",
     "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.15.0",
+    "python-docx>=1.1.0",
+    # FastAPI 解析 multipart 表单（上传文件）需要它。
+    "python-multipart>=0.0.20",
     "sqlalchemy>=2.1.4",
     "uvicorn>=0.54.0",
 ]
@@ -22,19 +24,22 @@ dev = [
     "httpx2>=2.13.1",
     "import-linter>=2.15",
     "pytest>=9.1.1",
+    # 评测用例（evals/）是 YAML，人手写、手改比 JSON 方便。
+    "pyyaml>=6.0",
     "ruff==0.16.8",
 ]
 
-# 代码格式。格式化：uv run ruff format services scripts tests bidradar migrations tests_v2
-# 目标版本仍是 3.10，因为旧代码还要在 3.10 上跑。
+# 代码格式。格式化：uv run ruff format bidradar migrations tests evals
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
 
-# 新代码的测试。旧测试在 tests/ 里，用 unittest 跑，pytest 不收集它们。
 [tool.pytest.ini_options]
-testpaths = ["tests_v2"]
+testpaths = ["tests"]
 pythonpath = ["."]
+# 测试按模块分目录（tests/identity/test_service.py、tests/workspace/test_service.py……），
+# importlib 模式下不同目录里的同名测试文件不会冲突，也不用在每个目录里放 __init__.py。
+addopts = ["--import-mode=importlib"]
 
 # 分层规则，对应蓝图 3.3 节。运行：uv run lint-imports
 # 每条契约违反时，报错里会列出是哪一行 import 越界了。

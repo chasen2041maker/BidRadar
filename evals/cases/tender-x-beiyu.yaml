@@ -1,0 +1,50 @@
+# 虚构招标文件 × 北屿数据。档案写得具体，有明确的满足和不满足，用来看模型会不会过分保守。
+# 字段说明见 tender-x-shanlan.yaml。
+id: tender-x-beiyu
+labeled_by: claude（待负责人复核）
+document: documents/tender-fictional.yaml
+profile: profiles/beiyu.yaml
+holdout: false
+
+findings:
+  - {quote: "具有独立承担民事责任的能力", status: unknown}
+  - {quote: "参加政府采购活动前三年内，在经营活动中没有重大违法记录", status: unknown}
+  - {quote: "单位负责人为同一人或者存在直接控股、管理关系的不同供应商，不得参加同一合同项下的政府采购活动", status: unknown}
+  - {quote: "本项目不接受联合体投标", status: unknown}
+  - quote: "平台应支持PDF、Word、Excel等常见格式文档的批量导入和自动解析，单批次导入不少于500份文档"
+    status: unknown
+    note: 档案只写了 PDF、Word 导入，没写 Excel 和批量数量
+  - {quote: "平台应提供基于大语言模型的智能问答功能，回答须标注引用的原文出处", status: unknown, note: 全文检索不是大模型问答}
+  - quote: "平台应支持私有化部署，所有数据存储在采购人指定的政务云环境内，不得传输至境外"
+    status: unmet
+    profile_quote: 仅支持公有云部署，不提供私有化部署
+  - {quote: "平台应提供知识运营后台，支持按部门设置文档访问权限", status: unknown}
+  - quote: "合同签订后60日内完成系统开发、部署和试运行"
+    status: unknown
+    note: 12名员工判断不了工期；判成 met 是从人数推出了档案没写的结论
+  - quote: "中标人须安排不少于2名工程师驻场服务，驻场时间不少于30个工作日"
+    status: met
+    acceptable: [unknown]
+    profile_quote: 可安排2名工程师驻场，连续驻场不超过3个月
+    note: 30个工作日约6周，在3个月以内
+  - quote: "服务地点为虚构市政务服务中心"
+    status: met
+    acceptable: [unknown]
+    profile_quote: 虚构市
+  - {quote: "质保期为验收合格之日起12个月，质保期内提供7×24小时远程技术支持", status: unknown}
+  - quote: "项目经理须具有信息系统项目管理师（高级）证书，并提供近6个月社保缴纳证明"
+    status: unknown
+    acceptable: [met]
+    must_not: [unmet]
+    note: 涉及证书按资格处理（维度表），档案的说法是声明；社保证明也没写
+  - quote: "付款方式：合同签订后支付合同金额的30%，项目终验合格后支付60%，质保期满后支付10%"
+    status: met
+    profile_quote: 要求合同签订后预付款不低于20%
+    note: 预付30%，满足企业"不低于20%"的要求
+  - {quote: "评分项：价格；分值：30", status: unknown}
+  - {quote: "评分项：技术方案；分值：40", status: unknown}
+  - quote: "近三年每提供1个知识库或智能问答类项目合同得5分，最多15分"
+    status: met
+    acceptable: [unknown]
+    profile_quote: 2024年为虚构区档案馆建设知识库检索系统，已通过验收
+  - {quote: "评分项：售后服务；分值：15", status: unknown}

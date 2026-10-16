@@ -6,8 +6,8 @@
 
 **An evidence-first research agent for public tenders**
 
-Helps software and AI service teams read public procurement notices: what a project requires, whether we can deliver it, and what is still unknown.<br>
-Every finding cites the source text.
+Helps software and AI service teams read public procurement notices: what is required, whether they can deliver, and what is still missing.<br>
+Every conclusion cites the source text. When it cannot tell, it says so.
 
 [![Tests](https://github.com/chasen2041maker/BidRadar/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/chasen2041maker/BidRadar/actions/workflows/tests.yml)
 ![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
@@ -18,97 +18,175 @@ Every finding cites the source text.
 
 </div>
 
-## Core ideas
+> The product, the UI and the code comments are in Chinese: the first market is Chinese government procurement. This page is a translation of the Chinese README.
 
-1. **Evidence first.** Every finding must cite source text. Anything without support is marked "unknown", and unknown is never treated as met.
-2. **Frozen inputs.** Each report is pinned to the notice version and company profile version it was built from. New material produces a new report; old reports never change.
-3. **Budgeted model calls.** Cost is reserved before each call and settled afterwards. When a result is uncertain, the task stops for a human instead of retrying.
-4. **Humans decide.** No win-rate predictions, no automatic bidding, no contacting buyers. Pursuing or passing on a project is a human decision.
+## The problem
 
-## Plan
+A five-person software shop sees a tender for a "knowledge base platform" on a government procurement site. Whether to bid depends on dozens of requirements scattered across a long tender document:
+eligibility, delivery deadline, on-site staffing, private deployment, payment terms, scoring items… Checking them one by one takes half a day, and the one you miss is usually the one that disqualifies you.
 
-The legacy version already runs end to end: company profile → opportunity catalog → AI research → follow-up questions → change tracking. The current work is the **v2 rewrite**, which does three things:
+BidRadar does three things:
 
-- **Architecture:** merge four services into one modular monolith (FastAPI + PostgreSQL); split services later, once the boundaries are proven.
-- **Research:** replace one large model call with a five-step pipeline (parse → extract → match → verify → compose), where every step can be tested and measured on its own.
-- **Material:** uploaded tender documents become the main input; public collection is only for discovering projects.
+1. **Discover**: public procurement notices become a searchable catalog; fields such as budget and deadline carry their source text.
+2. **Research**: upload the tender document; BidRadar lists every requirement and compares it with the company profile as *met / clearly unmet / needs checking*. Each conclusion cites the source passage and the exact profile wording, and the report ends with a checklist of open questions.
+3. **Track**: when a watched notice is corrected or the company profile gets a new version, you are notified once; with explicit permission, it re-runs the research.
 
-| Stage | Scope | Status |
-| --- | --- | --- |
-| [0 Foundation](docs/roadmap.md#阶段-0-地基) | Project skeleton, database, migrations, CI | Done |
-| [1 Identity & workspaces](docs/roadmap.md#阶段-1-身份与公司) | Login, three roles, company profiles, data isolation (RLS) | **Next** |
-| [2 Catalog & ingestion](docs/roadmap.md#阶段-2-商机与采集) | Port the notice catalog and collectors | Planned |
-| [3 Documents](docs/roadmap.md#阶段-3-文档与切片) | Upload and parse tender documents (the first background job) | Planned |
-| [4 Research pipeline](docs/roadmap.md#阶段-4-研究流水线) | Five steps, cost ledger, evaluation | Planned |
-| [5 Follow-up & tracking](docs/roadmap.md#阶段-5-追问与跟踪) | Questions, watches, change alerts, automatic re-checks | Planned |
-| [6 Wrap-up](docs/roadmap.md#阶段-6-收尾) | Frontend on the new API, legacy code removed | Planned |
+<img src="docs/assets/screenshot-research.png" alt="Uploading a tender document and estimating the cost in the notice view">
 
-Each stage links to its guide in the roadmap (in Chinese): the tables and APIs to build, the order of work, which part the owner writes, and when the stage is done.
+<sub>The scope and cost are estimated first; a run is created only after you confirm. All companies, notices and documents in the screenshots are fictional.</sub>
 
-**Further out:** split the worker side first once boundaries are stable; Redis, Kubernetes and cloud deployment only when there is a clear need.
+<img src="docs/assets/screenshot-report.png" alt="Research report: project facts and the requirement table">
+
+<sub>A research report: project facts and the requirement-by-requirement table. This one comes from the rule baseline (no model), so everything it cannot judge is marked "needs checking".</sub>
+
+## Ground rules
+
+1. **Evidence first**: every conclusion cites the source, and quotes must be verbatim. No evidence means "needs checking". Unknown is never treated as met, nor as unmet.
+2. **Frozen inputs**: each report is pinned to the notice version, profile version and documents it used. When they change, a new report is made; the old one is kept and marked as having newer inputs.
+3. **Every yuan is accounted for**: model calls reserve their cost before they are sent and settle the actual cost afterwards, under three caps (global, per company, per run). When the outcome of a call is unknown, the reservation counts as spent and the run stops for a human; it never retries on its own.
+4. **External content is data**: an "ignore the rules above" inside a notice, an attachment or a model reply is never executed. The model gets no URLs, SQL or file paths.
+5. **People decide**: no win-probability predictions, no automatic bidding or quoting, no contacting the buyer.
+
+## How research works: a pipeline, not one big agent
+
+Version 1 was a tool-loop agent that read the material, found requirements, compared them with the company and wrote conclusions in a single call. On real notices its mistakes were textbook ones:
+reading "finish development within 60 days of signing" as "60 days on site"; using the price ceiling to prove the budget because both were ¥480k; supporting one conclusion with another conclusion's quote.
+Each was fixed with one more prompt rule, and a new batch of notices brought new ones.
+
+Version 2 splits research into five fixed steps. Each step gives the model only what it needs for one small question, and programmatic checks keep it honest:
+
+```mermaid
+flowchart LR
+    A["① Parse<br/>document → chunks with page and section"] --> B["② Extract<br/>requirements, batch per section<br/>quotes must be substrings"]
+    B --> C["③ Match<br/>one requirement × the profile fields<br/>its dimension may see"]
+    C --> D{"④ Verify<br/>programmatic checks<br/>+ an isolated model judge"}
+    D -- "fails: redo this one with feedback" --> C
+    D -- "passes" --> E["⑤ Compose<br/>facts · requirement table · checklist"]
+    D -- "fails 3 times: downgrade to unknown" --> E
+```
+
+Three structural guarantees replace the ever-growing prompt:
+
+- **Dimension table** (`agent/dimensions.py`): extraction tags each requirement with a dimension, and matching only sees the profile fields that dimension allows. A schedule requirement sees staffing, an on-site requirement sees delivery constraints. Cross-dimension comparisons are impossible because the material is simply not there.
+- **Per-finding verification**: each conclusion is verified on its own, without seeing the others. A failure redoes only that one, never the whole report.
+- **Programmatic checks** (`agent/checks.py`, free, run on every finding): quotes are substrings of the source; the cited profile wording is a substring of the listed fields; every number in the reasoning appears in the source or the profile; money roles match; no contact details; no claims like "you will win".
+
+Only **follow-up questions** keep a tool loop, because nobody knows in advance which passages a question needs: four read-only tools, at most 6 model calls and 12 tool calls, and the answer must pass citation and number checks or it is replaced by "cannot be confirmed from the material".
+
+Every step's result is stored, so a crashed worker resumes where it stopped; each model call has a stable key, so a resumed run takes the already-paid response from the ledger instead of paying again.
+With the model disabled, research runs as a **rule baseline** that never calls a model and works offline. The full design is in [Agent design](docs/agent-design.md) (Chinese).
+
+## Evaluation: find which step went wrong
+
+```bash
+uv run python -m evals.run --step extract    # extraction: recall, precision, dimension accuracy
+uv run python -m evals.run --step match      # matching, fed with gold requirements so extraction errors do not leak in
+uv run python -m evals.run --step verify     # verification: feed it wrong findings, count how many it stops and how many good ones it kills
+uv run python -m evals.run --step all        # end to end
+```
+
+When a step is evaluated, everything upstream of it uses the gold answers: a requirement missed by extraction should not count as a matching error. Besides the expected status, each gold finding records the mistakes that must never happen (for example, unmet when the truth is unknown); those are counted separately as severe errors.
+Model calls are recorded and replayed for free; after a prompt change only the calls that actually changed are sent again.
+
+Current verification results (rule baseline, no model judge):
+
+| Injected error | Stopped |
+| --- | --- |
+| Concluding from a profile field of another dimension | 36 / 36 |
+| Citing "profile wording" that is not in the profile | 36 / 36 |
+| Inventing a number in the reasoning | 36 / 36 |
+| Real profile wording, but the conclusion is reversed | 0 / 28 — only the model judge can catch these, which is why it exists |
+
+The eval set has only 2 cases so far (one fictional tender × 2 fictional companies). The numbers show that the pipeline works, not how accurate it is.
 
 ## Architecture
 
-Every box is labelled with the stage that builds it.
+A modular monolith: one codebase, two processes, one PostgreSQL. Seven business modules each own a schema and call each other only through `service.py`; six layering rules are enforced by import-linter in CI. If it ever needs to become services, it splits along module boundaries.
 
 ```mermaid
 flowchart TB
-    web["Browser · frontend<br/>stage 6"]
-    subgraph API["API process · FastAPI"]
-        m1["identity · workspace<br/>login, companies, profiles<br/>stage 1"]
-        m2["catalog<br/>notice catalog<br/>stage 2"]
-        m3["documents<br/>tender files<br/>stage 3"]
-        m4["research<br/>research, follow-ups<br/>stages 4–5"]
-        m5["tracking<br/>decisions, alerts<br/>stage 5"]
+    browser["Browser · workbench"]
+    subgraph api["API process · FastAPI"]
+        direction LR
+        m1["identity · workspace<br/>login, companies, profiles"]
+        m2["catalog<br/>notice catalog"]
+        m3["documents<br/>tender documents"]
+        m4["research<br/>research, follow-ups, cost"]
+        m5["tracking<br/>decisions, watches, alerts"]
     end
-    subgraph Worker["Worker process"]
-        w1["ingestion<br/>collect notices<br/>stage 2"]
-        w2["document parsing<br/>stage 3"]
-        w3["agent<br/>research pipeline<br/>stage 4"]
-        w4["change detection<br/>automatic re-checks<br/>stage 5"]
+    subgraph worker["Worker process"]
+        direction LR
+        w1["parse documents"]
+        w2["research pipeline<br/>agent/"]
+        w3["deliver events"]
     end
-    db[("PostgreSQL 16 · stage 0<br/>one schema per module<br/>job and event tables")]
-    ext["DeepSeek API<br/>public procurement sites"]
-    web -- "cookie session" --> API
-    API -- "business data<br/>+ jobs and events, one transaction" --> db
-    Worker -- "claim jobs<br/>write results" --> db
-    Worker -- "HTTPS" --> ext
-    classDef done fill:#DCEFE6,stroke:#1A6B55,color:#12382C
-    classDef next fill:#FBEBD0,stroke:#C77D1A,color:#5A3A0A
-    class db done
-    class m1 next
+    db[("PostgreSQL 16<br/>one schema per module<br/>jobs · outbox · cost ledger")]
+    ext["DeepSeek API (off by default)<br/>public procurement sites"]
+    browser -- "cookie session + CSRF" --> api
+    api -- "business data, jobs and events<br/>in one transaction" --> db
+    worker -- "claim jobs with SKIP LOCKED<br/>lease checked before every write" --> db
+    worker -- "reserve cost, then call" --> ext
 ```
 
-<sub>Green: done · Orange: next · Others: planned</sub>
-
-## Screenshot
-
-<img src="docs/assets/screenshot-catalog.png" alt="BidRadar opportunity catalog">
-
-<sub>All companies and notices in the screenshot are fictional demo data.</sub>
+The full path of a research request and how events become alerts and re-runs are described in [Architecture](docs/architecture.md) (Chinese).
 
 ## Quick start
 
-Try the full flow (legacy, Python 3.10+ only):
+Requires Python 3.12, [uv](https://docs.astral.sh/uv/) and Docker.
 
 ```bash
-python scripts/run_research_workbench.py    # open http://127.0.0.1:8965/
+uv sync
+docker compose up -d --wait db                 # PostgreSQL 16
+uv run alembic upgrade head
+uv run python -m bidradar seed-demo            # two fictional companies, four demo accounts
+uv run python -m bidradar ingest demo          # offline ingestion with fictional data; note the run_id it prints
+uv run python -m bidradar ingest publish <run_id>
+
+uv run python -m bidradar api                  # terminal 1: open http://127.0.0.1:8000/
+uv run python -m bidradar worker               # terminal 2: background jobs
 ```
 
-Test accounts are in `.bidradar-data/r12-workbench/demo-accounts.json`. In the catalog, switch the data scope to 虚构演示样本 (fictional demo sample) to see the demo notice.
+Demo passwords are in `.bidradar-data/v2/demo-accounts.json`. Sign in as `demo.member`, switch the catalog to "虚构演示样本" (fictional demo samples),
+open the notice, upload `tests/fixtures/tender-fictional.pdf`, estimate the cost and confirm.
 
-Develop v2 (Python 3.12, [uv](https://docs.astral.sh/uv/) and Docker):
+The model is off by default and research uses the free rule baseline. To use a real model, put a DeepSeek key in `~/.bidradar/credentials/deepseek-api-key.txt`
+and set `BIDRADAR_MODEL_ENABLED=true`; estimate the cost on the eval set first (`--llm live --enable-model --max-cost 1`) and then set the per-run cap.
 
 ```bash
-docker compose up -d --wait db && uv run alembic upgrade head
-uv run uvicorn bidradar.app.main:app        # open http://127.0.0.1:8000/health
+uv run pytest            # about 500 tests against the bidradar_test database; no network, no real model
+uv run lint-imports      # layering rules
 ```
 
-## Learn more
+## Status
 
-The documents below are in Chinese.
+Stages 0–6 of v2 are done and the old code has been removed ([roadmap](docs/roadmap.md)). This is a learning project: from the start, the roadmap reserved three core pieces for the project owner to build himself.
+They come with interfaces, acceptance tests (skipped by default) and instructions ([exercises](docs/exercises.md)); everything else works:
 
-- [Roadmap](docs/roadmap.md): what each stage builds, how to do it, and progress
-- [v2 blueprint](docs/v2-blueprint.md): why the rewrite and what it becomes
-- [Research agent](docs/agent.md): how research works, and test results
-- [Dev guide](docs/dev-guide.md) · [Decision records](docs/decisions/) · [Contributing rules](AGENTS.md)
+| Exercise | Current behaviour |
+| --- | --- |
+| 1. Row-level security | Tenant isolation relies on the first line of defence: every query filters by company. The database-level second line is not there yet |
+| 2. Matching step and eval metrics | Matching is a conservative placeholder: every requirement is "needs checking". Extraction, verification, composition and follow-ups work as usual |
+| 3. Outbox consumer | Events are written to the outbox but not delivered yet, so change alerts and automatic re-runs do not run |
+
+Other known limits: no OCR for scanned documents; the eval set is small and not yet human-labelled; v2 has not run against a real model yet; ingestion covers limited samples from the China Government Procurement site and the Hainan public resource exchange.
+
+## Layout
+
+```text
+bidradar/
+  app/        wiring: routes, dependencies, settings, worker, CLI, front end (static/)
+  modules/    identity  workspace  catalog  ingestion  documents  research  tracking
+  agent/      research pipeline (steps/), follow-up agent, checks, dimension table, prompts (prompts/)
+  infra/      database, job queue, outbox, idempotency keys, file storage
+evals/        eval cases (YAML), record and replay, per-step runner
+migrations/   Alembic migrations
+tests/        mirrors bidradar/ by module
+docs/         design, architecture, data model, roadmap, decisions
+```
+
+## Learn more (in Chinese)
+
+- [Agent design](docs/agent-design.md): what each step shows the model, what is checked, what happens on failure, how it is evaluated
+- [Research agent](docs/agent.md): how research works today, and what v1 testing revealed
+- [Architecture](docs/architecture.md) · [Data model](docs/data-model.md) · [Developer guide](docs/dev-guide.md)
+- [Roadmap](docs/roadmap.md) · [v2 blueprint](docs/v2-blueprint.md) · [Exercises](docs/exercises.md) · [Decisions](docs/decisions/) · [Collaboration rules](AGENTS.md)

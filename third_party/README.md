@@ -9,7 +9,7 @@
 - 上游文件：`backend/src/bidding_ai_analyzer/strategies/ccgp.py`，blob `8a57fdbe3d9543361aff5c2edaa100ae3cc13749`。
 - 代码依据：https://github.com/ichthyoplanktonzyh/bidding-ai-analyzer/blob/2e82be5e026b54516d8157700aea94cf1616747c/backend/src/bidding_ai_analyzer/strategies/ccgp.py
 - 上游LICENSE blob：`b2d63b7fb5030a081b9b5470bbcf5d71fd16aaaa`；完整文本保留在 [MIT许可](licenses/bidding-ai-analyzer-MIT.txt)。版权：Copyright (c) 2026 ichthyoplanktonzyh。
-- 本地派生：[ccgp.py](../services/ingestion/sources/ccgp.py)；测试：[test_ccgp_source.py](../tests/test_ccgp_source.py)。
+- 本地派生：[ccgp.py](../bidradar/modules/ingestion/sources/ccgp.py)；测试：[test_ccgp_source.py](../tests/ingestion/test_ccgp_source.py)。（2026-10 从旧版 services/ 原样迁入 v2。）
 
 直接沿用查询参数键与默认映射（searchtype、page_index、bidSort、buyerName、projectId、pinMu、bidType、dbselect、kw、start_time、end_time、timeType、displayZone、zoneId、pppStatus、agentName）、日期分隔转换、列表CSS标识与竖线元数据拆分思路。该文件是有标注的改编，不是上游原样vendor副本。
 
