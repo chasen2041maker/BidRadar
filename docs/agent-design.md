@@ -223,7 +223,7 @@ def match(requirement: Requirement, chunks: list[Chunk], profile: ProfileSlice, 
 3. **怎么让模型更倾向说"不知道"？** 输出结构里 met / unmet 必须填 `profile_quote`（档案原话），程序会核对它真的是档案的子串。说不出档案原话，就只能是 unknown。
 4. **评分项怎么处理？** 评分项不是门槛，"满足"的含义不同。维度表里暂定为最多判到 met 或 unknown。
 
-验收测试：`tests_v2/agent/test_match.py`。详细要求见 `docs/exercises.md` 的练习 2。
+验收测试：`tests/agent/test_match.py`。详细要求见 `docs/exercises.md` 的练习 2。
 
 ### ④ 核验（程序 + 模型，逐条）
 
@@ -423,7 +423,7 @@ class LLMClient(Protocol):
 ```yaml
 # evals/documents/tender-fictional.yaml：应该抽出哪些要求
 id: tender-fictional
-files: [tests_v2/fixtures/tender-fictional.pdf]
+files: [tests/fixtures/tender-fictional.pdf]
 requirements:
   - {quote: "合同签订后60日内完成系统开发、部署和试运行", kind: obligation, dimension: schedule}
   - {quote: "预算金额：48万元", kind: fact, dimension: fact, money_role: budget}

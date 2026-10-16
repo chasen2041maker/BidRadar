@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from bidradar.app import health
+from bidradar.app import health, pages
 from bidradar.app.settings import Settings
 from bidradar.infra.db import make_engine, make_session_factory
 from bidradar.infra.errors import AppError
@@ -92,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(documents_api.router)
     app.include_router(research_api.router)
     app.include_router(tracking_api.router)
+    app.include_router(pages.router)
     return app
 
 

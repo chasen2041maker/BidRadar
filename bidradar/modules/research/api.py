@@ -20,6 +20,7 @@ from bidradar.modules.research.schemas import (
     EstimateRequest,
     QuestionRequest,
     RunDetailOut,
+    RunListItemOut,
     RunListOut,
     RunOut,
 )
@@ -66,7 +67,12 @@ def list_runs(
     limit: Annotated[int, Query(ge=1, le=100)] = 30,
 ) -> RunListOut:
     runs = service.list_runs(session, user.id, workspace_id, before, limit)
-    return RunListOut(items=[RunOut.of(r) for r in runs], next_before=runs[-1].id if len(runs) == limit else None)
+    titles = service.notice_titles(session, [r.notice_id for r in runs])
+    items = []
+    for run in runs:
+        title, simulation = titles.get(run.notice_id, (None, None))
+        items.append(RunListItemOut(**RunOut.of(run).model_dump(), title=title, simulation=simulation))
+    return RunListOut(items=items, next_before=runs[-1].id if len(runs) == limit else None)
 
 
 @router.get("/runs/{run_id}")

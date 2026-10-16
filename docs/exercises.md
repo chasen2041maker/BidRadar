@@ -5,9 +5,9 @@ v2 的其余代码已经写完。这三块是路线图里写明"你主写"的部
 
 | 练习 | 阶段 | 位置 | 验收测试 |
 | --- | --- | --- | --- |
-| 1. 行级安全（RLS） | 1 | `app/deps.py` 的 `workspace_id_param`、新迁移 | `tests_v2/workspace/test_rls.py` |
-| 2. 匹配步骤和评测指标 | 4 | `agent/steps/match.py`、`evals/metrics.py` | `tests_v2/agent/test_match.py`、`tests_v2/evals/test_metrics.py` |
-| 3. outbox 消费者 | 5 | `infra/outbox.py` 的 `OutboxConsumer` | `tests_v2/infra/test_outbox_consumer.py` |
+| 1. 行级安全（RLS） | 1 | `app/deps.py` 的 `workspace_id_param`、新迁移 | `tests/workspace/test_rls.py` |
+| 2. 匹配步骤和评测指标 | 4 | `agent/steps/match.py`、`evals/metrics.py` | `tests/agent/test_match.py`、`tests/evals/test_metrics.py` |
+| 3. outbox 消费者 | 5 | `infra/outbox.py` 的 `OutboxConsumer` | `tests/infra/test_outbox_consumer.py` |
 
 做之前先读一遍对应的验收测试：测试就是需求。做完把测试文件开头的 `pytestmark = pytest.mark.skip(...)` 删掉，全部通过即完成。
 
@@ -22,7 +22,7 @@ v2 的其余代码已经写完。这三块是路线图里写明"你主写"的部
 
 ### 做完的标准
 
-1. `tests_v2/workspace/test_rls.py` 去掉 skip 后全部通过。
+1. `tests/workspace/test_rls.py` 去掉 skip 后全部通过。
 2. 其余测试照样全部通过（RLS 不能把正常功能挡住）。
 3. 写一页决策记录 `docs/decisions/0011-row-level-security.md`：为什么做、怎么做、代价。
 
@@ -81,7 +81,7 @@ uv run python -m evals.run --step all       # 指标没实现时，只给原始�
 
 ### 做完的标准
 
-1. `tests_v2/evals/test_metrics.py` 和 `tests_v2/agent/test_match.py` 去掉 skip 后全部通过。
+1. `tests/evals/test_metrics.py` 和 `tests/agent/test_match.py` 去掉 skip 后全部通过。
 2. 其余测试照样全部通过。
 3. 复核 `evals/` 下两个用例的标注（`labeled_by: claude` 的要你看过、改成自己的名字），再自己标至少 2 个新用例。
 4. 在 PR 里贴出 `--step match` 和 `--step all` 的数字：占位实现（基线）一份，你的实现一份。
@@ -152,7 +152,7 @@ Worker 启动时会提示一次。
 
 ### 做完的标准
 
-1. `tests_v2/infra/test_outbox_consumer.py` 去掉 skip 后全部通过。
+1. `tests/infra/test_outbox_consumer.py` 去掉 skip 后全部通过。
 2. 启动 Worker，导入一条公告的新版本，关注了这条公告的公司能看到一条提醒（手动验证一次）。
 3. 能讲清楚：为什么"同一个事件投递两次也只处理一次"在现在的单体里成立，拆成独立服务以后要怎么改。
 

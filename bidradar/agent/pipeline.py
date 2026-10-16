@@ -96,6 +96,7 @@ def versions(config: PipelineConfig) -> dict[str, str]:
     prompt_texts = prompts.all_current()
     result = {
         "pipeline": PIPELINE_VERSION,
+        "rules": extract_step.RULES_VERSION,
         "dimensions": fingerprint(table_fingerprint_source())[:12],
         "config": fingerprint(asdict(config))[:12],
     }

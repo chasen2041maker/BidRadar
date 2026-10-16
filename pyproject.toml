@@ -1,7 +1,4 @@
-# 项目依赖和工具配置。
-#
-# 这里的依赖只给 v2 新代码（bidradar/）用，用 uv 管理：uv sync 安装，uv run 运行。
-# 旧代码（services/、scripts/、tests/）仍然只用 Python 标准库，不需要安装这些依赖，到阶段 6 删除。
+# 项目依赖和工具配置。用 uv 管理：uv sync 安装，uv run 运行。
 
 [project]
 name = "bidradar"
@@ -32,17 +29,15 @@ dev = [
     "ruff==0.16.8",
 ]
 
-# 代码格式。格式化：uv run ruff format services scripts tests bidradar migrations tests_v2
-# 目标版本仍是 3.10，因为旧代码还要在 3.10 上跑。
+# 代码格式。格式化：uv run ruff format bidradar migrations tests evals
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
 
-# 新代码的测试。旧测试在 tests/ 里，用 unittest 跑，pytest 不收集它们。
 [tool.pytest.ini_options]
-testpaths = ["tests_v2"]
+testpaths = ["tests"]
 pythonpath = ["."]
-# 测试按模块分目录（tests_v2/identity/test_service.py、tests_v2/workspace/test_service.py……），
+# 测试按模块分目录（tests/identity/test_service.py、tests/workspace/test_service.py……），
 # importlib 模式下不同目录里的同名测试文件不会冲突，也不用在每个目录里放 __init__.py。
 addopts = ["--import-mode=importlib"]
 

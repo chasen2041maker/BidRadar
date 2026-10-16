@@ -6,7 +6,8 @@
 
 <!-- 跑了哪些测试或手动操作，结果如何。没验证的部分也写上，并说明原因。 -->
 
-- [ ] `python -m unittest discover -s tests -p 'test_*.py'` 通过
+- [ ] `uv run pytest` 和 `uv run lint-imports` 通过
+- [ ] 改了提示词、维度表或流水线规则：贴出 `uv run python -m evals.run --step all` 改前改后的数字
 - [ ] 改了代码的地方，注释和相关文档也已更新
 
 ## 需要注意

@@ -1,6 +1,6 @@
 """identity 的领域对象和业务规则：用户名格式、密码哈希、会话有效期、登录限流。
 
-纯 Python，不 import FastAPI 或 SQLAlchemy，不连数据库也能直接单测（tests_v2/identity/test_models.py）。
+纯 Python，不 import FastAPI 或 SQLAlchemy，不连数据库也能直接单测（tests/identity/test_models.py）。
 """
 
 import base64

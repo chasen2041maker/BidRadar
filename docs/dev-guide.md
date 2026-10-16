@@ -1,29 +1,29 @@
 # 开发指南
 
-仓库里现在有两套代码：旧代码在 `services/`，v2 新代码在 `bidradar/`。下面几节讲旧代码；新代码见 [v2 新代码](#v2-新代码bidradar)。旧代码到 v2 阶段 6 删除。
+怎么把项目跑起来、怎么测试、代码按什么规矩写。系统怎么工作见 [架构说明](architecture.md)。
 
 ## 环境
 
-- Python 3.10 或更高版本。旧代码运行和测试只用标准库，不需要 `pip install`。
-- Node.js（可选）：只用来检查前端语法 `node --check services/workspace/web/app.js`。
-- 格式化工具（可选）：`ruff`（Python）和 `prettier`（前端），只在改代码后格式化时用到。
+- Python 3.12 和 [uv](https://docs.astral.sh/uv/)。uv 负责装依赖、锁版本、运行命令。
+- Docker，用来跑 PostgreSQL 16。不用 Docker 也可以，见下面"不用 Docker"。
+- Node.js（可选）：只用来检查前端语法和格式（`node --check`、`prettier`）。
 
-## 运行
+`uv sync` 把依赖装进仓库里的 `.venv/`。依赖写在 `pyproject.toml`，确切版本锁在 `uv.lock`。改依赖用 `uv add` 或 `uv remove`，两个文件一起提交。
+
+## 跑起来
 
 ```bash
-# 完整环境：四个服务，浏览器打开 http://127.0.0.1:8965/
-python scripts/run_research_workbench.py
+docker compose up -d --wait db                 # PostgreSQL 16，第一次启动会建 bidradar 和 bidradar_test 两个库
+uv run alembic upgrade head                    # 迁移到最新版本
+uv run python -m bidradar seed-demo            # 两家虚构公司、四个演示账号、初始档案
+uv run python -m bidradar ingest demo          # 用虚构数据离线跑一遍采集（不联网）
+uv run python -m bidradar ingest publish <上一步输出的 run_id>   # 规范化并导入商机目录
 
-# 导入一个规范化公告包后再启动
-python scripts/run_research_workbench.py --bundle 路径/normalized.json
-
-# 允许调用 DeepSeek（会产生费用）
-python scripts/run_research_workbench.py --enable-model
+uv run python -m bidradar api                  # 终端 1：API 和工作台，http://127.0.0.1:8000/
+uv run python -m bidradar worker               # 终端 2：后台任务（解析文件、执行研究）
 ```
 
-端口从 `--port`（默认 8965）开始连续占用四个：workspace、catalog、research、tracking。Ctrl+C 停止，数据保留。
-
-第一次启动时会创建两家虚构公司和四个测试账号，随机密码保存在 `.bidradar-data/r12-workbench/demo-accounts.json`：
+演示账号的随机密码在 `.bidradar-data/v2/demo-accounts.json`：
 
 | 用户名 | 公司 | 角色 |
 | --- | --- | --- |
@@ -32,164 +32,99 @@ python scripts/run_research_workbench.py --enable-model
 | demo.viewer | 山岚软件（虚构） | 只读成员 |
 | other.admin | 海隅智能（虚构） | 管理员 |
 
-数据链相关：
+登录后在商机目录把数据范围切到"虚构演示样本"，打开公告，上传 `tests/fixtures/tender-fictional.pdf`（一份虚构招标文件），预估费用后确认发起。
+模型默认关闭，研究走规则基线，不花钱。
+
+接口文档在 http://127.0.0.1:8000/docs ，由 FastAPI 自动生成。
+
+### 配置
+
+配置项在 `bidradar/app/settings.py`，每一项都能用 `BIDRADAR_` 开头的环境变量或 `.env` 文件覆盖，模板见 `.env.example`。默认值对应 `docker-compose.yml` 里的本地数据库，不写 `.env` 也能跑。
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `BIDRADAR_DATABASE_URL` | 本机 bidradar 库 | |
+| `BIDRADAR_DATA_DIR` | `.bidradar-data/v2` | 上传的文件、采集的原件（按 SHA-256 存）、演示账号 |
+| `BIDRADAR_MODEL_ENABLED` | `false` | 开了才会调 DeepSeek，会花钱。**没有项目负责人同意不开** |
+| `BIDRADAR_DEEPSEEK_API_KEY_FILE` | `~/.bidradar/credentials/deepseek-api-key.txt` | 密钥放在仓库外的文件里，不写进 `.env` |
+| `BIDRADAR_BUDGET_*_CAP_MICRO` | 总 20 元、每家公司 10 元、每个任务 2 元 | 单位是百万分之一元。改上限也要负责人同意 |
+
+### 采集真实网站
 
 ```bash
-python scripts/run_data_demo.py          # 用虚构数据离线跑一遍采集 → 规范化 → 目录
-python scripts/run_public_chain.py --help   # 对真实网站跑一次（需要准入文件和 --allow-network）
-python -m services.ingestion --help       # 采集命令行
-python -m services.catalog --help         # 目录命令行
+uv run python -m bidradar ingest collect-public --source ccgp --category zygg --key <幂等键> --allow-network --policy <准入文件>
+uv run python -m bidradar ingest publish <run_id>
 ```
 
-真实网站采集需要一份人工核对过的来源准入文件，格式和注意事项见 [历史文档 31](archive/31-public-source-layer.md)。
+真实网站采集需要一份人工核对过的来源准入文件，格式和注意事项见 [历史文档 31](archive/31-public-source-layer.md)。默认不联网，必须显式加 `--allow-network`。
+
+### 不用 Docker
+
+自己装 PostgreSQL 16，建好 `bidradar` 和 `bidradar_test` 两个库，再用 `BIDRADAR_DATABASE_URL` 和 `BIDRADAR_TEST_DATABASE_URL` 指过去。
+练习 1（RLS）的测试要能建数据库角色，本机开发库的账号需要 `ALTER ROLE bidradar SUPERUSER`。
 
 ## 数据和密钥放在哪
 
 | 内容 | 位置 | 进 git 吗 |
 | --- | --- | --- |
-| 各服务的数据库、测试账号、评测结果 | `.bidradar-data/` | 不进（已在 .gitignore） |
+| 业务数据、费用账本（`research.llm_calls`） | PostgreSQL | — |
+| 上传的文件、采集的原件、演示账号 | `.bidradar-data/v2/` | 不进（已在 .gitignore） |
 | DeepSeek 密钥 | `~/.bidradar/credentials/deepseek-api-key.txt` | 不进（在仓库外） |
-| 模型费用账本 | `~/.bidradar/budgets/deepseek-r12-20261001.sqlite3` | 不进（在仓库外） |
+| 评测用例和录下的模型响应 | `evals/` | 进（全部是虚构内容） |
 
-不要删费用账本来"重置额度"：账本旁边有一个标记文件，账本丢了服务会拒绝启动。
+不要删费用账本里的记录来"重置额度"：结果不确定的调用按已花计，删了就可能被重复计费。
 
-## 测试
-
-```bash
-# 全部测试（约 30 秒）
-python -m unittest discover -s tests -p 'test_*.py'
-
-# 只跑某一个文件
-python -m unittest tests.test_research_agent -v
-```
-
-测试全部使用虚构数据和本机临时目录，不联网，不调真实模型。
-
-| 测试文件 | 覆盖内容 |
-| --- | --- |
-| `test_research_agent.py` | Agent 的协议、工具、检查、修订、恢复（模型用脚本代替） |
-| `test_research_runtime.py` | 四个服务真实跑起来，Worker 执行研究任务的全过程 |
-| `test_research_budget.py` | 费用账本：并发预留、结算、结果未知、恢复 |
-| `test_research_provider.py` | DeepSeek 接口适配（本机假服务器） |
-| `test_tracking.py` | 决定、关注、变化检测、委托、提醒 |
-| `test_tracking_http_replay.py` | 四服务下的跟踪和自动复核回放 |
-| `test_workspace_store.py` | 登录、成员、档案、选择、公司隔离 |
-| `test_workbench_http.py` | 工作台 HTTP 接口：会话、CSRF、权限、转发 |
-| `test_workspace_access_policy.py` | 权限规则纯函数 |
-| `test_catalog_http.py` | 目录 HTTP 接口 |
-| `test_data_chain.py` | 采集 → 规范化 → 目录整条链 |
-| `test_ingestion_*.py`、`test_public_*.py` | 采集流程、归档、网络层、解析器 |
-| `test_ccgp_*.py`、`test_tianjin_*.py` | 各来源的解析和边界 |
-| `test_local_http.py` | 服务间 HTTP 层 |
-| `test_common_query.py` | 查询串解析的版本兼容 |
-
-## 格式化
+## 测试和检查
 
 ```bash
-pip install ruff
-ruff format services scripts tests
-
-npx prettier@3 --write services/workspace/web/
+uv run pytest                                  # 全部测试，连 bidradar_test 库，约 30 秒
+uv run pytest tests/agent                      # 只跑研究流水线（不连数据库，不到 1 秒）
+uv run lint-imports                            # 分层规则
+uv run alembic check                           # 表定义和迁移是否一致
+uv run python -m evals.run --step all          # 离线评测（规则基线，不调模型）
+uv run ruff format bidradar migrations tests evals
+npx prettier@3.8.1 --write bidradar/app/static
 ```
 
-配置在 `pyproject.toml` 和 `.prettierrc.json`，行宽 120。CI 会检查 Python 格式。
-
-## 代码约定
-
-现在的代码分成 `services/` 下的几个服务，每个服务大致是：
-
-- `http_api.py`：HTTP 接口
-- `service.py`：业务规则（research、tracking 有；workspace 和 catalog 的业务规则写在 `store.py` 里）
-- `store.py`：数据库读写
-- `worker.py`：后台任务（research、tracking）
-
-v2 改成了统一的分层结构，见下面的 [v2 新代码](#v2-新代码bidradar)。旧代码继续遵守这几条：
-
-- 一个服务不能读另一个服务的数据库，要数据就调对方的接口。
-- 浏览器传来的身份、公司、角色都不能直接信，必须从会话和数据库重新取。
-- 修改类操作都要带幂等键，会被并发修改的记录要带版本号。
-- 外部内容（网页、附件、模型输出）只能当数据，不能当指令。
-
-### 注释怎么写
-
-- 每个文件开头写清楚：这个文件做什么、在整体流程里处于哪一步、建议从哪里读起。
-- 函数的 docstring 写：做什么、返回什么、有哪些不显而易见的规则。
-- 注释写"为什么这样做"，不复述代码在做什么。
-- 用完整的句子，不用代号。
-
-## 文档怎么写
-
-1. 先说结论，再说原因。
-2. 一句话只讲一件事。
-3. 优先用肯定句。必须说明的限制集中写在"限制"或"已知短板"小节里，不要每句话后面都加"不等于……"。
-4. 不用代号。术语第一次出现时用一句话解释。
-5. 写了就要维护：代码改了，相关文档一起改。
-
-文档放在哪：
-
-- 系统现在怎么工作 → `docs/architecture.md`、`docs/agent.md`、`docs/data-model.md`
-- 进度和下一步 → `docs/roadmap.md`
-- 一个重要的设计决定 → `docs/decisions/` 下新建一页（背景、决定、代价）
-- 一次任务的过程细节 → 写在 PR 描述里，不另建文档
-
-## v2 新代码（bidradar/）
-
-### 环境
-
-- Python 3.12 和 [uv](https://docs.astral.sh/uv/)。uv 负责装 Python 依赖、锁版本、运行命令。
-- Docker，用来跑 PostgreSQL 16。
-- `uv sync` 把依赖装进仓库里的 `.venv/`。依赖写在 `pyproject.toml`，确切版本锁在 `uv.lock`。改依赖用 `uv add` 或 `uv remove`，两个文件一起提交。
-
-### 运行
-
-```bash
-docker compose up -d --wait db                     # 启动 PostgreSQL，等它就绪
-uv run alembic upgrade head                        # 把数据库迁移到最新版本
-uv run uvicorn bidradar.app.main:app --reload      # 启动 API
-curl http://127.0.0.1:8000/health                  # {"status":"ok","database":"ok"}
-```
-
-接口文档在 http://127.0.0.1:8000/docs ，由 FastAPI 自动生成。
-
-- 配置项在 `bidradar/app/settings.py`。每一项都能用 `BIDRADAR_` 开头的环境变量或 `.env` 文件覆盖，模板见 `.env.example`。
-- 默认值对应 `docker-compose.yml` 里的本地数据库，不写 `.env` 也能跑。
-- 数据库第一次启动时会建两个库：`bidradar` 给开发用，`bidradar_test` 给 pytest 用。
-- 不用 Docker 也可以：自己装 PostgreSQL 16，建好这两个库，再用 `BIDRADAR_DATABASE_URL` 和 `BIDRADAR_TEST_DATABASE_URL` 指过去。
-
-### 测试和检查
-
-```bash
-uv run pytest                                      # 新代码的测试，连 bidradar_test 库
-uv run lint-imports                                # 检查分层规则
-uv run alembic check                               # 检查表定义和迁移是否一致
-uv run ruff format bidradar migrations tests_v2    # 格式化
-```
-
-新代码的测试放在 `tests_v2/`，用 pytest。旧测试留在 `tests/`，用 unittest。阶段 6 删掉旧代码后，`tests_v2/` 改名为 `tests/`。
-
-测试分三层，公共夹具在 `tests_v2/conftest.py`：
+测试全部用虚构数据，不联网，不调真实模型（模型用 `FakeLLM` 按脚本应答）。分三层，公共夹具在 `tests/conftest.py`，造数据的函数在 `tests/factories.py`：
 
 | 层 | 测什么 | 怎么写 |
 | --- | --- | --- |
-| 纯逻辑 | `models.py`、`agent/` 的各步骤 | 直接调函数，不连数据库；大模型用假实现代替 |
-| 服务 | `service.py` 加 `repo.py`，连真实 PostgreSQL | 用 `db_session` 夹具。每个测试跑在一个事务里，结束后回滚 |
+| 纯逻辑 | `models.py`、`agent/` 的各步骤 | 直接调函数，不连数据库 |
+| 服务 | `service.py` 加 `repo.py`，连真实 PostgreSQL | 用 `db_session` 夹具。每个测试跑在一个事务里，结束后回滚；service 里的 `commit()` 只提交到保存点 |
 | 接口 | 从 HTTP 请求到数据库的完整路径 | 用 `client` 夹具。请求直接在进程里交给 FastAPI，会话同样会回滚 |
+
+三个练习的验收测试默认跳过（文件开头的 `pytestmark = pytest.mark.skip(...)`），见 [练习](exercises.md)。
+
+## 代码结构
+
+```text
+bidradar/
+  app/        组装：main.py（应用、路由、安全响应头）、deps.py（会话、当前用户、CSRF）、worker.py、cli.py、static/（前端）
+  modules/    七个业务模块，每个一个 PostgreSQL schema
+    identity  workspace  catalog  ingestion  documents  research  tracking
+  agent/      研究流水线和追问 Agent，纯逻辑，不碰数据库
+  infra/      数据库连接、任务队列、outbox、幂等键、文件存储、时钟
+migrations/   Alembic 迁移，一个阶段一个
+evals/        评测：用例、录制和重放、按步骤跑
+tests/        和 bidradar/ 同样按模块分目录
+```
 
 ### 每一层放什么，为什么这样分
 
 | 层 | 位置 | 放什么 | 为什么单独一层 |
 | --- | --- | --- | --- |
-| app | `bidradar/app/` | `main.py` 组装应用、挂路由；`deps.py` 给路由注入数据库会话，阶段 1 加上当前用户；`settings.py` 读配置；`metadata.py` 列出全部表定义 | 只有这一层知道一共有哪些模块。换配置、加模块都只改这里 |
+| app | `bidradar/app/` | 组装应用、挂路由；给路由注入会话和当前用户；读配置；Worker 的任务注册 | 只有这一层知道一共有哪些模块。换配置、加模块都只改这里 |
 | api | `modules/*/api.py` | 路由：解析请求，调用 service，把结果转成响应 | 状态码、Cookie 这些 HTTP 细节不会混进业务规则 |
 | schemas | `modules/*/schemas.py` | 接口的请求和响应结构（Pydantic） | 接口长什么样和表长什么样分开定义，改表不会悄悄改掉接口 |
-| service | `modules/*/service.py` | 业务用例：一个函数一个业务动作，由它提交事务 | API 和 Worker 都调用它。它也是别的模块唯一能调用的入口，以后拆服务时换成同名接口的 HTTP 客户端就行 |
-| repo | `modules/*/repo.py` | 数据库读写 | 业务规则里看不到 SQL，SQL 里看不到业务规则 |
+| service | `modules/*/service.py` | 业务用例：一个函数一个业务动作，先检查权限，最后提交事务 | API 和 Worker 都调用它。它也是别的模块唯一能调用的入口，以后拆服务时换成同名接口的 HTTP 客户端就行 |
+| repo | `modules/*/repo.py` | 数据库读写，只读写、不提交 | 业务规则里看不到 SQL，SQL 里看不到业务规则 |
 | tables | `modules/*/tables.py` | SQLAlchemy 表定义，绑定在本模块自己的 schema 上 | 每个模块只写自己的 schema，拆服务时把 schema 整个搬走 |
 | models | `modules/*/models.py` | 领域对象和业务规则，纯 Python | 规则最集中的地方，不连数据库就能单测 |
-| agent | `bidradar/agent/` | 研究流水线和追问 Agent，纯逻辑 | 需要的东西都从参数传进来，所以能单独评测，以后也能单独拆走 |
-| infra | `bidradar/infra/` | 数据库连接，以后还有任务队列、outbox、日志、时钟 | 最底层，谁都能用，它不认识业务 |
+| agent | `bidradar/agent/` | 研究流水线和追问 Agent | 需要的东西（模型、步骤存储、守卫、账本）都从参数传进来，所以能单测、能离线评测 |
+| infra | `bidradar/infra/` | 数据库、任务队列、outbox、幂等键、文件存储、时钟 | 最底层，谁都能用，它不认识业务 |
 
-一个请求怎么走，看 `bidradar/app/health.py`：路由（app）→ 依赖注入会话（`deps.py`）→ 执行 SQL（`infra/db.py`）→ 数据库。阶段 1 起，业务请求会多经过 api → service → repo 这几层。
+**加一个功能**都是同一套顺序：`tables.py` 建表并生成迁移 → `models.py` 写规则和纯逻辑单测 → `repo.py` → `service.py` → `schemas.py` + `api.py` → 服务测试和接口测试 → `uv run pytest && uv run lint-imports && uv run alembic check`。
 
 ### 依赖规则
 
@@ -202,14 +137,44 @@ uv run ruff format bidradar migrations tests_v2    # 格式化
 5. `agent/` 不 import app、modules、infra，也不 import Web 和数据库库。
 6. `infra/` 不 import app、modules、agent。
 
+### 几条业务上的规矩
+
+- 浏览器传来的身份、公司、角色都不能直接信：当前用户从会话取，权限每个动作前用 `workspace.authorize()` 重新查。
+- 修改类请求都带幂等键（`key`）；会被并发修改的记录带版本号（`expected_version`），对不上就返回 409。
+- 异步的事写 outbox（和业务数据同一个事务）；后台任务写 jobs（同样同一个事务）。不在事务提交前调用外部服务。
+- 外部内容（网页、附件、模型输出）只当数据：显示时用 `textContent`，发给模型时放进 user 消息的 JSON 里。
+- 未知不当成满足，也不当成不满足。
+
 ### 数据库迁移
 
-- 改了 `tables.py` 之后生成迁移：`uv run alembic revision --autogenerate --rev-id 0002 -m "create identity tables"`。编号接着上一个往下排。
+- 改了 `tables.py` 之后生成迁移：`uv run alembic revision --autogenerate --rev-id 0007 -m "..."`。编号接着上一个往下排。
 - 生成的迁移一定要读一遍再提交。比如改列名，自动生成的是"删一列、加一列"，会丢数据，要手动改成重命名。
 - 迁移合并到 main 以后就不再修改。要改，就再写一个新迁移。
-- 迁移里不 import 应用代码，表名和 schema 名直接写在迁移里。应用代码会继续改，迁移必须保持原样。
+- 迁移里不 import 应用代码，表名和 schema 名直接写在迁移里。
 - 模块之间不建外键。跨模块的 ID（比如 `workspace_id`）只存值，由 service 保证它有效。这样每个 schema 都能整体搬走。
 - 新增模块时，在 `bidradar/app/metadata.py` 加一行，再写一个建 schema 的迁移。漏了哪一步，pytest 都会失败。
+
+### 改研究流水线
+
+- 提示词放 `bidradar/agent/prompts/`，文件名带版本号。改提示词就新建一个版本文件，改 `prompts/__init__.py` 的 `CURRENT`。
+- 提示词、维度表、规则的指纹会算进每个任务的 `config_version`：旧报告永远知道自己是按哪版规则生成的。
+- 改了提示词、维度表或规则，跑 `uv run python -m evals.run --step all`，在 PR 里贴出改前改后的数字。详见 [Agent 设计](agent-design.md) 第 11 节。
+
+## 注释和文档怎么写
+
+- 每个文件开头写清楚：这个文件做什么、在整体流程里处于哪一步、建议从哪里读起。
+- 函数的 docstring 写：做什么、返回什么、有哪些不显而易见的规则。
+- 注释写"为什么这样做"，不复述代码在做什么。
+- 先说结论，再说原因；一句话只讲一件事；优先用肯定句；不用代号。
+- 代码改了，相关文档一起改。
+
+文档放在哪：
+
+- 系统现在怎么工作 → `docs/architecture.md`、`docs/agent.md`、`docs/data-model.md`
+- 研究流水线的详细设计 → `docs/agent-design.md`
+- 进度和下一步 → `docs/roadmap.md`
+- 一个重要的设计决定 → `docs/decisions/` 下新建一页（背景、决定、代价）
+- 一次任务的过程细节 → 写在 PR 描述里，不另建文档
 
 ## 提交和合并
 

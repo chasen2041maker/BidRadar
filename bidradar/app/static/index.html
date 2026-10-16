@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>BidRadar · 招标研究工作台</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <!-- 图标都是内联 SVG：CSP 只允许同源资源，不能用图标字体或 data: 图片。描边颜色跟随文字颜色（currentColor）。 -->
+    <div id="login-screen" class="login-screen">
+      <div class="login-top">
+        <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" fill="#17604C" />
+          <circle cx="16" cy="16" r="11" fill="none" stroke="#A8E0C6" stroke-opacity=".35" stroke-width="1.25" />
+          <circle cx="16" cy="16" r="6.5" fill="none" stroke="#A8E0C6" stroke-opacity=".55" stroke-width="1.25" />
+          <path
+            d="M16 11.2 20.8 16 16 20.8 11.2 16Z"
+            fill="none"
+            stroke="#fff"
+            stroke-width="1.6"
+            stroke-linejoin="round"
+          />
+          <path d="M16 14.1 17.9 16 16 17.9 14.1 16Z" fill="#fff" />
+          <circle cx="23.2" cy="9.6" r="1.6" fill="#E9F7F0" />
+        </svg>
+        <span>BidRadar</span>
+      </div>
+      <form id="login-form" class="login-card">
+        <div>
+          <h1>登录工作台</h1>
+          <p class="login-sub">使用本机预置的演示账号（python -m bidradar seed-demo）</p>
+        </div>
+        <label>账号<input id="username" name="username" autocomplete="username" required maxlength="64" /></label>
+        <label
+          >密码<input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            maxlength="1024"
+        /></label>
+        <button type="submit" class="primary">登录</button>
+        <p id="login-error" role="alert" class="error"></p>
+      </form>
+      <p class="login-foot">本地开发环境 · 企业资料均为虚构样例</p>
+    </div>
+
+    <div id="workspace-screen" class="shell" hidden>
+      <aside class="sidebar">
+        <div class="brand">
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="8" fill="#17604C" />
+            <circle cx="16" cy="16" r="11" fill="none" stroke="#A8E0C6" stroke-opacity=".35" stroke-width="1.25" />
+            <circle cx="16" cy="16" r="6.5" fill="none" stroke="#A8E0C6" stroke-opacity=".55" stroke-width="1.25" />
+            <path
+              d="M16 11.2 20.8 16 16 20.8 11.2 16Z"
+              fill="none"
+              stroke="#fff"
+              stroke-width="1.6"
+              stroke-linejoin="round"
+            />
+            <path d="M16 14.1 17.9 16 16 17.9 14.1 16Z" fill="#fff" />
+            <circle cx="23.2" cy="9.6" r="1.6" fill="#E9F7F0" />
+          </svg>
+          <span>BidRadar</span>
+        </div>
+        <div class="workspace-switch">
+          <label class="sr-only" for="workspace-select">选择公司空间</label>
+          <select id="workspace-select"></select>
+          <span id="role-badge" class="role-badge"></span>
+        </div>
+        <nav aria-label="工作台导航">
+          <p class="nav-label">工作</p>
+          <button data-view="discover" class="nav active">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4.5M13.5 3 19 8.5V11M13.5 3v5.5H19" />
+              <circle cx="16.5" cy="16.5" r="3" />
+              <path d="m21 21-2.4-2.4" /></svg
+            >商机目录
+          </button>
+          <p class="nav-label">分析</p>
+          <button data-view="research" class="nav">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <circle cx="12" cy="12" r="4.5" />
+              <path d="m12 12 6.3-6.3" /></svg
+            >研究
+          </button>
+          <button data-view="tracking" class="nav">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 9.5a6 6 0 0 1 12 0c0 5.5 2.5 7.5 2.5 7.5h-17S6 15 6 9.5Z" />
+              <path d="M10 20.5a2.2 2.2 0 0 0 4 0" /></svg
+            >决定与跟踪
+          </button>
+          <p class="nav-label">公司</p>
+          <button data-view="profile" class="nav">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4.5" y="3" width="15" height="18" rx="1.5" />
+              <path d="M9 7.5h.01M15 7.5h.01M9 11.5h.01M15 11.5h.01M10 21v-4.5h4V21" /></svg
+            >企业档案
+          </button>
+          <button data-view="members" class="nav">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="9" cy="8" r="3.5" />
+              <path
+                d="M2.5 20c.6-3.4 3.3-5.5 6.5-5.5s5.9 2.1 6.5 5.5M15.5 4.6a3.5 3.5 0 0 1 0 6.8M17.5 14.8c2.2.6 3.6 2.4 4 5.2"
+              /></svg
+            >成员
+          </button>
+        </nav>
+        <div class="sidebar-foot">
+          <p class="environment">本地环境 · 虚构企业资料</p>
+          <div class="account">
+            <span id="account-avatar" class="avatar" aria-hidden="true"></span>
+            <span id="account-name" class="account-name"></span>
+            <button id="logout" class="icon-button" type="button" aria-label="退出登录" title="退出登录">
+              <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M9.5 16.5 5 12l4.5-4.5M5 12h11" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      <main>
+        <header class="page-head">
+          <h1 id="page-title">商机目录</h1>
+          <p id="header-context" class="page-sub">浏览和筛选不会调用模型。</p>
+        </header>
+        <div id="notice" role="status" class="notice" hidden></div>
+
+        <section id="discover-view">
+          <form id="search-form" class="toolbar">
+            <div class="search-field">
+              <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" />
+                <path d="m20 20-4.3-4.3" />
+              </svg>
+              <label class="sr-only" for="keyword">搜索项目</label>
+              <input id="keyword" placeholder="搜索项目名称、采购人或技术需求" maxlength="200" autocomplete="off" />
+              <kbd aria-hidden="true">/</kbd>
+            </div>
+            <label class="sr-only" for="kind">公告类型</label>
+            <select id="kind">
+              <option value="">全部类型</option>
+              <option value="procurement">采购公告</option>
+              <option value="correction">更正公告</option>
+              <option value="award">中标 / 成交</option>
+              <option value="termination">终止公告</option>
+              <option value="intention">采购意向</option>
+              <option value="unknown">类型待核实</option>
+            </select>
+            <label class="sr-only" for="data-mode">数据范围</label>
+            <select id="data-mode">
+              <option value="false">真实公开样本</option>
+              <option value="true">虚构演示样本</option>
+            </select>
+            <button type="submit" class="primary">搜索</button>
+          </form>
+          <div class="result-meta">
+            <span><strong id="total-count">—</strong> 条结果</span>
+            <span id="data-label">已归档公开公告</span>
+            <span>企业档案 <span id="profile-label">尚未确认</span></span>
+            <span id="as-of" class="as-of"></span>
+          </div>
+          <div id="notice-list" class="list"></div>
+          <div class="pager"><button id="next-page" type="button" hidden>下一页</button></div>
+          <p id="source-status" class="source-status"></p>
+        </section>
+
+        <section id="profile-view" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>企业档案</h2>
+                <p class="panel-sub">先填名称、想接的项目、能力和交付限制；其余留空表示尚未确认。</p>
+              </div>
+              <span id="profile-version" class="badge">尚未确认</span>
+            </div>
+            <p class="note">这里记录的是企业自己的声明。管理员确认档案，不代表资质或证明已经核验。</p>
+            <form id="profile-form" class="profile-grid"></form>
+          </div>
+          <div class="split">
+            <div class="panel">
+              <div class="panel-head"><h2>待确认建议</h2></div>
+              <div id="proposals"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2>正式版本</h2></div>
+              <div id="profile-history"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="research-view" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>用量</h2>
+                <p class="panel-sub">研究、追问和自动复核共用额度。结果不确定的调用按已花计，不会自动重试。</p>
+              </div>
+              <button id="refresh-research" type="button">
+                <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 11.5A8 8 0 0 0 6 6.3L4 8.5M4 4v4.5h4.5M4 12.5a8 8 0 0 0 14 5.2l2-2.2M20 20v-4.5h-4.5" />
+                </svg>
+                刷新
+              </button>
+            </div>
+            <div id="research-budget" class="budget-grid"></div>
+          </div>
+          <div class="research-layout">
+            <div class="panel">
+              <div class="panel-head"><h2>研究记录</h2></div>
+              <div id="research-list"></div>
+              <button id="more-research" type="button" class="more" hidden>读取更早记录</button>
+            </div>
+            <div class="panel research-detail"><div id="research-detail"></div></div>
+          </div>
+        </section>
+
+        <section id="tracking-view" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>决定与关注</h2>
+                <p class="panel-sub">人工决定和关注开关分开保存。从公告详情或研究报告进入，可设置对应公告。</p>
+              </div>
+              <button id="refresh-tracking" type="button">
+                <svg class="i" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 11.5A8 8 0 0 0 6 6.3L4 8.5M4 4v4.5h4.5M4 12.5a8 8 0 0 0 14 5.2l2-2.2M20 20v-4.5h-4.5" />
+                </svg>
+                刷新
+              </button>
+            </div>
+            <div id="tracking-context"></div>
+          </div>
+          <div class="split">
+            <div class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>提醒</h2>
+                  <p class="panel-sub">按发生顺序排列，已读状态只属于你。</p>
+                </div>
+              </div>
+              <div id="tracking-notifications"></div>
+              <button id="more-notifications" type="button" class="more" hidden>读取后续提醒</button>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <div>
+                  <h2>资料与档案变化</h2>
+                  <p class="panel-sub">保留新旧版本，不会自动改变人工决定。</p>
+                </div>
+              </div>
+              <div id="tracking-changes"></div>
+              <button id="more-changes" type="button" class="more" hidden>读取后续变化</button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>自动复核</h2>
+                <p class="panel-sub">只有明确授权才会发起，每次仍按发起人当前的权限检查。新结果不覆盖旧报告。</p>
+              </div>
+            </div>
+            <div id="tracking-reassessments"></div>
+          </div>
+        </section>
+
+        <section id="members-view" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>当前成员</h2>
+                <p class="panel-sub">管理员可以调整角色和访问权限。撤销访问会保留该成员的历史记录。</p>
+              </div>
+            </div>
+            <div id="member-list"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="detail-dialog">
+      <div class="dialog-head">
+        <span class="dialog-label">公告、证据与研究</span>
+        <button id="close-detail" type="button" class="icon-button" aria-label="关闭详情" title="关闭">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+        </button>
+      </div>
+      <div id="detail-content"></div>
+    </dialog>
+  </body>
+</html>

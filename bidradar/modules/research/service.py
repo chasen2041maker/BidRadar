@@ -29,7 +29,7 @@ from bidradar.agent.llm import (
     Pricing,
 )
 from bidradar.agent.pipeline import PipelineConfig, PipelineStopped, ResearchInputs, ResearchPipeline, versions
-from bidradar.agent.schemas import Chunk, ProfileSnapshot, Report
+from bidradar.agent.schemas import Chunk, CitedChunk, ProfileSnapshot, Report
 from bidradar.infra import clock, idempotency, jobs, outbox
 from bidradar.infra.errors import AppError, conflict, not_found
 from bidradar.infra.ids import fingerprint, new_id
@@ -391,6 +391,18 @@ def list_runs(
     return [repo.to_run(row) for row in repo.list_runs(session, workspace_id, before, limit)]
 
 
+def notice_titles(session: Session, notice_ids: list[str]) -> dict[str, tuple[str, bool]]:
+    """任务列表要显示公告标题和是不是虚构样例。公告不在目录里了的，不出现在结果里。"""
+    titles = {}
+    for notice_id in dict.fromkeys(notice_ids):
+        try:
+            current = catalog.get_notice(session, notice_id)["current"]
+        except AppError:
+            continue
+        titles[notice_id] = (current["title"], current["simulation"])
+    return titles
+
+
 def budget_summary(
     session: Session, actor_id: str, workspace_id: str, limits: Limits, pricing: Pricing
 ) -> BudgetSummary:
@@ -414,7 +426,9 @@ def budget_summary(
 def _extraction_key(chunks: list[Chunk], mode: str) -> str:
     config = versions(PipelineConfig(mode=mode))
     parts = {
-        k: v for k, v in config.items() if k in ("pipeline", "dimensions", "prompt.extract", "prompt.extract_recall")
+        k: v
+        for k, v in config.items()
+        if k in ("pipeline", "rules", "dimensions", "prompt.extract", "prompt.extract_recall")
     }
     return fingerprint([sorted(c.id for c in chunks), parts, mode])
 
@@ -476,7 +490,17 @@ def handle_run(session: Session, job: jobs.Job, llm: LLMClient, limits: Limits, 
                 tools=ChunkToolBox(chunks),
             )
             answer = agent.answer(row.question, row.id)
-            _finish(session, row, job, RunStatus.SUCCEEDED, None, ("answer", answer.model_dump(mode="json")))
+            payload = answer.model_dump(mode="json")
+            # 回答引用的片段原文一起存下：报告里的片段只有主报告引用过的那些，追问可能读到别的片段。
+            by_id = {c.id: c for c in chunks}
+            payload["chunks"] = [
+                CitedChunk(
+                    id=c.id, document_id=c.document_id, page=c.page, section_path=c.section_path, text=c.text
+                ).model_dump(mode="json")
+                for cid in answer.citations
+                if (c := by_id.get(cid)) is not None
+            ]
+            _finish(session, row, job, RunStatus.SUCCEEDED, None, ("answer", payload))
             return
         cache = DbExtractionCache(session, row.workspace_id if row.document_ids else None, row.workspace_id)
         pipeline = ResearchPipeline(client, steps, guard, PipelineConfig(mode=row.mode), cache=cache)

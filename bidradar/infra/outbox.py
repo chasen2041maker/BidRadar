@@ -43,7 +43,7 @@ class OutboxConsumer:
     """把 outbox 里还没投递的事件交给订阅方的处理函数。
 
     TODO（练习 3）：实现 run_once()。要求、验收测试和提示见 docs/exercises.md 的"练习 3"，
-    验收测试在 tests_v2/infra/test_outbox_consumer.py（现在是跳过的）。
+    验收测试在 tests/infra/test_outbox_consumer.py（现在是跳过的）。
 
     约定（实现时不要改）：
     - handlers 是 {topic: 处理函数}。处理函数不提交事务，由消费者决定什么时候提交。

@@ -66,8 +66,14 @@ class RunOut(BaseModel):
         return cls(**{k: v for k, v in value.__dict__.items() if k in cls.model_fields})
 
 
+class RunListItemOut(RunOut):
+    # 公告已经不在目录里时为 None
+    title: str | None = None
+    simulation: bool | None = None
+
+
 class RunListOut(BaseModel):
-    items: list[RunOut]
+    items: list[RunListItemOut]
     next_before: str | None
 
 

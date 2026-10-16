@@ -29,6 +29,9 @@ from bidradar.agent.llm import InvalidModelOutput, LLMClient, LLMRequest, parse_
 from bidradar.agent.schemas import Category, Chunk, ExtractionIssue, Kind, MoneyRole, Requirement
 from bidradar.agent.steps.parse import Material, is_template
 
+# 规则抽取（基线）和漏检复查用的关键词规则的版本。改了 KEYWORD_DIMENSIONS、MODAL 这些规则就加一：
+# 它参与计算配置版本，抽取缓存按配置版本区分，旧规则抽出的结果不会被新任务复用。
+RULES_VERSION = "extract-rules-v2"
 BATCH_CHARS = 6000
 MAX_ITEMS_PER_BATCH = 40
 
@@ -248,7 +251,8 @@ KEYWORD_DIMENSIONS: list[tuple[re.Pattern[str], Dimension, Category]] = [
     (re.compile(r"付款|支付|结算|履约保证金|质保期"), Dimension.COMMERCIAL, Category.COMMERCIAL),
     (re.compile(r"评分|得\s*\d+\s*分|分值"), Dimension.SCORING, Category.SCORING),
     (re.compile(r"业绩|类似项目|案例"), Dimension.EXPERIENCE, Category.QUALIFICATION),
-    (re.compile(r"项目经理|工程师|人员|社保"), Dimension.STAFFING, Category.DELIVERY),
+    # 不用单独的"人员"：会把"面向政务人员的平台"这种描述当成人员要求。
+    (re.compile(r"项目经理|工程师|技术人员|实施人员|人员要求|社保"), Dimension.STAFFING, Category.DELIVERY),
     (re.compile(r"服务地点|交付地点|实施地点"), Dimension.LOCATION, Category.DELIVERY),
     (re.compile(r"资格|资质|违法记录|民事责任|联合体|控股|信用"), Dimension.QUALIFICATION, Category.QUALIFICATION),
     (re.compile(r"须提供|提交.*(证明|复印件|副本)|加盖公章"), Dimension.MATERIALS, Category.MATERIALS),

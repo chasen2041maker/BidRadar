@@ -43,12 +43,15 @@ STATUS_NAMES = {
 }
 
 
-def _fact_label(requirement: Requirement) -> str:
+def _fact_label(requirement: Requirement, material: Material) -> str:
     if requirement.money_role is not None:
         return MONEY_LABEL_NAMES.get(requirement.money_role, "金额")
-    if "截止" in requirement.quote:
+    # 摘录本身常常只有"时间：……"，要连同所在章节一起看（公告原文的章节就是字段名，比如"投标截止时间"）。
+    chunk = material.by_id.get(requirement.chunk_ids[0])
+    context = requirement.quote + " " + " ".join(chunk.section_path if chunk else ())
+    if "截止" in context:
         return "截止时间"
-    if "获取" in requirement.quote:
+    if "获取" in context:
         return "获取文件"
     return "项目信息"
 
@@ -130,7 +133,11 @@ def compose(
     ordered = sorted(findings, key=lambda f: SEVERITY[f.status])
     facts = [
         FactLine(
-            requirement_id=r.id, label=_fact_label(r), quote=r.quote, chunk_ids=r.chunk_ids, money_role=r.money_role
+            requirement_id=r.id,
+            label=_fact_label(r, material),
+            quote=r.quote,
+            chunk_ids=r.chunk_ids,
+            money_role=r.money_role,
         )
         for r in requirements
         if r.kind is Kind.FACT

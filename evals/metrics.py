@@ -1,7 +1,7 @@
 """评测指标。
 
 TODO（练习 2，项目负责人主写）：align()、extraction_scores()、match_scores() 三个函数。
-要求和验收测试见 docs/exercises.md 的"练习 2"和 tests_v2/evals/test_metrics.py；为什么这么设计见
+要求和验收测试见 docs/exercises.md 的"练习 2"和 tests/evals/test_metrics.py；为什么这么设计见
 docs/agent-design.md 第 11 节。下面每个函数的 docstring 就是它的规格，结构（输入、输出的字段）是固定的，
 evals/run.py 按这个结构打印报表。
 

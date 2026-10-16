@@ -1,4 +1,4 @@
-# 虚构公司：小型软件团队，不能长期驻场。和 tests_v2/factories.py 的 PROFILE 一致。
+# 虚构公司：小型软件团队，不能长期驻场。和 tests/factories.py 的 PROFILE 一致。
 company_name: 山岚软件（虚构）
 city: 天津
 project_types: 软件开发、知识库、智能体
