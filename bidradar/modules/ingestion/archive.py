@@ -286,6 +286,15 @@ class Store:
             # 来源以运行记录里的为准，不同来源的版本记录互不混淆。
             source = run.request.get("source_id", "cn_ccgp")
             version_id = sha256((source + "\n" + stored.url + "\n" + digest).encode()).hexdigest()
+            # 两次运行同时存同一个网址的新内容时，会读到同一个"最大版本号"、都写成下一号，后提交的撞上唯一约束。
+            # 按网址加一把事务锁（提交时释放），同一个网址的版本号就一个一个分配。第一个键把这把锁和别的模块的锁分开。
+            self.session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        func.hashtext("ingestion.url_versions"), func.hashtext(source + "\n" + stored.url)
+                    )
+                )
+            )
             latest = self.session.scalar(
                 select(func.coalesce(func.max(UrlVersionRow.version), 0)).where(
                     UrlVersionRow.source_id == source, UrlVersionRow.url == stored.url
