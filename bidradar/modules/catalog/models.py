@@ -22,7 +22,6 @@ import re
 
 from bidradar.infra.errors import AppError
 
-VERSION = "procurement-facts-v3"
 # 公告类型：采购、更正、结果、终止、意向、未知。
 KINDS = {"procurement", "correction", "award", "termination", "intention", "unknown"}
 # 规范化事实字段（v1），v2 加了原发布时间和原合同引用。
@@ -37,16 +36,22 @@ SOURCE_FAMILIES = {
     "tj_procurement_consultation": "tj_finance_procurement",
     "tj_procurement_correction": "tj_finance_procurement",
 }
-# 每个格式版本对应的规范化器版本，以及允许的来源。
+# 每个格式版本接受哪些规范化器版本，以及允许的来源。
+# v4 只改了公告类型的判断规则，包的结构和 v3 一样，所以都是格式版本 3。
 SCHEMAS = {
-    1: ("procurement-facts-v1", {"cn_ccgp", "tj_procurement_negotiation"}),
-    2: ("procurement-facts-v2", set(SOURCE_FAMILIES) - {"cn_hainan"}),
-    3: (VERSION, set(SOURCE_FAMILIES)),
+    1: ({"procurement-facts-v1"}, {"cn_ccgp", "tj_procurement_negotiation"}),
+    2: ({"procurement-facts-v2"}, set(SOURCE_FAMILIES) - {"cn_hainan"}),
+    3: ({"procurement-facts-v3", "procurement-facts-v4"}, set(SOURCE_FAMILIES)),
 }
 # 选"当前版本"的排序：先比抓取时间；同一时刻抓到的，选规范化器版本高的；
 # 最后才比接收序号。这样晚到的 v1 数据不会把已有的 v2 结果降级。
 # 版本高低按这张表查，不按字符串比较。排序本身写在 repo.py 的 SQL 里（current_versions）。
-NORMALIZER_RANK = {"procurement-facts-v1": 1, "procurement-facts-v2": 2, "procurement-facts-v3": 3}
+NORMALIZER_RANK = {
+    "procurement-facts-v1": 1,
+    "procurement-facts-v2": 2,
+    "procurement-facts-v3": 3,
+    "procurement-facts-v4": 4,
+}
 MAX_BUNDLE_BYTES = 32 * 1024 * 1024
 
 
@@ -436,7 +441,8 @@ def validate_bundle(bundle):
         or type(bundle.get("schema_version")) is not int
         or bundle["schema_version"] not in SCHEMAS
         or bundle.get("kind") != "normalized_observations"
-        or bundle.get("normalizer_version") != SCHEMAS[bundle["schema_version"]][0]
+        or not isinstance(bundle.get("normalizer_version"), str)
+        or bundle["normalizer_version"] not in SCHEMAS[bundle["schema_version"]][0]
         or not isinstance(bundle.get("source_id"), str)
         or bundle.get("source_id") not in SCHEMAS[bundle["schema_version"]][1]
         or type(bundle.get("simulation")) is not bool
