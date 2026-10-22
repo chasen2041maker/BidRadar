@@ -51,12 +51,62 @@ uv run python -m bidradar worker               # 终端 2：后台任务（解�
 
 ### 采集真实网站
 
+采集真实网站要同时满足三件事：命令里显式加 `--allow-network`、一份人工核对过的准入文件、一台能直接连外网的机器（采集器不走代理，见下面"限制"）。
+
 ```bash
-uv run python -m bidradar ingest collect-public --source ccgp --category zygg --key <幂等键> --allow-network --policy <准入文件>
-uv run python -m bidradar ingest publish <run_id>
+# CCGP 中央公开招标栏目第 1 页，最多 10 条公告，只抓标题里有"软件"或"平台"的
+uv run python -m bidradar ingest collect-public --source ccgp --category zygg/gkzb \
+  --title-term 软件 --title-term 平台 --max-notices 10 \
+  --key ccgp-gkzb-20261022 --allow-network --policy .bidradar-data/public-policy.json
+uv run python -m bidradar ingest show <run_id>       # 看每一页抓到了什么、解析得怎么样
+uv run python -m bidradar ingest publish <run_id>    # 规范化并导入商机目录
 ```
 
-真实网站采集需要一份人工核对过的来源准入文件，格式和注意事项见 [历史文档 31](archive/31-public-source-layer.md)。默认不联网，必须显式加 `--allow-network`。
+`--category` 只接受核对过的栏目，写错会报"未支持的来源或栏目"：
+
+| 来源 | 栏目 |
+| --- | --- |
+| `--source ccgp` | `zygg/…` 是中央、`dfgg/…` 是地方，后半段是 `gkzb` 公开招标、`jzxcs` 竞争性磋商、`jzxtpgg` 竞争性谈判、`gzgg` 更正、`zbgg` 中标、`cjgg` 成交，例如 `dfgg/jzxcs` |
+| `--source hainan` | `cggg`、`zfcgqtgg`、`cgzbgg`（2026-09-30 按官网核对的三个政府采购栏目） |
+
+**准入文件**是你核对过网站规则后写下的记录，不是网站给的许可。放在 `.bidradar-data/` 下面，不进 git。格式如下：
+
+```json
+{
+  "schema_version": 2,
+  "approved": false,
+  "purpose": "本机开发：抽样核对 CCGP 和海南的栏目解析器还能不能用",
+  "reviewed_at": "2026-10-22T10:00:00+08:00",
+  "expires_at": "2026-11-22T10:00:00+08:00",
+  "evidence": ["2026-10-22 核对了 robots.txt：……", "2026-10-22 核对了网站使用说明：……"],
+  "attachments_allowed": false,
+  "robots_missing": "deny",
+  "allowed": [
+    {"host": "www.ccgp.gov.cn", "path_prefix": "/cggg/zygg/", "kinds": ["listing", "notice"]},
+    {"host": "www.ccgp.gov.cn", "path_prefix": "/cggg/dfgg/", "kinds": ["listing", "notice"]},
+    {"host": "ggzy.hainan.gov.cn", "path_prefix": "/ggzy/ggzy/cggg/", "kinds": ["listing", "notice"]}
+  ]
+}
+```
+
+- 核对完 robots.txt 和网站的使用说明，把核对结果写进 `evidence`，再把 `approved` 改成 `true`。不是 `true` 时采集器报 `policy_invalid`。
+- 过了 `expires_at` 采集器就拒绝（`policy_expired_or_not_yet_valid`），重新核对以后再延期。
+- `path_prefix` 以 `/` 结尾才按前缀匹配，否则只放行这一个路径。
+- 网站没有 robots.txt（返回 404）时，默认的 `"robots_missing": "deny"` 会让运行以 `robots_unavailable` 停下。核对过网站确实没有 robots.txt，可以改成 `"allow_404"`。只有 404 这样处理，403、5xx 和网络错误仍然按"禁止"算。
+- 附件默认不抓。要抓就把 `attachments_allowed` 改成 `true`，并为附件路径另加一条 `kinds` 为 `["attachment"]` 的规则。
+- 更细的规则（robots 返回 404 怎么处理、DNS 模式）见 [历史文档 31](archive/31-public-source-layer.md)。
+
+**怎么看解析器还能不能用**：`ingest show` 输出里每一页都有 `parsed.status`。
+
+- `ok` 或 `partial`：解析正常，`partial` 的原因列在 `issues` 里。
+- `parse_error`，原因是 `unexpected_listing_template` 或 `unexpected_notice_template`：网站改版了，要更新 `bidradar/modules/ingestion/sources/` 里的解析器。原件已经存下，改完先用 `ingest replay <capture_id>` 看新的解析结果，再 `ingest publish <run_id>`（导出时会用新解析器重新解析原件），都不用再联网。
+- `blocked`：遇到了验证码或限流，整次运行已经停下。等一段时间再说，不要换着法子重试。
+
+**限制**
+
+- 采集器不读系统代理，用解析出的 IP 直接连网站，所以在只能走 HTTPS 代理的环境里（比如 Claude 的云端会话）连不上这些网站。
+- 本机的代理软件把 DNS 换成假地址时（比如 fake-IP 模式），加 `--dns-mode google-doh`。
+- 天津开放接口的条款核对有效到 2026-10-29（按 UTC 日期）。从 10-30 起，`collect-tianjin` 会报 `source_terms_review_required`。重新核对条款以后，改 `bidradar/modules/ingestion/tianjin.py` 里 `fetch_page` 的日期。天津平台目前仍拒绝开发者令牌。
 
 ### 不用 Docker
 

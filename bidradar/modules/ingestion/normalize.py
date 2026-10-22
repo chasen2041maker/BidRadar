@@ -18,7 +18,9 @@ import re
 from urllib.parse import urlsplit, urlunsplit
 from bidradar.modules.ingestion.evidence_fields import body_entries, extract as extract_evidence
 
-VERSION = "procurement-facts-v3"
+# 规则一变就换版本号：目录在同一次抓取的几个解释里选版本高的当"当前"，旧规则的结果留在历史里。
+# v4：认出"中标（成交）结果公告"和"采购意向公开"，结构和 v3 一样。
+VERSION = "procurement-facts-v4"
 MAX_JSON_BYTES = 32 * 1024 * 1024
 SOURCES = {
     "cn_ccgp",
@@ -189,8 +191,11 @@ def _notice_kind(title, source=None):
     for pattern, kind in (
         (r"(更正|变更|澄清)公告", "correction"),
         (r"(废标|终止|中止)公告", "termination"),
-        (r"(中标|成交)(结果)?公告", "award"),
-        (r"采购意向", "intention"),
+        # 招标项目的结果叫"中标"，磋商、谈判、询价项目叫"成交"。全国统一模板把两个词都写上：
+        # "中标（成交）结果公告"。
+        (r"(中标|成交)([（(](中标|成交)[）)])?(结果)?公告", "award"),
+        # 意向公开常见两种标题："……政府采购意向"和"……政府采购意向公开"。
+        (r"采购意向(公开|公告)?", "intention"),
         (r"(?:(?:竞争性谈判|竞争性磋商|询价)(?:公告)?|(?:招标|采购)公告)", "procurement"),
     ):
         if re.search(pattern + r"(?:[（(].*[）)])?$", title):

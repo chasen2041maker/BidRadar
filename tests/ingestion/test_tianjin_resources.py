@@ -318,7 +318,7 @@ class ResourceTests(unittest.TestCase):
             self.assertEqual(next_page["items"][0]["normalizer_version"], "procurement-facts-v1")
             self.assertEqual(
                 {r["normalizer_version"] for r in with_catalog.query(simulation=True)["items"]},
-                {"procurement-facts-v3"},
+                {"procurement-facts-v4"},
             )
             # 规范版本只在获取时间相同时排序；不能让旧获取的v2压过新获取的v1。
             newer = legacy_bundle(first)
